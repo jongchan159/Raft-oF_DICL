@@ -1,0 +1,22 @@
+# 이 파일은 **기존 코드의 스타일을 기술한 것**이다.
+#
+# 주의: 기존 파일 전체에 clang-format을 돌리지 말 것. 이 프로젝트의 주석에는
+# 원본 raft.go와의 대조 기록이 들어 있고(DECISIONS.md 참고), 일괄 재포맷은
+# 그 diff를 리팩토링 diff와 뒤섞어 회귀 추적을 불가능하게 만든다.
+# 새로 쓰거나 이미 손대는 코드에만 적용할 것.
+#
+# 참고: 작업 호스트(eternitymaster)에는 clang-format이 설치돼 있지 않다.
+# 이 파일은 에디터/clangd와 앞으로의 CI를 위한 것이다.
+BasedOnStyle: LLVM
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ColumnLimit: 96
+AccessModifierOffset: -4
+PointerAlignment: Right
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: false
+AllowShortLoopsOnASingleLine: false
+BreakBeforeBraces: Attach
+SortIncludes: false          # include 순서에 의미가 있다 (core -> net -> proto -> 표준)
+ReflowComments: false        # 블록 주석의 수동 줄바꿈을 보존한다

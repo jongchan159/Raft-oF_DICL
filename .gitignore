@@ -1,0 +1,29 @@
+# 빌드 산출물
+build/
+build-cmake/
+build-*/
+*.o
+*.so
+*.a
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+Testing/
+compile_commands.json
+
+# 테스트 작업 디렉터리 / 링 파일
+*.ring
+selftest-workdir/
+e2e-*/
+
+# 주의: proto/rpcproto.pb.{h,cc}는 **의도적으로 커밋한다.**
+# protoc 없는 환경에서 빌드할 수 있게 하려는 것이므로 무시하지 말 것
+# (build.sh 머리말, README §1 참고).
+
+DECISIONS.md
+E2E_EXPERIMENT.md
+BLKCOPY_EXPERIMENT.md
+HANDOFF.md

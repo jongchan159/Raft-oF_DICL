@@ -1,0 +1,176 @@
+syntax = "proto3";
+
+package rpcproto;
+
+option go_package = "nvmeof_raft/rpcproto";
+
+// EntryMeta mirrors nvmeof_raft.EntryMeta (Term + CmdLen). The full
+// Command bytes do NOT travel over this wire — they are block-copied
+// through the blockcopy RPC path based on the PBA pointers in
+// AppendEntriesRequest below.
+message EntryMeta {
+  uint64 term = 1;
+  uint64 cmd_len = 2;
+}
+
+// ---- Raft-internal RPCs ----
+
+message RequestVoteRequest {
+  uint64 term = 1;
+  uint64 candidate_id = 2;
+  uint64 last_log_index = 3;
+  uint64 last_log_term = 4;
+}
+
+message RequestVoteResponse {
+  uint64 term = 1;
+  bool vote_granted = 2;
+}
+
+message AppendEntriesRequest {
+  uint64 term = 1;
+  uint64 leader_id = 2;
+  uint64 prev_log_index = 3;
+  uint64 prev_log_term = 4;
+  uint64 leader_commit = 5;
+  // Raw Block Copy Metadata
+  uint64 leader_pba_src = 6;
+  uint64 log_block_length = 7;
+  uint64 num_entries = 8;
+  uint64 slots_per_entry = 9;
+  uint64 start_slot = 10;
+  int32 leader_dev_index = 11;
+  // Leader-Side replication (hpdc15dare 3.1.2 policy, comparison against
+  // the paper's Destination-Side default): true means the leader's
+  // storage node already pushed this batch's data into the follower's
+  // volume before sending this RPC, so the follower skips do_pba_copy.
+  bool data_already_copied = 13;
+  // Inline entry metadata — follower builds its in-memory log from these
+  // without carrying command payload. Command bytes are loaded lazily from
+  // the ring device at apply time.
+  repeated EntryMeta entry_metas = 12;
+}
+
+message AppendEntriesResponse {
+  uint64 term = 1;
+  bool success = 2;
+  uint64 conflict_term = 3;
+  uint64 conflict_index = 4;
+  // HandlerDuration nanoseconds (Go time.Duration is int64 nanoseconds).
+  int64 handler_duration_nanos = 5;
+  // Follower-measured WritePBA(Batch) RPC wall (sync block-copy round trip).
+  int64 write_pba_rt_nanos = 6;
+  // Storage-reported pread + pwrite duration on the storage server.
+  int64 storage_copy_nanos = 7;
+  // HandleAppendEntriesRequest follower sub-stages. The follower already
+  // measures these into AppendEntriesResponse (see raft_entry.h), but they
+  // had no wire fields, so ReplSample.handle_ae_* on the leader was always
+  // zero — the follower-internal breakdown never reached the leader.
+  // Additive field numbers, so this stays wire-compatible with peers that
+  // predate them (they simply report 0).
+  int64 handle_ae_lock_wait_nanos = 8;   // entry -> mu.Lock() acquired
+  int64 handle_ae_pre_nanos = 9;         // after lock -> unlock before doPBACopy
+  int64 handle_ae_lock_wait2_nanos = 10; // doPBACopy returned -> re-lock acquired
+  int64 handle_ae_post_nanos = 11;       // re-lock -> return, excluding persist
+  int64 handle_ae_persist_nanos = 12;    // persistCircular (header-only)
+}
+
+// ---- Blockcopy RPCs (rpc_rdma.go WritePBABatchRequest/Response 대응) ----
+// Follower -> storage node (destination-side replication): "copy these
+// chunks from the leader's log volume into mine." Nbytes carries the
+// per-entry transfer size (one element per entry, populated by
+// do_pba_copy's extent/wrap-split Pass 1). BlockSize (legacy uniform-size
+// path) is kept for wire forward-compat but unused by any in-tree caller.
+message WritePBABatchRequest {
+  repeated uint64 pba_srcs = 1;
+  repeated uint64 pba_dsts = 2;
+  repeated uint64 nbytes = 3;
+  uint64 block_size = 4;
+  int32 src_dev = 5;
+  int32 dst_dev = 6;
+}
+
+message WritePBABatchResponse {
+  string err = 1;
+  // Sum of per-entry (read_ns + write_ns) across batch workers.
+  int64 copy_nanos = 2;
+  // The same sum split by direction: read_nanos + write_nanos == copy_nanos.
+  // CopyNanos alone cannot say whether a local-vs-NVMe-oF latency gap sits on
+  // the pread or the pwrite side, which is the whole question the blockcopy
+  // latency experiment asks. Additive field numbers, so this stays wire
+  // compatible with peers that predate them (they simply report 0).
+  int64 read_nanos = 3;
+  int64 write_nanos = 4;
+}
+
+// ---- Client-facing RPCs ----
+
+message ClientApplyRequest {
+  repeated bytes commands = 1;
+}
+
+message ClientApplyResponse {
+  string err = 1;
+  // Backpressure: server asks client to retry after this many milliseconds.
+  bool busy = 2;
+  int32 retry_after_ms = 3;
+}
+
+message ClientApplyTimedRequest {
+  repeated bytes commands = 1;
+}
+
+message ClientApplyTimedResponse {
+  string err = 1;
+  int64 l_handler_nanos = 2;
+  int64 l_persist_nanos = 3;
+  int64 ae_net_nanos = 4;
+  int64 f_handler_nanos = 5;
+  int64 repl_net_nanos = 6;
+  int64 replication_nanos = 7;
+  int64 quorum_wait_nanos = 8;
+  int64 mutex_nanos = 9;
+  int64 total_nanos = 10;
+  bool busy = 11;
+  int32 retry_after_ms = 12;
+  int64 post_rpc_nanos = 13;
+  int64 commit_wait_nanos = 14;
+  int64 wg_scheduling_nanos = 15;
+}
+
+message ClientEchoRequest {
+  repeated bytes commands = 1;
+}
+
+message ClientEchoResponse {
+  int64 n = 1;
+}
+
+message ClientGetCommitIndexRequest {
+  // empty
+}
+
+message ClientGetCommitIndexResponse {
+  uint64 commit_index = 1;
+  string err = 2;
+}
+
+message ClientGetHashRequest {
+  uint64 at_count = 1;
+}
+
+message ClientGetHashResponse {
+  string hash = 1;
+  uint64 count = 2;
+  string err = 3;
+}
+
+message ClientGetAEBatchStatsRequest {
+  // empty
+}
+
+message ClientGetAEBatchStatsResponse {
+  uint64 ae_count = 1;
+  uint64 ae_entries = 2;
+  string err = 3;
+}
