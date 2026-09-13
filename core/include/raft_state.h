@@ -22,11 +22,10 @@
 /* ============================================================
  * Server 가 들고 있는 상태 그룹들.
  *
- * Server(core/include/raft_server.h)의 필드는 이 다섯 struct로 묶여 있다:
+ * Server(core/include/raft_server.h)의 필드는 이 네 struct로 묶여 있다:
  *   RaftState      합의 상태 (term, log, cluster, commit_index, state, 타이머)
  *   RingLog        링버퍼 부기 + 링 크기 설정
  *   StorageIo      링 파일 / 디바이스 I/O 상태
- *   ProfilingSink  계측 (core/include/raft_timings.h)
  *   WorkerPool     상시 스레드 + 복제 스레드 수명 관리
  *
  * 메서드는 전부 Server:: 에 있고 락(Server::mu)도 하나다 -- 이 파일은
@@ -96,12 +95,6 @@ struct ClusterMember {
      * Prevents the leader from piling up duplicate large RPCs to a slow
      * follower. (원본 주석 그대로) */
     bool inflight = false;
-
-    /* log_skip_pba_diag의 출력 스로틀용 (원본에는 없음 -- 원본은 매
-     * 하트비트마다 무조건 찍어서 초당 10줄이 나온다). 같은 next에 대한
-     * 경고는 1초에 한 번만 낸다. */
-    uint64_t skip_pba_last_next = UINT64_MAX;
-    std::chrono::steady_clock::time_point skip_pba_last_log{};
 };
 
 /* CachedFD는 blockio/cached_fd.h가 정의한다. 여기서는 shared_ptr로만 다루므로
@@ -115,14 +108,6 @@ struct ClusterMember {
  * 그 넷만 cached_fd.h를 직접 include한다. */
 class CachedFD;
 
-/* ============================================================
- * slotMapTraceEvt (raft.go 원본)
- * "records a single mutation of logSlotMap for diagnostics"
- * ============================================================ */
-struct SlotMapTraceEvt {
-    char op = 0;        /* 'I' = insert, 'F' = free */
-    uint64_t idx = 0;   /* log index that was mutated */
-};
 
 /* ============================================================
  * AlignedBuffer -- O_DIRECT pwrite에 안전하게 넘길 수 있는, 실제로
@@ -258,14 +243,6 @@ struct RingLog {
     bool persisted_init = false;
     uint64_t persisted_term = 0;
     uint64_t persisted_voted_for = 0;
-
-    /* ---- 진단 링: 최근 log_slot_map 변경 이력 ----
-     * [SKIP PBA] 경고를 분류할 때 쓴다 (core/src/raft_diagnostics.cpp).
-     * mu 안에서만 접근하므로 추가 동기화가 필요 없다. */
-    static constexpr size_t kSlotMapTraceRingSize = 256;
-    std::array<SlotMapTraceEvt, kSlotMapTraceRingSize> slot_map_trace_ring{};
-    int slot_map_trace_cursor = 0;
-    bool slot_map_trace_inserts = false;   /* insert 기록 게이트 (delete는 항상 기록) */
 
     /* ---- 링 크기 설정 ----
      * 예전에는 core/raft_constants.h의 프로세스 전역 가변 변수였다

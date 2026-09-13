@@ -94,21 +94,15 @@ void usage(const char *prog) {
       "  -id N              this node's id (must appear in -cluster)\n"
       "  -metadata-dir DIR  where the ring file lives (default .)\n"
       "  -heartbeat-ms N    heartbeat interval (default 300)\n"
-      "  -mode MODE         destination (default) | leader\n"
-      "                     replication policy; 'leader' is the DARE-style\n"
-      "                     policy for comparison (hpdc15dare 3.1.2)\n"
       "  -ring-pages N      ring size in 4KiB pages (default %llu = 32GiB).\n"
       "                     Ring file is N*4096 bytes and is fallocate'd.\n"
       "  -identity-pba      treat logical offset == physical offset instead of\n"
       "                     using FIEMAP. Test mode: lets the whole PBA-copy\n"
       "                     path run on plain files without a block device or\n"
       "                     root. Do NOT use against a real NVMe-oF device.\n"
-      "  -profile           enable sub-stage profiling atomics\n"
       "  -loop-sleep-us N   main loop pause per iteration (default 200, 0=spin)\n"
       "  -log-trim N        trim the in-memory log vector once N entries are\n"
       "                     reclaimable (default 8192, 0=never)\n"
-      "  -ae-batch N        max_ae_batch override\n"
-      "  -ae-batch-bytes N  max_ae_batch_bytes override\n"
       "  -debug             verbose logging\n",
       prog, static_cast<unsigned long long>(nvmeof_raft::DEFAULT_NUM_PAGES));
 }
@@ -122,15 +116,11 @@ int main(int argc, char **argv) {
     std::string cluster_str;
     std::string metadata_dir = ".";
     int heartbeat_ms = 300;
-    std::string mode = "destination";
     uint64_t ring_pages = DEFAULT_NUM_PAGES;
     bool identity_pba = false;
-    bool profile = false;
     bool debug = false;
     int loop_sleep_us = 200;
     uint64_t log_trim = 8192;
-    uint64_t ae_batch = 0;
-    uint64_t ae_batch_bytes = 0;
 
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
@@ -142,25 +132,17 @@ int main(int argc, char **argv) {
             metadata_dir = next_arg_value(argc, argv, i, "-metadata-dir");
         } else if (arg == "-heartbeat-ms") {
             heartbeat_ms = std::atoi(next_arg_value(argc, argv, i, "-heartbeat-ms").c_str());
-        } else if (arg == "-mode") {
-            mode = next_arg_value(argc, argv, i, "-mode");
-        } else if (arg == "-ring-pages") {
+                } else if (arg == "-ring-pages") {
             ring_pages = std::strtoull(next_arg_value(argc, argv, i, "-ring-pages").c_str(), nullptr, 10);
         } else if (arg == "-identity-pba") {
             identity_pba = true;
-        } else if (arg == "-profile") {
-            profile = true;
-        } else if (arg == "-debug") {
+                } else if (arg == "-debug") {
             debug = true;
         } else if (arg == "-loop-sleep-us") {
             loop_sleep_us = std::atoi(next_arg_value(argc, argv, i, "-loop-sleep-us").c_str());
         } else if (arg == "-log-trim") {
             log_trim = std::strtoull(next_arg_value(argc, argv, i, "-log-trim").c_str(), nullptr, 10);
-        } else if (arg == "-ae-batch") {
-            ae_batch = std::strtoull(next_arg_value(argc, argv, i, "-ae-batch").c_str(), nullptr, 10);
-        } else if (arg == "-ae-batch-bytes") {
-            ae_batch_bytes = std::strtoull(next_arg_value(argc, argv, i, "-ae-batch-bytes").c_str(), nullptr, 10);
-        } else if (arg == "-h" || arg == "--help") {
+                        } else if (arg == "-h" || arg == "--help") {
             usage(argv[0]);
             return 0;
         } else {
@@ -210,12 +192,6 @@ int main(int argc, char **argv) {
      * (fallocate 이후에 링 크기를 바꾸면 슬롯 인덱스 해석이 깨진다).
      * 예전에는 프로세스 전역 configure_ring() + 전역 변수였다. */
     server->ring.configure(ring_pages);
-    if (ae_batch > 0) {
-        server->max_ae_batch = ae_batch;
-    }
-    if (ae_batch_bytes > 0) {
-        server->max_ae_batch_bytes = ae_batch_bytes;
-    }
     server->raft.id = my_id;
     server->raft.cluster_index = my_index;
     server->raft.address = members[static_cast<size_t>(my_index)].address;
@@ -227,16 +203,7 @@ int main(int argc, char **argv) {
     server->loop_sleep_us = loop_sleep_us;
     server->ring.log_trim_threshold = log_trim;
     server->statemachine = std::make_shared<HashStateMachine>();
-    server->prof.enabled.store(profile ? 1 : 0);
 
-    if (mode == "leader") {
-        server->replication_mode = Server::ReplicationMode::LeaderSide;
-    } else if (mode == "destination") {
-        server->replication_mode = Server::ReplicationMode::DestinationSide;
-    } else {
-        std::fprintf(stderr, "-mode must be 'destination' or 'leader'\n");
-        return 1;
-    }
 
     server->raft.cluster.resize(members.size());
     for (size_t i = 0; i < members.size(); i++) {
@@ -285,7 +252,6 @@ int main(int argc, char **argv) {
                 server->io.device_path.empty() ? "(ring file itself)"
                                             : server->io.device_path.c_str());
     std::printf("  pba mode     : %s\n", identity_pba ? "identity (TEST)" : "FIEMAP");
-    std::printf("  replication  : %s-side\n", mode.c_str());
     std::printf("  heartbeat    : %d ms\n", heartbeat_ms);
     std::printf("  term/tail    : term=%llu tail_log_index=%llu tail_slot=%llu\n",
                 static_cast<unsigned long long>(server->raft.current_term),

@@ -1,7 +1,17 @@
-# raftof+dare
+# raftof+dare — `clean` 브랜치 (정상 경로 · 타이머 없음)
 
 NVMe-oF 스토리지 레벨 블록복사(PBA copy)로 로그를 복제하는 Raft 구현.
 Go 원본(`~/RAFT/nvmeof_raft/raft.go`)의 C++17 포팅.
+
+> **이 브랜치는 정상 경로만 남긴 축소판이다.** 전체 버전은 `main` 에 있다.
+> 빠진 것: 계측/프로파일링 전부(`ApplyTimings` · `ReplSink` · `ProfilingSink`),
+> 로그 불일치 복구(conflict 기반 fast backoff), 재시작 시 헤더 복구,
+> 팔로워→리더 승격 시 deferred 엔트리 로드, Leader-Side(DARE) 복제 정책,
+> `[SKIP PBA]` 진단.
+> 남긴 것: 선거·하트비트 타이머(Raft 알고리즘 자체), 링 wrap 처리와 slot GC,
+> extent 경계 clamp, 재전송 멱등 처리 — 넷 다 예외 처리가 아니라
+> **정상 동작이 성립하기 위한 조건**이다.
+> `DECISIONS.md` / `HANDOFF.md` 는 `main` 기준 문서이므로 여기 없는 기능도 서술한다.
 
 - `core/` — **Raft 합의 알고리즘만.** 네트워크 계층에 의존하지 않는다
   (net/ 을 include하지도, 링크타임에 net/ 심볼을 요구하지도 않는다).
@@ -116,8 +126,45 @@ export PROTOBUF_SYSROOT=/tmp/pb-sysroot
 | `./build.sh selftest` | `build/raft_selftest` — 네트워크 없는 로컬 검증 |
 | `./build.sh check` | 컴파일 + 링크만 확인 (undefined 심볼 검출) |
 | `./build.sh asan` | `build/raft_node_asan` — ASan+UBSan 빌드 |
+| `./build.sh debug` | `build-debug/` — 전체 바이너리, `-O0 -g` (아래 참고) |
+| `./build.sh reldbg` | `build-reldbg/` — 전체 바이너리, `-O2 -g` (아래 참고) |
 | `./build.sh regen-proto` | `.proto` 수정 후 재생성 |
-| `./build.sh clean` | `build/` 삭제 |
+| `./build.sh clean` | `build/`, `build-debug/`, `build-reldbg/` 삭제 |
+
+### 디버그 빌드 (gdb)
+
+기본 빌드는 `-g`가 없어 gdb로 심볼을 볼 수 없다. 디버그 빌드는 **전용 디렉터리**에
+지어서 `build/`와 `build-cmake/`의 Release 산출물을 덮지 않는다.
+
+```bash
+# CMake  -> build-cmake-debug/ , build-cmake-reldbg/
+cmake -S . -B build-cmake-debug  -DCMAKE_BUILD_TYPE=Debug           # -O0 -g
+cmake -S . -B build-cmake-reldbg -DCMAKE_BUILD_TYPE=RelWithDebInfo  # -O2 -g -DNDEBUG
+cmake --build build-cmake-debug -j
+
+# build.sh -> build-debug/ , build-reldbg/
+./build.sh debug
+./build.sh reldbg
+```
+
+디렉터리 이름이 빌드 시스템별로 갈리는 것은 `build/` vs `build-cmake/`와 같은
+이유다 — 한 디렉터리를 공유하면 `build.sh`가 떨군 바이너리와 CMake 빌드 트리가
+서로를 덮어쓰고, `./build.sh clean`이 CMake 쪽을 날려버린다.
+
+(CMake의 `RelWithDebInfo`는 `-DNDEBUG`를 더 붙이지만 이 코드베이스에는
+`assert()`도 `NDEBUG` 분기도 없으므로 `build.sh reldbg`와 실질적으로 같다.)
+
+**둘 중 무엇을 쓸지가 중요하다.** `-O0`는 타이밍을 벌려 놓아서 경합·락 순서에
+의존하는 버그가 아예 재현되지 않는다:
+
+| 빌드 | 플래그 | 쓸 곳 |
+|---|---|---|
+| `debug` | `-O0 -g` | 한 줄씩 스텝, 변수 관찰, 로직 버그. `<optimized out>`이 없다 |
+| `reldbg` | `-O2 -g` | Release와 같은 타이밍. 락 순서 역전·경합·데드락, 크래시 백트레이스, 레이턴시 수치를 믿어야 할 때 |
+
+예를 들어 `core/src/raft_apply.cpp`의 `committed->mu` ↔ `s.mu` 락 순서 역전
+(커밋 대기 루프 주석 참고)처럼 순서가 걸린 문제는 `-O0`에서 타이밍이 벌어져
+재현되지 않을 수 있다 — 그런 건 `reldbg` 쪽으로.
 
 ---
 
@@ -137,7 +184,6 @@ export PROTOBUF_SYSROOT=/tmp/pb-sysroot
 환경변수로 조절한다:
 
 ```bash
-MODE=leader        ./scripts/smoke_test.sh /tmp/s 200   # DARE 방식 정책 비교
 CMD_SIZE=4064      ./scripts/smoke_test.sh /tmp/s 200   # 명령 크기(B)
 BATCH=1            ./scripts/smoke_test.sh /tmp/s 200   # Apply RPC당 명령 수
 RING_PAGES=1024    ./scripts/smoke_test.sh /tmp/s 3000  # 링 크기(4KiB 페이지)
@@ -169,7 +215,7 @@ done
 for id in 1 2 3; do
     ./build/raft_node -id $id -cluster "$CL" -metadata-dir $W/n$id \
         -heartbeat-ms 100 -ring-pages $RING_PAGES \
-        -identity-pba -profile > $W/node$id.log 2>&1 &
+        -identity-pba > $W/node$id.log 2>&1 &
 done
 ```
 
@@ -186,12 +232,8 @@ ADDRS=127.0.0.1:6001,127.0.0.1:6002,127.0.0.1:6003
 # 명령 적용 (리더는 자동으로 찾는다)
 ./build/raft_client -addrs $ADDRS -op apply -n 2000 -size 512 -batch 10
 
-# 레이턴시 분해 — Total ≈ LHandler+LPersist+AENet+FHandler+ReplNet+StorageIO+QuorumWait
-./build/raft_client -addrs $ADDRS -op apply-timed -n 20 -size 4064 -batch 1
-
 ./build/raft_client -addrs $ADDRS -op commit-index      # 노드별 커밋 인덱스
 ./build/raft_client -addrs $ADDRS -op hash -at-count 201 # 상태머신 해시/카운트
-./build/raft_client -addrs $ADDRS -op ae-stats          # AE 배치 카운터
 ./build/raft_client -addrs $ADDRS -op echo -n 100       # 코덱/네트워크 왕복만
 ```
 
@@ -219,7 +261,6 @@ cd build-cmake && ctest --output-on-failure
 ./build/raft_selftest /tmp/raftof_selftest              # 네트워크 없는 로컬 검증
 
 ./scripts/smoke_test.sh /tmp/raftof_smoke 200           # 3노드 e2e
-MODE=leader ./scripts/smoke_test.sh /tmp/raftof_ls 200  # leader-side 정책
 
 RING_PAGES=1024 CMD_SIZE=4064 BATCH=10 \
   ./scripts/smoke_test.sh /tmp/raftof_wrap 3000         # 링 wrap-around 스트레스
@@ -237,6 +278,73 @@ RING_PAGES=1024 CMD_SIZE=4064 BATCH=10 \
 # raft_node 대신 build/raft_node_asan을 띄우고 워크로드를 돌린 뒤
 grep -E 'ERROR: AddressSanitizer|runtime error' /tmp/.../node*.log
 ```
+
+### gdb
+
+먼저 §2 "디버그 빌드"로 `build-debug/`(또는 `build-reldbg/`)를 만든다. CMake로
+지었다면 아래 경로를 `build-cmake-debug/`로 바꿔 읽으면 된다.
+
+**`gdb -p <pid>`로 이미 뜬 노드에 붙을 수 없다.** 이 서버는
+`/proc/sys/kernel/yama/ptrace_scope = 1`이라 gdb는 자기 **자손** 프로세스에만
+붙는다. 그래서 노드를 gdb 아래에서 직접 띄운다 (인자는 §3 "손으로 띄우기"와 동일):
+
+```bash
+gdb --args ./build-debug/raft_node -id 1 -cluster "$CL" -metadata-dir $W/n1 \
+    -heartbeat-ms 100 -ring-pages $RING_PAGES -identity-pba
+```
+
+3노드를 전부 디버그 바이너리로 돌리려면 스크립트에 `BIN`을 넘긴다:
+
+```bash
+BIN=$PWD/build-debug ./scripts/smoke_test.sh /tmp/raftof_dbg 200
+cd build-cmake-debug && ctest --output-on-failure   # ctest도 그 디렉터리 바이너리를 쓴다
+```
+
+노드 하나만 gdb에 두고 나머지 둘은 평소대로 띄우는 조합이 보통 제일 편하다.
+멈춰 있는 동안 다른 두 노드가 선거를 돌려 리더가 바뀌는 것은 정상이다.
+
+**주의: `Apply` 경로(`core/src/raft_apply.cpp`)는 리더에서만 돈다.** gdb에 물린
+노드가 팔로워가 되면 브레이크포인트는 영영 안 걸린다 — 노드는 멀쩡히 도는데
+"브레이크포인트가 안 먹는다"로 보이는 게 이것이다. 리더를 결정적으로 잡으려면
+**1노드 클러스터**로 띄운다 (자기 혼자 정족수라 즉시 리더가 된다):
+
+```bash
+W=/tmp/raftof_gdb; mkdir -p $W/n1
+fallocate -l $((1024*4096)) $W/n1/raft-1.ring
+./build/raft_blockcopy_server -addr 0.0.0.0:5251 \
+    -devices "$W/n1/raft-1.ring" -copy-workers 2 > $W/stor1.log 2>&1 &
+
+gdb --args ./build-debug/raft_node -id 1 \
+    -cluster "1@127.0.0.1:6201@@127.0.0.1:5251" -metadata-dir $W/n1 \
+    -heartbeat-ms 100 -ring-pages 1024 -identity-pba
+# 다른 셸에서: ./build/raft_client -addrs 127.0.0.1:6201 -op apply -n 2 -size 256
+```
+
+복제/선거처럼 여러 노드가 필요한 경로가 아니라면 이쪽이 훨씬 빠르다.
+반대로 클라이언트는 브레이크포인트에 멈춰 있는 동안 리더 탐색이 타임아웃될 수
+있는데(`-timeout-s`로 늘린다), 이미 `Apply`에 진입한 뒤라면 무시해도 된다.
+
+멀티스레드라 자주 쓰는 것들:
+
+```
+thread apply all bt            # 데드락 의심 시 제일 먼저
+info threads
+set scheduler-locking step     # 스텝 중 다른 스레드를 멈춰 둔다
+
+# 줄 번호는 코드가 바뀌면 밀리므로 함수명 쪽이 안전하다
+break nvmeof_raft::Server::apply_pending      # 상태머신 반영 + result_sink 호출
+break nvmeof_raft::Server::advance_commit_index
+break raft_apply.cpp:137                      # 예: result_sink 설치 지점
+```
+
+람다가 걸린 줄(위의 `:137`)은 gdb가 여러 위치로 잡는다("5 locations") — 설치
+지점, 람다 본문, 생성자/소멸자가 전부 그 줄에 매핑되기 때문이다. `bt`로 어느
+프레임인지 보면 구분된다.
+
+**코어덤프는 기본적으로 안 남는다** — `ulimit -c`가 0이고 `core_pattern`이 apport
+파이프다. 같은 셸에서 `ulimit -c unlimited` 후 실행해도 apport가 패키지 외
+바이너리를 버릴 수 있으니, root 없이 확실히 잡으려면 위처럼 gdb 아래에서 직접
+띄우는 편이 낫다.
 
 ---
 
@@ -259,7 +367,7 @@ grep -E 'ERROR: AddressSanitizer|runtime error' /tmp/.../node*.log
 # 노드 i
 ./build/raft_node -id 1 \
   -cluster "1@10.0.0.1:6001@/dev/nvme0n1@10.0.0.1:5050,2@10.0.0.2:6001@/dev/nvme1n1@10.0.0.2:5050,3@10.0.0.3:6001@/dev/nvme2n1@10.0.0.3:5050" \
-  -metadata-dir /mnt/nvme0/raftof -heartbeat-ms 300 -ring-pages 262144 -profile
+  -metadata-dir /mnt/nvme0/raftof -heartbeat-ms 300 -ring-pages 262144
 
 # 스토리지 노드
 ./build/raft_blockcopy_server -addr 0.0.0.0:5050 \
@@ -268,10 +376,6 @@ grep -E 'ERROR: AddressSanitizer|runtime error' /tmp/.../node*.log
 
 `-ring-pages` 기본값은 8Mi 페이지 = **32GiB/노드**다. fallocate와
 ZERO_RANGE에 시간과 공간이 드므로 처음에는 작게 잡고 올릴 것.
-
-**`-mode leader`** (DARE 방식) 를 쓸 때는 각 스토리지 노드가 **모든** 멤버
-볼륨을 NVMe-oF로 attach해 열어둔 상태여야 한다 — 리더의 스토리지 노드가
-팔로워 볼륨에 직접 쓴다.
 
 ---
 
@@ -285,20 +389,16 @@ ZERO_RANGE에 시간과 공간이 드므로 처음에는 작게 잡고 올릴 �
 | `-cluster SPEC` | (필수) | `id@raft_addr@device_path@storage_host` 쉼표 구분 |
 | `-metadata-dir DIR` | `.` | 링 파일 위치 |
 | `-heartbeat-ms N` | 300 | 하트비트 주기. election timeout은 이것의 20~30배 |
-| `-mode destination\|leader` | destination | 복제 정책 |
 | `-ring-pages N` | 8388608 (32GiB) | 링 크기 (4KiB 페이지) |
 | `-identity-pba` | off | **테스트 전용.** FIEMAP 대신 논리==물리 |
-| `-profile` | off | 서브스테이지 프로파일링 (apply-timed에 필요) |
 | `-loop-sleep-us N` | 200 | 메인 루프 바퀴당 대기. `0` = 원본과 같은 스핀 |
 | `-log-trim N` | 8192 | in-memory 로그 벡터 트리밍 임계값. `0` = 안 함 |
-| `-ae-batch N` | 1000000 | `MaxAppendEntriesBatch` 상한 |
-| `-ae-batch-bytes N` | 5GiB | 라운드당 바이트 상한 |
 | `-debug` | off | 1초 간격 상태 덤프 |
 
 **`raft_blockcopy_server`**: `-addr` (기본 `0.0.0.0:5050`),
 `-devices` (쉼표 구분, 클러스터 인덱스 순서), `-copy-workers` (기본 nproc, 최대 16)
 
-**`raft_client`**: `-addrs`, `-op apply|apply-timed|echo|commit-index|hash|ae-stats`,
+**`raft_client`**: `-addrs`, `-op apply|echo|commit-index|hash`,
 `-n`, `-size`, `-batch`, `-at-count`, `-timeout-s`
 
 ---

@@ -11,7 +11,7 @@ DECISIONS.md §X "헤더에 구현을 남기는 유일한 이유들 (R0)" 에 �
 | 심볼 | 언제 도는가 |
 |---|---|
 | `Server::start` → `main_loop` | 상시 스레드 3개(main / apply / slot GC)를 띄운다. **읽기는 여기서 시작하는 것이 빠르다** |
-| `Server::apply` / `apply_timed` | 리더가 클라이언트 명령을 받는 경로 |
+| `Server::apply` | 리더가 클라이언트 명령을 받는 경로 |
 | `Server::handle_append_entries_request` | 팔로워가 복제를 받는 경로 |
 | `Server::advance_commit_index` | 커밋 판정 (리더의 `main_loop`가 매 바퀴 호출) |
 
@@ -29,8 +29,8 @@ DECISIONS.md §X "헤더에 구현을 남기는 유일한 이유들 (R0)" 에 �
 - `raft_state.h` 는 `CachedFD` 를 **전방 선언으로만** 안다. 완전한 타입이
   필요한 `.cpp` 만 `blockio/cached_fd.h` 를 include한다. 되돌리면 core TU
   전부가 그 헤더를 파싱한다.
-- `raft_basics.h` 는 **`.cpp` 를 가지면 안 된다.** `elapsed_ns` 는 Apply 한 번에
-  수십 번, `put_u64_le` 는 엔트리당 4번 불리는 핫패스다.
+- `raft_basics.h` 는 **`.cpp` 를 가지면 안 된다.** `put_u64_le` 는 엔트리당
+  4번 불리는 핫패스다.
 - 락은 `Server::mu` 하나가 `raft`·`ring` 상태 전부를 보호한다. 전송 구현체
   내부 락과 `workers.inflight_mu` 는 **항상 `mu` 밖에서** 잡는다.
 

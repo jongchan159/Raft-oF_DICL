@@ -81,7 +81,6 @@ public:
                           const std::vector<uint64_t> &pba_dsts,
                           const std::vector<uint64_t> &nbytes,
                           int src_dev, int dst_dev,
-                          int64_t *out_copy_ns,
                           std::string *out_error) override;
 
 private:

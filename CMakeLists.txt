@@ -7,6 +7,20 @@
 #   cmake --build build-cmake -j
 #   cd build-cmake && ctest --output-on-failure
 #
+# gdb용 디버그 빌드는 build-cmake/(Release)를 건드리지 않고 별도 디렉터리에 짓는다.
+# 빌드 타입을 명시하면 아래 Release 기본값을 덮는다:
+#
+#   cmake -S . -B build-cmake-debug  -DCMAKE_BUILD_TYPE=Debug           # -O0 -g
+#   cmake -S . -B build-cmake-reldbg -DCMAKE_BUILD_TYPE=RelWithDebInfo  # -O2 -g -DNDEBUG
+#
+# build/ 와 build-cmake/ 처럼 디버그 디렉터리도 빌드 시스템별로 이름이 갈린다
+# (build.sh는 build-debug/ 와 build-reldbg/ 를 쓴다). 같은 디렉터리를 공유하면
+# build.sh가 떨군 바이너리와 CMake 빌드 트리가 서로를 덮어쓴다.
+#
+# build.sh의 debug/reldbg 타깃과 같은 것이고, ctest도 그 디렉터리 바이너리로
+# 돈다 (아래 e2e 테스트가 BIN을 빌드 디렉터리로 넘긴다). 둘 중 무엇을 쓸지는
+# README §2 "디버그 빌드 (gdb)" 참고 -- 요약하면 타이밍이 걸린 문제는 reldbg.
+#
 # build.sh와 다른 점은 오직 "같은 소스를 두 번 컴파일하지 않는다"는 것이다.
 # build.sh는 rpcproto.pb.cc(5,502줄)를 all에서 4번, core/를 2번 컴파일한다.
 #
@@ -108,7 +122,6 @@ find_package(Threads REQUIRED)
 # ---------------------------------------------------------------------------
 set(CORE_SRCS
     core/src/raft_ring_helpers.cpp
-    core/src/raft_diagnostics.cpp
     core/src/raft_persist.cpp
     core/src/raft_pba.cpp
     core/src/raft_commit.cpp
@@ -269,7 +282,6 @@ add_executable(raft_unit_tests
     tests/test_ring_helpers.cpp
     tests/test_extent_map.cpp
     tests/test_ae_bookkeeping.cpp
-    tests/test_apply_timings.cpp
     tests/test_election.cpp
 )
 target_include_directories(raft_unit_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
@@ -315,12 +327,6 @@ add_test(NAME smoke_destination
                  "${CMAKE_CURRENT_BINARY_DIR}/e2e-smoke" 200)
 set_tests_properties(smoke_destination PROPERTIES
                      ENVIRONMENT "${_e2e_env}" RUN_SERIAL TRUE TIMEOUT 300)
-
-add_test(NAME smoke_leader_side
-         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/smoke_test.sh
-                 "${CMAKE_CURRENT_BINARY_DIR}/e2e-leader" 200)
-set_tests_properties(smoke_leader_side PROPERTIES
-                     ENVIRONMENT "${_e2e_env};MODE=leader" RUN_SERIAL TRUE TIMEOUT 300)
 
 # 링 wrap-around + slot GC 스트레스 (4MiB 링에 12MB = 링 3바퀴)
 add_test(NAME smoke_ring_wrap

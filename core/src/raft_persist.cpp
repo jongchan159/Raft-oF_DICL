@@ -14,17 +14,12 @@ namespace nvmeof_raft {
  *
  * "writes Raft metadata and new log entries directly to the NVMe-oF
  *  storage device, bypassing the filesystem layer entirely. Log entries
- *  are written via DirectWrite at the FIEMAP-resolved device PBA...
- *  Returns nvmeNs: total wall time spent inside O_DIRECT WriteAtFile +
- *  Fdatasync syscalls (the actual NVMe-oF traffic)."
+ *  are written via DirectWrite at the FIEMAP-resolved device PBA."
  * ============================================================ */
-int64_t Server::persist_circular(bool write_log, int n_new_entries) {
+void Server::persist_circular(bool write_log, int n_new_entries) {
     if (n_new_entries == 0 && write_log) {
         n_new_entries = static_cast<int>(raft.log.size()) - 1;
     }
-
-    int64_t nvme_ns = 0;
-    int flush_count = 0;
 
     if (write_log && n_new_entries > 0) {
         int start = static_cast<int>(raft.log.size()) - n_new_entries;
@@ -57,10 +52,7 @@ int64_t Server::persist_circular(bool write_log, int n_new_entries) {
             if (run_buffer.empty()) {
                 return;
             }
-            auto t_io = clock_type::now();
-            flush_count++;
             io.cached_fd->write_at_file(run_buffer.data(), run_buffer.size(), run_off);
-            nvme_ns += elapsed_ns(t_io);
             run_off += static_cast<int64_t>(run_buffer.size());
             run_buffer.clear();
         };
@@ -147,7 +139,6 @@ int64_t Server::persist_circular(bool write_log, int n_new_entries) {
 
             if (raft.state == ServerState::Leader) {
                 ring.log_slot_map[log_idx] = SlotRecord{start_slot, needed, LogEntryState::Using};
-                trace_slot_map('I', log_idx);
             }
         }
 
@@ -188,9 +179,7 @@ int64_t Server::persist_circular(bool write_log, int n_new_entries) {
 
         /* Header lives at logical offset 0 (RING_OFFSET == HEADER_SIZE
          * -- ring slot 0은 헤더 다음부터 시작, 원본 주석 그대로) */
-        auto t_hdr_io = clock_type::now();
         io.cached_fd->write_at_file(header.data(), header.size(), 0);
-        nvme_ns += elapsed_ns(t_hdr_io);   /* header 작성 시 writeI/O에 추가 */
 
         ring.persisted_init = true;
         ring.persisted_term = cur_term;
@@ -199,12 +188,8 @@ int64_t Server::persist_circular(bool write_log, int n_new_entries) {
 
     if ((write_log && n_new_entries > 0) || write_header) {
         /* 3-2. fdatasync */
-        auto t_sync_io = clock_type::now();
         io.cached_fd->fdatasync();
-        nvme_ns += elapsed_ns(t_sync_io);
     }
-
-    return nvme_ns;
 }
 
 } /* namespace nvmeof_raft */

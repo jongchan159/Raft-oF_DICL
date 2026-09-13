@@ -19,8 +19,12 @@
 #   ./build.sh asan             raft_node_asan (ASan+UBSan, -O1 -g)
 #                               스레드 수명 버그(fire-and-forget AE 워커가
 #                               호출자 스택을 참조하던 문제)를 이걸로 잡았다.
+#   ./build.sh debug            build-debug/  에 전체 바이너리 (-O0 -g, gdb용)
+#   ./build.sh reldbg           build-reldbg/ 에 전체 바이너리 (-O2 -g)
+#                               둘의 용도 구분은 아래 debug/reldbg 타깃 주석과
+#                               README §2 "디버그 빌드 (gdb)" 참고.
 #   ./build.sh regen-proto      .proto를 수정한 뒤 protoc으로 재생성
-#   ./build.sh clean            build/ 삭제
+#   ./build.sh clean            build/, build-debug/, build-reldbg/ 삭제
 #
 # .proto 파일을 안 바꿨다면 protoc 설치 자체가 필요 없음 --
 # 이미 있는 proto/rpcproto.pb.{h,cc}를 그대로 씀.
@@ -50,7 +54,6 @@ TESTS_DIR=tests
 # election, commit 판단 -- 네트워크 계층에 의존하지 않음)
 CORE_SRCS=(
     "$CORE_DIR/raft_ring_helpers.cpp"
-    "$CORE_DIR/raft_diagnostics.cpp"
     "$CORE_DIR/raft_persist.cpp"
     "$CORE_DIR/raft_pba.cpp"
     "$CORE_DIR/raft_commit.cpp"
@@ -118,7 +121,14 @@ else
     PB_LIBS="-lprotobuf"
 fi
 
-CXXFLAGS=(-std=$STD -Wall -Wextra -O2 "${INCLUDES[@]}")
+# 최적화/디버그 수준. 기본은 -O2 (기존 동작 그대로)이고, debug/reldbg 타깃이
+# 아래에서 이 배열과 BUILD_DIR을 덮어쓴다. CXXFLAGS를 함수로 조립하는 이유는
+# OPT_FLAGS가 바뀐 뒤 다시 불러야 하기 때문이다.
+OPT_FLAGS=(-O2)
+set_cxxflags() {
+    CXXFLAGS=(-std=$STD -Wall -Wextra "${OPT_FLAGS[@]}" "${INCLUDES[@]}")
+}
+set_cxxflags
 LDFLAGS=(-lpthread)
 
 # 단일 바이너리 빌드 헬퍼: build_bin <out> <src...>
@@ -133,8 +143,33 @@ build_bin() {
 
 TARGET="${1:-}"
 
+# 디버그 빌드 타깃. 아래 mkdir/clean보다 **앞에서** 가로채야 한다 -- BUILD_DIR을
+# 바꾼 뒤에 mkdir이 돌아야 하기 때문. 두 타깃 모두 build_all과 동일하게 전체
+# 바이너리를 짓되, 산출물은 build/가 아닌 전용 디렉터리로 보낸다 (Release 빌드를
+# 덮어쓰지 않는다).
+#
+#   debug  -O0 -g  : 한 줄씩 스텝, 변수 관찰. <optimized out>이 없다.
+#   reldbg -O2 -g  : Release와 같은 타이밍. 락 순서 역전/경합처럼 -O0에서는
+#                    타이밍이 벌어져 재현되지 않는 버그, 크래시 백트레이스용.
+#                    이 프로젝트는 ns 단위 ApplyTimings가 본체라 -O0 수치는
+#                    의미가 없다 -- 타이밍이 걸린 문제는 반드시 이쪽으로.
+case "$TARGET" in
+    debug)
+        BUILD_DIR=build-debug
+        OPT_FLAGS=(-O0 -g -fno-omit-frame-pointer)
+        set_cxxflags
+        TARGET=all
+        ;;
+    reldbg)
+        BUILD_DIR=build-reldbg
+        OPT_FLAGS=(-O2 -g -fno-omit-frame-pointer)
+        set_cxxflags
+        TARGET=all
+        ;;
+esac
+
 if [[ "$TARGET" == "clean" ]]; then
-    rm -rf "$BUILD_DIR"
+    rm -rf build build-debug build-reldbg
     echo "[build.sh] cleaned"
     exit 0
 fi

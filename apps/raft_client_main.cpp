@@ -10,7 +10,6 @@
  *               -op apply -n 100 -size 512 -batch 10
  *   raft_client -addrs ... -op hash -at-count 100
  *   raft_client -addrs ... -op commit-index
- *   raft_client -addrs ... -op ae-stats
  * ============================================================ */
 #include "raft_tcp_transport.h"
 #include "raft_cli.h"
@@ -55,11 +54,9 @@ void usage(const char *prog) {
       "usage: %s -addrs host:port[,host:port...] -op OP [options]\n"
       "\n"
       "  -op apply         apply -n commands of -size bytes, -batch per RPC\n"
-      "  -op apply-timed   same, but print the ApplyTimings breakdown\n"
       "  -op echo          codec/network round-trip only (no log write)\n"
       "  -op commit-index  print each node's commitIndex\n"
       "  -op hash          print each node's state machine hash/count\n"
-      "  -op ae-stats      print leader AE batch counters\n"
       "\n"
       "  -n N        total commands (default 10)\n"
       "  -size N     bytes per command (default 512)\n"
@@ -160,7 +157,7 @@ int main(int argc, char **argv) {
 
     try {
         /* ---- 노드별 조회 op은 리더 탐색 없이 전부에 물어본다 ---- */
-        if (op == "commit-index" || op == "hash" || op == "ae-stats") {
+        if (op == "commit-index" || op == "hash") {
             for (const auto &addr : addrs) {
                 std::shared_ptr<RpcClientHandle> h;
                 try {
@@ -187,14 +184,6 @@ int main(int argc, char **argv) {
                                 static_cast<unsigned long long>(rsp.count()),
                                 rsp.err().empty() ? "" : "  err=",
                                 rsp.err().c_str());
-                } else {
-                    rpcproto::ClientGetAEBatchStatsRequest req;
-                    auto rsp = call<rpcproto::ClientGetAEBatchStatsRequest,
-                                    rpcproto::ClientGetAEBatchStatsResponse>(
-                        h.get(), rpc_method::kClientGetAEBatchStats, req);
-                    std::printf("%-22s ae_count=%llu ae_entries=%llu\n", addr.c_str(),
-                                static_cast<unsigned long long>(rsp.ae_count()),
-                                static_cast<unsigned long long>(rsp.ae_entries()));
                 }
             }
             return 0;
@@ -220,7 +209,7 @@ int main(int argc, char **argv) {
             return 0;
         }
 
-        /* ---- apply / apply-timed ---- */
+        /* ---- apply ---- */
         Leader leader = find_leader(addrs, timeout_s);
         std::printf("leader: %s (probe applied %llu command)\n",
                     addrs[leader.index].c_str(),
@@ -235,39 +224,7 @@ int main(int argc, char **argv) {
         while (remaining > 0) {
             int this_batch = (remaining < batch) ? remaining : batch;
 
-            if (op == "apply-timed") {
-                rpcproto::ClientApplyTimedRequest req;
-                for (int k = 0; k < this_batch; k++) {
-                    req.add_commands(payload.data(), payload.size());
-                }
-                auto rsp = call<rpcproto::ClientApplyTimedRequest,
-                                rpcproto::ClientApplyTimedResponse>(
-                    leader.handle.get(), rpc_method::kClientApplyTimed, req);
-                if (rsp.busy()) {
-                    busy_retries++;
-                    std::this_thread::sleep_for(
-                        std::chrono::milliseconds(rsp.retry_after_ms() > 0
-                                                   ? rsp.retry_after_ms() : 5));
-                    continue;
-                }
-                if (!rsp.err().empty()) {
-                    throw std::runtime_error("apply-timed: " + rsp.err());
-                }
-                std::printf("  batch=%d total=%.1fus LHandler=%.1f LPersist=%.1f "
-                            "AENet=%.1f FHandler=%.1f ReplNet=%.1f StorageIO=%.1f "
-                            "QuorumWait=%.1f Mutex=%.1f CommitWait=%.1f\n",
-                            this_batch,
-                            rsp.total_nanos() / 1000.0,
-                            rsp.l_handler_nanos() / 1000.0,
-                            rsp.l_persist_nanos() / 1000.0,
-                            rsp.ae_net_nanos() / 1000.0,
-                            rsp.f_handler_nanos() / 1000.0,
-                            rsp.repl_net_nanos() / 1000.0,
-                            rsp.replication_nanos() / 1000.0,
-                            rsp.quorum_wait_nanos() / 1000.0,
-                            rsp.mutex_nanos() / 1000.0,
-                            rsp.commit_wait_nanos() / 1000.0);
-            } else {
+            {
                 rpcproto::ClientApplyRequest req;
                 for (int k = 0; k < this_batch; k++) {
                     req.add_commands(payload.data(), payload.size());

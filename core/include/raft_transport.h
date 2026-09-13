@@ -79,8 +79,7 @@ public:
  * src_dev / dst_dev는 스토리지 노드가 -devices 로 받은 목록의 인덱스이며
  * **클러스터 인덱스와 같은 순서**다.
  *
- * 반환 true: *out_copy_ns 에 스토리지 노드가 보고한 내부 pread+pwrite
- *            시간이 담긴다 (ApplyTimings의 StorageIO).
+ * 반환 true: 요청한 청크들이 스토리지 노드에서 복사되었다.
  * 반환 false: *out_error 에 사람이 읽을 이유가 담긴다. 커넥션 수준 오류와
  *            스토리지 노드의 애플리케이션 수준 실패를 구분하지 않는다 --
  *            호출부(do_pba_copy)가 어느 쪽이든 fail-soft로 이 배치를
@@ -97,7 +96,6 @@ public:
                                   const std::vector<uint64_t> &pba_dsts,
                                   const std::vector<uint64_t> &nbytes,
                                   int src_dev, int dst_dev,
-                                  int64_t *out_copy_ns,
                                   std::string *out_error) = 0;
 };
 

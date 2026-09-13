@@ -110,34 +110,12 @@ void Server::init_storage() {
     raft.log.push_back(Entry{});   /* sentinel: term 0, command 비어있음 */
     init_slot_states();
 
-    /* ---- 헤더 복구 ----
-     * File header layout (512B), persist_circular와 동일:
-     *   [ 0: 7] currentTerm   [ 8:15] votedFor
-     *   [16:23] tailLogIndex  [24:31] tailSlot
-     *   [32:39] commitIndex   [40:47] lastApplied */
-    /* 헤더에서 복구하는 것은 term/votedFor **둘뿐이다.**
-     * [수정-8] tail_log_index / tail_slot / commit_index / last_applied는
-     * 복구하지 않는다 (원본 restoreCircular과 동일). 복구하면 빈 로그와
-     * 어긋나 재시작 노드가 첫 AppendEntries에서 깨진다. 이 결정이 팔로워
-     * 재시작 catch-up 불가의 원인 (a)다 -- DECISIONS.md D8, U5 */
-    try {
-        std::vector<uint8_t> hdr = io.cached_fd->read_at_file(HEADER_SIZE, 0);
-        uint64_t h_term = get_u64_le(hdr.data() + file_hdr::kOffCurrentTerm);
-        uint64_t h_vote = get_u64_le(hdr.data() + file_hdr::kOffVotedFor);
-
-        raft.current_term = h_term;
-        set_voted_for(h_vote);
-        if (h_term != 0 || h_vote != 0) {
-            ring.persisted_init = true;
-            ring.persisted_term = h_term;
-            ring.persisted_voted_for = h_vote;
-        }
-    } catch (const std::exception &) {
-        /* 헤더 읽기 실패(새 파일 등) -> term/vote는 0에서 시작 */
-        raft.current_term = 0;
-        set_voted_for(0);
-        ring.persisted_init = false;
-    }
+    /* 재시작 복구는 이 버전에 없다. 원본은 헤더(논리 오프셋 0, 512B)에서
+     * current_term / voted_for **둘만** 복구한다 (tail/commit/applied는
+     * 복구하지 않는다 -- DECISIONS.md D8). 항상 새 상태로 시작한다. */
+    raft.current_term = 0;
+    set_voted_for(0);
+    ring.persisted_init = false;
 
     /* 인덱스/슬롯은 항상 초기 상태 (원본과 동일) */
     ring.tail_log_index = 1;   /* 실제 엔트리는 인덱스 1부터 (위 주석 참고) */

@@ -12,7 +12,7 @@ namespace nvmeof_raft {
 /* ============================================================
  * commands 변환 템플릿
  *
- * ClientApplyRequest / ClientApplyTimedRequest / ClientEchoRequest는 셋 다
+ * ClientApplyRequest / ClientEchoRequest는 둘 다
  * `repeated bytes commands = 1` 하나뿐인 동일한 형태다. 리팩토링 전에는
  * 이 왕복 변환이 **세 번 글자 그대로 복사**되어 있었다.
  * ============================================================ */
@@ -176,38 +176,19 @@ inline void append_entries_response_to_proto(const AppendEntriesResponse &g,
                                               rpcproto::AppendEntriesResponse *p) {
     p->set_term(g.rpc.term);
     p->set_success(g.success);
-    p->set_conflict_term(g.conflict_term);
-    p->set_conflict_index(g.conflict_index);
-    p->set_handler_duration_nanos(g.handler_duration_ns);
-    p->set_write_pba_rt_nanos(g.write_pba_rt_ns);
-    p->set_storage_copy_nanos(g.storage_copy_ns);
-    /* 팔로워 서브스테이지: 팔로워가 이미 채워놓는데 와이어 필드가 없어서
-     * 리더의 ReplSample.handle_ae_*가 항상 0이던 것 */
-    p->set_handle_ae_lock_wait_nanos(g.handle_ae_lock_wait_ns);
-    p->set_handle_ae_pre_nanos(g.handle_ae_pre_ns);
-    p->set_handle_ae_lock_wait2_nanos(g.handle_ae_lock_wait2_ns);
-    p->set_handle_ae_post_nanos(g.handle_ae_post_ns);
-    p->set_handle_ae_persist_nanos(g.handle_ae_persist_ns);
+    /* .proto에는 되감기 힌트(conflict_*)와 계측 필드가 그대로 남아 있다.
+     * 와이어 포맷을 바꾸지 않으려고 채우지만 않는다 -- 이 버전은 그 둘을
+     * 쓰지 않는다. */
 }
 
 inline void append_entries_response_from_proto(const rpcproto::AppendEntriesResponse &p,
                                                 AppendEntriesResponse &g) {
     g.rpc.term = p.term();
     g.success = p.success();
-    g.conflict_term = p.conflict_term();
-    g.conflict_index = p.conflict_index();
-    g.handler_duration_ns = p.handler_duration_nanos();
-    g.write_pba_rt_ns = p.write_pba_rt_nanos();
-    g.storage_copy_ns = p.storage_copy_nanos();
-    g.handle_ae_lock_wait_ns = p.handle_ae_lock_wait_nanos();
-    g.handle_ae_pre_ns = p.handle_ae_pre_nanos();
-    g.handle_ae_lock_wait2_ns = p.handle_ae_lock_wait2_nanos();
-    g.handle_ae_post_ns = p.handle_ae_post_nanos();
-    g.handle_ae_persist_ns = p.handle_ae_persist_nanos();
 }
 
 /* ============================================================
- * Conversions: ClientApply / ClientApplyTimed / ClientEcho
+ * Conversions: ClientApply / ClientEcho
  * (proto_codec.go 원본 그대로. commands는 repeated bytes -> vector<vector<uint8_t>>)
  * ============================================================ */
 
@@ -235,54 +216,6 @@ inline void client_apply_response_from_proto(const rpcproto::ClientApplyResponse
     g.retry_after_ms = p.retry_after_ms();
 }
 
-inline void client_apply_timed_request_to_proto(const ClientApplyTimedRequest &g,
-                                                 rpcproto::ClientApplyTimedRequest *p) {
-    commands_to_proto(g.commands, p);
-}
-
-inline void client_apply_timed_request_from_proto(const rpcproto::ClientApplyTimedRequest &p,
-                                                   ClientApplyTimedRequest &g) {
-    commands_from_proto(p, g.commands);
-}
-
-inline void client_apply_timed_response_to_proto(const ClientApplyTimedResponse &g,
-                                                  rpcproto::ClientApplyTimedResponse *p) {
-    p->set_err(g.error);
-    p->set_l_handler_nanos(g.l_handler_ns);
-    p->set_l_persist_nanos(g.l_persist_ns);
-    p->set_ae_net_nanos(g.ae_net_ns);
-    p->set_f_handler_nanos(g.f_handler_ns);
-    p->set_repl_net_nanos(g.repl_net_ns);
-    p->set_replication_nanos(g.replication_ns);
-    p->set_quorum_wait_nanos(g.quorum_wait_ns);
-    p->set_mutex_nanos(g.mutex_ns);
-    p->set_total_nanos(g.total_ns);
-    p->set_busy(g.busy);
-    p->set_retry_after_ms(g.retry_after_ms);
-    p->set_post_rpc_nanos(g.post_rpc_ns);
-    p->set_commit_wait_nanos(g.commit_wait_ns);
-    p->set_wg_scheduling_nanos(g.wg_scheduling_ns);
-}
-
-inline void client_apply_timed_response_from_proto(const rpcproto::ClientApplyTimedResponse &p,
-                                                    ClientApplyTimedResponse &g) {
-    g.error = p.err();
-    g.l_handler_ns = p.l_handler_nanos();
-    g.l_persist_ns = p.l_persist_nanos();
-    g.ae_net_ns = p.ae_net_nanos();
-    g.f_handler_ns = p.f_handler_nanos();
-    g.repl_net_ns = p.repl_net_nanos();
-    g.replication_ns = p.replication_nanos();
-    g.quorum_wait_ns = p.quorum_wait_nanos();
-    g.mutex_ns = p.mutex_nanos();
-    g.total_ns = p.total_nanos();
-    g.busy = p.busy();
-    g.retry_after_ms = p.retry_after_ms();
-    g.post_rpc_ns = p.post_rpc_nanos();
-    g.commit_wait_ns = p.commit_wait_nanos();
-    g.wg_scheduling_ns = p.wg_scheduling_nanos();
-}
-
 inline void client_echo_request_to_proto(const ClientEchoRequest &g,
                                           rpcproto::ClientEchoRequest *p) {
     commands_to_proto(g.commands, p);
@@ -304,10 +237,10 @@ inline void client_echo_response_from_proto(const rpcproto::ClientEchoResponse &
 }
 
 /* ============================================================
- * Conversions: Client GetCommitIndex / GetHash / GetAEBatchStats (cold)
+ * Conversions: Client GetCommitIndex / GetHash (cold)
  * ============================================================ */
 
-/* ClientGetCommitIndexRequest / ClientGetAEBatchStatsRequest는 필드가 없는
+/* ClientGetCommitIndexRequest는 필드가 없는
  * 빈 메시지다. 그 no-op 변환 함수 4개가 있었으나 호출부가 하나도 없어
  * 삭제했다 -- 서버는 body를 파싱하지 않고 바로 핸들러를 부르고, 클라이언트는
  * 빈 body를 그대로 보낸다. */
@@ -348,19 +281,6 @@ inline void client_get_hash_response_from_proto(const rpcproto::ClientGetHashRes
     g.error = p.err();
 }
 
-inline void client_get_ae_batch_stats_response_to_proto(
-    const ClientGetAEBatchStatsResponse &g, rpcproto::ClientGetAEBatchStatsResponse *p) {
-    p->set_ae_count(g.ae_count);
-    p->set_ae_entries(g.ae_entries);
-    p->set_err(g.error);
-}
-
-inline void client_get_ae_batch_stats_response_from_proto(
-    const rpcproto::ClientGetAEBatchStatsResponse &p, ClientGetAEBatchStatsResponse &g) {
-    g.ae_count = p.ae_count();
-    g.ae_entries = p.ae_entries();
-    g.error = p.err();
-}
 
 } /* namespace nvmeof_raft */
 

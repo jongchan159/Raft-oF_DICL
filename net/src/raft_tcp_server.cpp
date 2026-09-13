@@ -10,7 +10,7 @@
 
 /* net/include/raft_tcp_server.h 의 구현. 선언은 그 헤더를 볼 것.
  *
- * **이 파일만 core 심볼을 필요로 한다** (Server::apply / apply_timed /
+ * **이 파일만 core 심볼을 필요로 한다** (Server::apply /
  * handle_append_entries_request / handle_request_vote_request / prof).
  * 그래서 NET_SRCS(= raft_node 전용 그룹)에 들어가고, raft_client 나
  * raft_blockcopy_server 가 실수로 이 그룹을 링크하면 즉시 undefined 가 난다.
@@ -45,39 +45,6 @@ bool dispatch_client_method(const std::string &method,
 
         rpcproto::ClientApplyResponse proto_rsp;
         client_apply_response_to_proto(rsp, &proto_rsp);
-        serialize(proto_rsp);
-        return true;
-    }
-
-    if (method == rpc_method::kClientApplyTimed) {
-        rpcproto::ClientApplyTimedRequest proto_req;
-        proto_req.ParseFromArray(body.data(), static_cast<int>(body.size()));
-        ClientApplyTimedRequest req;
-        client_apply_timed_request_from_proto(proto_req, req);
-
-        bool busy = false;
-        ApplyTimings t;
-        ApplyResult res = server->apply_timed(req.commands, &t, &busy);
-
-        ClientApplyTimedResponse rsp;
-        rsp.error = res.error;
-        rsp.busy = busy;
-        rsp.retry_after_ms = busy ? apply_busy_retry_after_ms() : 0;
-        rsp.l_handler_ns = t.l_handler_ns;
-        rsp.l_persist_ns = t.l_persist_ns;
-        rsp.ae_net_ns = t.ae_net_ns;
-        rsp.f_handler_ns = t.f_handler_ns;
-        rsp.repl_net_ns = t.repl_net_ns;
-        rsp.replication_ns = t.storage_io_ns;   /* 원본 Replication = StorageIO */
-        rsp.quorum_wait_ns = t.quorum_wait_ns;
-        rsp.mutex_ns = t.mutex_ns;
-        rsp.total_ns = t.total_ns;
-        rsp.post_rpc_ns = t.post_rpc_ns;
-        rsp.commit_wait_ns = t.commit_wait_ns;
-        rsp.wg_scheduling_ns = t.wg_scheduling_ns;
-
-        rpcproto::ClientApplyTimedResponse proto_rsp;
-        client_apply_timed_response_to_proto(rsp, &proto_rsp);
         serialize(proto_rsp);
         return true;
     }
@@ -144,16 +111,6 @@ bool dispatch_client_method(const std::string &method,
         }
         rpcproto::ClientGetHashResponse proto_rsp;
         client_get_hash_response_to_proto(rsp, &proto_rsp);
-        serialize(proto_rsp);
-        return true;
-    }
-
-    if (method == rpc_method::kClientGetAEBatchStats) {
-        ClientGetAEBatchStatsResponse rsp;
-        rsp.ae_count = server->prof.ae_count.load();
-        rsp.ae_entries = server->prof.ae_entries.load();
-        rpcproto::ClientGetAEBatchStatsResponse proto_rsp;
-        client_get_ae_batch_stats_response_to_proto(rsp, &proto_rsp);
         serialize(proto_rsp);
         return true;
     }

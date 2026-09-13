@@ -182,38 +182,11 @@ void Server::become_leader() {
         ring.gc_up_to = 0;
         ring.gc_has_run = false;
 
-        /* "Load any deferred entries (follower path: Command was nil).
-         *  As leader we need Commands populated for state machine apply
-         *  and for building EntryMeta for replication." */
-        int loaded = 0;
-        for (size_t i = 1; i < raft.log.size(); i++) {
-            Entry &e = raft.log[i];
-            if (e.command.empty() && e.ring_slot != 0) {
-                try {
-                    ReadEntryResult r = read_entry_direct(e.ring_slot);
-                    e.command = std::move(r.entry.command);
-                    e.ring_slot = 0;
-                    loaded++;
-                } catch (const std::exception &) {
-                    /* 원본: 실패 시 경고 로그만 남기고 계속 진행 */
-                    continue;
-                }
-            }
-        }
-        (void)loaded;
-
-        /* "Apply any committed but unapplied entries now that Commands
-         *  are loaded." */
-        uint64_t oldest = oldest_log_index();
-        while (raft.last_applied >= oldest &&
-               raft.last_applied < ring.tail_log_index &&
-               raft.last_applied <= raft.commit_index) {
-            Entry &log_entry = raft.log[log_slice(raft.last_applied)];
-            if (!log_entry.command.empty()) {
-                statemachine->apply(log_entry.command);
-            }
-            raft.last_applied++;
-        }
+        /* 원본에는 여기에 "팔로워로서 받아 둔 deferred 엔트리(command가
+         * 비어 있는 것)를 device에서 읽어 채우고, 커밋됐지만 아직 apply
+         * 안 된 것을 지금 apply한다"는 승격 경로가 있다. 팔로워가 리더로
+         * 올라가는 상황은 이 버전의 범위 밖이라 뺐다 -- 갓 기동한
+         * 클러스터의 첫 선거에서는 채울 엔트리가 없다. */
 
         /* "No-op entry (Raft paper Section 8)" */
         Entry noop;
@@ -254,7 +227,7 @@ void Server::heartbeat() {
      * 리더는 timeout()을 아예 호출하지 않으므로 election_timeout이
      * 만료돼도 강등되지 않는다. */
     mu.unlock();
-    append_entries(nullptr);
+    append_entries();
 }
 
 /* ============================================================

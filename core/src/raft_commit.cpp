@@ -31,31 +31,14 @@ constexpr int kApplyBatchLimit = 64;
  *  where a pre-election entry gets committed without a current-term
  *  entry confirming leadership."
  *
- * 계측은 prof.enabled(=-profile 플래그)가 켜져 있을 때만 값을 기록한다.
- * 꺼져 있어도 clock_type::now() 호출 자체는 남아 있다 -- 원본과 같은
- * 구조이며, 실측에서 유의미한 오버헤드로 나타나지 않았다.
  * Go의 defer-unlock은 함수 끝의 명시적 unlock으로 재현했다.
  * ============================================================ */
 void Server::advance_commit_index() {
-    bool profiling = prof.enabled.load() != 0;
-    auto t_call = clock_type::now();
-
     mu.lock();
-    int64_t lock_wait_ns = 0;
-    clock_type::time_point t_locked;
-    if (profiling) {
-        lock_wait_ns = elapsed_ns(t_call);
-        t_locked = clock_type::now();
-    }
-
-    int64_t quorum_ns = 0;
-    int64_t aci_sort_ns = 0;
-    int64_t aci_signal_ns = 0;
 
     /* (1) Leader: quorum 기반 commitIndex 전진 */
     if (raft.state == ServerState::Leader) {
         uint64_t last_log_index = ring.tail_log_index - 1;
-        auto t_sort = clock_type::now();
 
         std::vector<uint64_t> matches(raft.cluster.size());
         for (size_t j = 0; j < raft.cluster.size(); j++) {
@@ -65,18 +48,16 @@ void Server::advance_commit_index() {
                 matches[j] = raft.cluster[j].match_index;
             }
         }
-        /* 원본: 내림차순 정렬 후 matches[len/2]가 과반수 도달 최소값.
-         * v4 문서 6장에서 검증한 min-of-majority와 동일한 계산 */
+        /* 원본: 내림차순 정렬 후 matches[len/2]가 과반수 도달 최소값 */
         std::sort(matches.begin(), matches.end(), std::greater<uint64_t>());
         uint64_t majority_idx = matches[matches.size() / 2];
-        if (profiling) {
-            aci_sort_ns = elapsed_ns(t_sort);
-        }
 
         if (majority_idx > raft.commit_index) {
             /* §5.4.2: majorityIdx의 엔트리가 current term일 때만 전진.
              * "prevents committing entries from prior terms without a
-             *  current-term log entry to anchor them." */
+             *  current-term log entry to anchor them."
+             * become_leader의 no-op 엔트리와 한 쌍이다 -- 그쪽을 지우면
+             * 이 조건 때문에 이전 term 엔트리가 커밋되지 않는다. */
             if (majority_idx < ring.tail_log_index) {
                 uint64_t entry_term = raft.log[log_slice(majority_idx)].term;
                 if (entry_term == raft.current_term) {
@@ -85,7 +66,6 @@ void Server::advance_commit_index() {
 
                     /* "Signal committed for entries newly committed.
                      *  Non-blocking cap=1 sends; safe under s.mu." */
-                    auto t_signal = clock_type::now();
                     uint64_t oldest_c = oldest_log_index();
                     for (uint64_t idx = prev_commit + 1; idx <= majority_idx; idx++) {
                         if (idx >= oldest_c && idx < ring.tail_log_index) {
@@ -97,9 +77,6 @@ void Server::advance_commit_index() {
                                 e.signal_committed();
                             }
                         }
-                    }
-                    if (profiling) {
-                        aci_signal_ns = elapsed_ns(t_signal);
                     }
                 }
             }
@@ -116,9 +93,6 @@ void Server::advance_commit_index() {
                 used_slots = ring.ring_slots - ring.head_slot + ring.tail_slot;
             }
         }
-        /* 링 점유율이 kSlotGcTriggerPercent를 넘거나, 점유율과 무관하게
-         * kSlotGcFloorTicks 바퀴마다 한 번은 GC를 깨운다 (후자는 트래픽이
-         * 적어 점유율이 안 오르는 동안에도 floor를 전진시키기 위한 것). */
         if (used_slots * 100 > ring.ring_slots * kSlotGcTriggerPercent ||
             workers.slot_gc_tick % kSlotGcFloorTicks == 0) {
             std::lock_guard<std::mutex> gc_lk(workers.slot_gc_notify_mu);
@@ -127,17 +101,7 @@ void Server::advance_commit_index() {
         }
     }
 
-    if (profiling) {
-        quorum_ns = elapsed_ns(t_locked);
-        prof.aci_lock_wait_ns.store(lock_wait_ns);
-        prof.aci_quorum_ns.store(quorum_ns);
-        prof.aci_sort_ns.store(aci_sort_ns);
-        prof.aci_signal_ns.store(aci_signal_ns);
-        /* prof.aci_slot_gc_ns, prof.aci_backpres_ns는 do_slot_gc()가 씀 */
-    }
-
-    /* Apply는 applyWorker가 비동기로 수행. 깨우기만 함.
-     * Non-blocking cap=1 채널 -> bool 플래그로 재현 */
+    /* Apply는 applyWorker가 비동기로 수행. 깨우기만 함. */
     if (raft.state == ServerState::Leader) {
         std::lock_guard<std::mutex> apply_lk(workers.apply_notify_mu);
         workers.apply_notify_pending = true;
@@ -159,9 +123,6 @@ void Server::apply_pending() {
     if (raft.state != ServerState::Leader) {
         return;
     }
-
-    bool profiling = prof.enabled.load() != 0;
-    auto t_apply = clock_type::now();
 
     int applied = 0;
     uint64_t oldest = oldest_log_index();
@@ -203,10 +164,6 @@ void Server::apply_pending() {
             applied = 0;
         }
     }
-
-    if (profiling) {
-        prof.aci_apply_loop_ns.store(elapsed_ns(t_apply));
-    }
 }
 
 /* ============================================================
@@ -220,9 +177,6 @@ void Server::do_slot_gc() {
     if (raft.state != ServerState::Leader) {
         return;
     }
-    bool profiling = prof.enabled.load() != 0;
-    auto t_gc = clock_type::now();
-
     uint64_t last_log_index = ring.tail_log_index - 1;
     uint64_t min_match = last_log_index;
     for (size_t j = 0; j < raft.cluster.size(); j++) {
@@ -239,7 +193,6 @@ void Server::do_slot_gc() {
         auto it = ring.log_slot_map.find(idx);
         if (it != ring.log_slot_map.end()) {
             ring.log_slot_map.erase(it);
-            trace_slot_map('F', idx);
             freed = true;
         }
     }
@@ -248,26 +201,12 @@ void Server::do_slot_gc() {
 
     if (freed) {
         recompute_head_slot();
-        if (profiling) {
-            auto t_bp = clock_type::now();
-            ring_not_full.notify_all();   /* Go의 Broadcast() 대응 */
-            prof.aci_backpres_ns.store(elapsed_ns(t_bp));
-        } else {
-            ring_not_full.notify_all();
-        }
+        ring_not_full.notify_all();   /* Go의 Broadcast() 대응 */
     }
 
     /* 슬롯을 해제한 것과 같은 기준으로 in-memory log 벡터도 잘라낸다
      * (아래 trim_log_locked 주석 참고). */
     trim_log_locked(min_match);
-
-    if (profiling) {
-        int64_t gc_ns = elapsed_ns(t_gc);
-        if (freed) {
-            gc_ns -= prof.aci_backpres_ns.load();
-        }
-        prof.aci_slot_gc_ns.store(gc_ns);
-    }
 }
 
 /* ============================================================

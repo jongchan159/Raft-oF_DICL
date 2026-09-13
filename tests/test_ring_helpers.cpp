@@ -243,6 +243,4 @@ TEST_CASE("한 프로세스에 링 크기가 다른 Server를 여러 개 만들 
     /* 기본값은 원본과 동일한 8Mi 페이지(32GiB) */
     auto def = std::make_unique<Server>();
     CHECK(def->ring.num_pages == DEFAULT_NUM_PAGES);
-    CHECK(def->max_ae_batch == DEFAULT_MAX_AE_BATCH);
-    CHECK(def->max_ae_batch_bytes == DEFAULT_MAX_AE_BATCH_BYTES);
 }

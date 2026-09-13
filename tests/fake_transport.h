@@ -70,15 +70,13 @@ public:
 
 class FakeBlockCopyClient : public BlockCopyClient {
 public:
-    /* copy_ns로 돌려줄 값. fail_with가 비어 있지 않으면 그 메시지로 실패한다. */
-    int64_t copy_ns = 0;
+    /* fail_with가 비어 있지 않으면 그 메시지로 실패한다. */
     std::string fail_with;
 
     bool write_pba_batch(const std::vector<uint64_t> &pba_srcs,
                           const std::vector<uint64_t> &pba_dsts,
                           const std::vector<uint64_t> &nbytes,
                           int src_dev, int dst_dev,
-                          int64_t *out_copy_ns,
                           std::string *out_error) override {
         std::lock_guard<std::mutex> lk(mu);
         calls++;
@@ -91,7 +89,6 @@ public:
             *out_error = fail_with;
             return false;
         }
-        *out_copy_ns = copy_ns;
         return true;
     }
 

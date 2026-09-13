@@ -39,7 +39,6 @@ CMD_SIZE="${CMD_SIZE:-512}"
 BATCH="${BATCH:-10}"
 RING_PAGES="${RING_PAGES:-4096}"        # 4096 * 4096B = 16MiB per node
 HEARTBEAT_MS="${HEARTBEAT_MS:-100}"
-MODE="${MODE:-destination}"             # destination | leader
 BIN="${BIN:-$(cd "$(dirname "$0")/.." && pwd)/build}"
 
 RAFT_PORTS=(6001 6002 6003)
@@ -72,7 +71,7 @@ for b in raft_node raft_client raft_blockcopy_server; do
     fi
 done
 
-log "setup: $WORKDIR (ring=${RING_PAGES} pages = $((RING_PAGES*4096)) bytes/node, mode=$MODE)"
+log "setup: $WORKDIR (ring=${RING_PAGES} pages = $((RING_PAGES*4096)) bytes/node)"
 rm -rf "$WORKDIR"
 mkdir -p "$WORKDIR"
 
@@ -128,8 +127,6 @@ for i in 0 1 2; do
         -heartbeat-ms "$HEARTBEAT_MS" \
         -ring-pages "$RING_PAGES" \
         -identity-pba \
-        -mode "$MODE" \
-        -profile \
         > "$WORKDIR/node$id.log" 2>&1 &
     PIDS+=($!)
 done
@@ -230,9 +227,6 @@ if [[ "$MAX_CI" -le "$UPPER" ]]; then
 else
     fail "max commit_index=$MAX_CI exceeds $UPPER -- no-op / election churn?"
 fi
-
-log "AE batch stats (informational)"
-"$BIN/raft_client" -addrs "$ADDRS" -op ae-stats 2>&1 | sed 's/^/  /'
 
 log "node log tails (informational)"
 for id in 1 2 3; do

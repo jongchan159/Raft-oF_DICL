@@ -43,11 +43,6 @@ constexpr uint64_t SLOTS_PER_PAGE = PAGE_SIZE / SECTOR_SIZE;   /* 8 */
  * 시작하므로 헤더가 정확히 섹터 하나를 먹는다. */
 constexpr uint64_t DEFAULT_NUM_PAGES = 8ull * 1024 * 1024;     /* 32GiB */
 
-/* appendEntries 배치 상한의 기본값. 실제 값은 Server의 인스턴스 필드다
- * (max_ae_batch / max_ae_batch_bytes). 원본은 package-level var였다. */
-constexpr uint64_t DEFAULT_MAX_AE_BATCH = 1000000;
-constexpr uint64_t DEFAULT_MAX_AE_BATCH_BYTES = 5ull * 1024 * 1024 * 1024;  /* 5 GiB */
-
 /* doPBACopy가 이 경계에서 연속 복사를 쪼갬. AE 배치 상한과 독립적으로,
  * 스토리지 노드의 posix_memalign O_DIRECT 버퍼가 임의로 커지는 걸 방지 */
 constexpr uint64_t MaxPBACopyChunkBytes = 256ull * 1024 * 1024;

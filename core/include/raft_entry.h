@@ -136,36 +136,19 @@ struct AppendEntriesRequest {
 };
 
 /* ============================================================
- * AppendEntriesResponse (raft.go 원본 필드 그대로 -- ApplyTimings의
- * WritePBARtNanos/StorageCopyNanos 등 서브스테이지 계측 필드 포함)
+ * AppendEntriesResponse
+ *
+ * 정상 경로에서 리더가 실제로 보는 것은 이 둘뿐이다:
+ *   rpc.term  -- 우리가 stale 리더인지 판정
+ *   success   -- 팔로워가 이 배치를 받아들였는가
+ *
+ * 원본에는 여기에 (1) 거절 시 어디서부터 재시도할지 알려주는 되감기 힌트
+ * (conflict_term / conflict_index) 와 (2) 팔로워 서브스테이지 계측값 8개가
+ * 함께 실렸다. 로그 불일치 복구와 지연 분해는 이 버전의 범위 밖이다.
  * ============================================================ */
 struct AppendEntriesResponse {
     RPCMessage rpc;
     bool success = false;
-
-    /* Fast log backoff (원본 주석): follower가 거절 시 어디서부터 재시도할지
-     * 알려줘서, leader가 nextIndex를 1씩 감소시키는 대신 바로 건너뜀 */
-    uint64_t conflict_term = 0;
-    uint64_t conflict_index = 0;
-
-    /* HandlerDuration: follower가 HandleAppendEntriesRequest 안에서 보낸
-     * 시간 (진입~반환), sanity check용 */
-    int64_t handler_duration_ns = 0;
-
-    /* WritePBARtNanos: follower가 측정한 WritePBA(Batch) RPC의 왕복 시간
-     * (스토리지 노드로의 동기 block copy).
-     * StorageCopyNanos: 스토리지 서버가 보고하는 내부 pread+pwrite 시간.
-     * 둘 다 heartbeat/실패 시 0. 리더는 이 값들로 AENet, WritePBANet,
-     * DoPBACopy를 역산 */
-    int64_t write_pba_rt_ns = 0;
-    int64_t storage_copy_ns = 0;
-
-    /* HandleAppendEntriesRequest follower 서브스테이지 계측 */
-    int64_t handle_ae_lock_wait_ns = 0;   /* entry -> mu.Lock() 획득 */
-    int64_t handle_ae_pre_ns = 0;         /* lock 이후 -> doPBACopy 전 unlock */
-    int64_t handle_ae_lock_wait2_ns = 0;  /* doPBACopy 반환 후 재lock 대기 */
-    int64_t handle_ae_post_ns = 0;        /* 재lock -> 반환, persistCircular 제외 */
-    int64_t handle_ae_persist_ns = 0;     /* persistCircular (header-only) 시간 */
 };
 
 /* ============================================================
@@ -183,30 +166,6 @@ struct ClientApplyResponse {
     int retry_after_ms = 0;
 };
 
-struct ClientApplyTimedRequest {
-    std::vector<std::vector<uint8_t>> commands;
-};
-
-/* ClientApplyTimedResponse: ApplyTimings의 클라이언트 응답 버전.
- * raft_timings.h의 ApplyTimings와 필드가 거의 겹치지만, RPC로 오가는
- * 것이라 별도 구조체(원본도 별도 타입) */
-struct ClientApplyTimedResponse {
-    std::string error;
-    int64_t l_handler_ns = 0;
-    int64_t l_persist_ns = 0;
-    int64_t ae_net_ns = 0;
-    int64_t f_handler_ns = 0;
-    int64_t repl_net_ns = 0;
-    int64_t replication_ns = 0;
-    int64_t quorum_wait_ns = 0;
-    int64_t mutex_ns = 0;
-    int64_t total_ns = 0;
-    bool busy = false;
-    int retry_after_ms = 0;
-    int64_t post_rpc_ns = 0;
-    int64_t commit_wait_ns = 0;
-    int64_t wg_scheduling_ns = 0;
-};
 
 struct ClientEchoRequest {
     std::vector<std::vector<uint8_t>> commands;
@@ -233,13 +192,6 @@ struct ClientGetHashResponse {
     std::string error;
 };
 
-struct ClientGetAEBatchStatsRequest {};
-
-struct ClientGetAEBatchStatsResponse {
-    uint64_t ae_count = 0;
-    uint64_t ae_entries = 0;
-    std::string error;
-};
 
 } /* namespace nvmeof_raft */
 

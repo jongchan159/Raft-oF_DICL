@@ -25,11 +25,9 @@ constexpr const char *kRequestVote   = "Server.HandleRequestVoteRequest";
 
 /* --- 클라이언트 -> Raft 노드 --- */
 constexpr const char *kClientApply           = "Server.ClientApply";
-constexpr const char *kClientApplyTimed      = "Server.ClientApplyTimed";
 constexpr const char *kClientEcho            = "Server.ClientEcho";
 constexpr const char *kClientGetCommitIndex  = "Server.ClientGetCommitIndex";
 constexpr const char *kClientGetHash         = "Server.ClientGetHash";
-constexpr const char *kClientGetAEBatchStats = "Server.ClientGetAEBatchStats";
 
 /* --- Raft 노드 -> 스토리지(blockcopy) 노드 --- */
 constexpr const char *kWritePBABatch = "BlockCopyServer.HandleWritePBABatch";

@@ -55,7 +55,6 @@ CMD_SIZE="${CMD_SIZE:-512}"
 BATCH="${BATCH:-10}"
 RING_PAGES="${RING_PAGES:-4096}"
 HEARTBEAT_MS="${HEARTBEAT_MS:-100}"
-MODE="${MODE:-destination}"
 EXPECT_CATCHUP="${EXPECT_CATCHUP:-0}"
 BIN="${BIN:-$(cd "$(dirname "$0")/.." && pwd)/build}"
 
@@ -100,7 +99,7 @@ done
 RING_BYTES=$((RING_PAGES*4096))
 DEVICES=""
 CLUSTER=""
-log "setup: $WORKDIR (ring=$RING_BYTES bytes/node, mode=$MODE)"
+log "setup: $WORKDIR (ring=$RING_BYTES bytes/node)"
 rm -rf "$WORKDIR"; mkdir -p "$WORKDIR"
 for i in 0 1 2; do
     id=${IDS[$i]}
@@ -114,7 +113,7 @@ start_node() {   # start_node <index 0..2> <log-suffix>
     local i="$1" suffix="$2" id=${IDS[$1]}
     "$BIN/raft_node" -id "$id" -cluster "$CLUSTER" \
         -metadata-dir "$WORKDIR/n$id" -heartbeat-ms "$HEARTBEAT_MS" \
-        -ring-pages "$RING_PAGES" -identity-pba -mode "$MODE" -profile \
+        -ring-pages "$RING_PAGES" -identity-pba \
         >> "$WORKDIR/node$id$suffix.log" 2>&1 &
     NODE_PIDS[$i]=$!
 }

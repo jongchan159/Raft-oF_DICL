@@ -11,16 +11,15 @@
  * core/ 안에서만 쓰는 기본 조각들 -- 온-디스크 레이아웃 오프셋과 작은 헬퍼.
  *
  * 이 파일은 **대응하는 .cpp 를 갖지 않는다.** 전부 constexpr 이거나 핫패스
- * inline 이고, 링크 의존을 만들면 안 되기 때문이다. 아래 두 묶음이 들어 있다:
+ * inline 이고(put_u64_le 는 엔트리당 4번 불린다), 링크 의존을 만들면 안 되기
+ * 때문이다. 아래 두 묶음이 들어 있다:
  *
  *   1. 온-디스크 레이아웃  엔트리 헤더 32B / 파일 헤더 512B 의 필드 오프셋.
  *                          쓰기와 읽기가 서로 다른 .cpp 에 있어 짝을 맞춰야
  *                          하는 계약이므로 상수로 못 박아 둔다
- *   2. 작은 헬퍼           시간 측정, LE 직렬화, 정렬 올림
+ *   2. 작은 헬퍼           LE 직렬화, 정렬 올림
  *
- * 예전에는 raft_layout.h(오프셋)와 raft_util.h(헬퍼) 두 파일이었다. 둘 다
- * core 전용 리프였고 util 을 보는 TU 가 layout 을 보는 TU 를 포함해서,
- * 합쳐도 파싱 범위가 넓어지지 않는다. raft_constants.h 는 **합치지 않았다**
+ * raft_constants.h 는 **합치지 않았다**
  * -- 그건 TU 19개 전부(core 를 안 쓰는 바이너리 포함)가 보는 헤더라
  * 여기 내용을 넣으면 그쪽까지 끌려간다.
  * ============================================================ */
@@ -71,16 +70,10 @@ static_assert(HEADER_SIZE == SECTOR_SIZE,
 } /* namespace file_hdr */
 
 /* ---- 시간 ---------------------------------------------------------------
- * 프로파일링과 타임아웃 모두 steady_clock을 쓴다. system_clock을 쓰면
- * NTP 조정에 구간 측정이 흔들린다. */
+ * election / heartbeat 타임아웃에 쓴다. system_clock을 쓰면 NTP 조정에
+ * 타임아웃이 흔들린다.
+ * (구간 측정용 elapsed_ns는 이 브랜치에 없다 -- 계측을 전부 걷어냈다.) */
 using clock_type = std::chrono::steady_clock;
-
-/* start 이후 지금까지 흐른 시간(나노초). ApplyTimings/ReplSample의 모든
- * 구간이 이 함수로 측정된다. */
-inline int64_t elapsed_ns(clock_type::time_point start) {
-    return std::chrono::duration_cast<std::chrono::nanoseconds>(
-        clock_type::now() - start).count();
-}
 
 /* ---- 리틀엔디언 64비트 직렬화 -------------------------------------------
  * 온-디스크 포맷(링 파일 헤더와 엔트리 메타)이 LE 고정이다. 와이어 포맷은
