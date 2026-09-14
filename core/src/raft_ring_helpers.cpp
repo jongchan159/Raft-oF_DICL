@@ -37,9 +37,6 @@ int64_t slot_offset(uint64_t slot) {
  * s.log[0]이 sentinel이므로 실제 엔트리 수는 size()-1 */
 uint64_t Server::oldest_log_index() const {
     uint64_t real = raft.log.empty() ? 0 : static_cast<uint64_t>(raft.log.size() - 1);
-    if (real == 0) {
-        return ring.tail_log_index;
-    }
     return ring.tail_log_index - real;
 }
 

@@ -35,7 +35,7 @@ Server::PbaRangeResult Server::leader_pba_for_range(uint64_t start_slot, uint64_
     /* "Return actual available bytes -- the caller's EXTENT CLAMP logic
      * already handles partial extents by reducing the batch size." */
     if (seg.len > 0 && seg.len < nbytes) {
-        nbytes = align_up(seg.len, PAGE_SIZE);
+        nbytes = align_up(seg.len, PAGE_SIZE);  // 왜 잘린 부분인데 up을 하지? down으로 수정
     }
 
     return {seg.pba, nbytes};

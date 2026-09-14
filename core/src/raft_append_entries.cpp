@@ -59,21 +59,24 @@ void Server::append_entries_worker(int fi, ReplSink *sink) {
             next = last + 1;
             raft.cluster[static_cast<size_t>(fi)].next_index = next;
         }
-        /* "Clamp: if next fell below what we have in memory, reset to
-         * oldest -> follower에게 보내야 할 entry가 ring에서 해제됐을 때
-         * oldest로 옮겨서 살아있는 가장 오래된 entry부터 전송" */
-        if (next < oldest) {
-            next = oldest;
-            raft.cluster[static_cast<size_t>(fi)].next_index = next;
-        }
+        // => 불필요한 예외처리 아닌가?
+        //    Claude: fast backoff를 되살리거나 로그 truncation을 도입하면 필요
+
+        // /* "Clamp: if next fell below what we have in memory, reset to
+        //  * oldest -> follower에게 보내야 할 entry가 ring에서 해제됐을 때
+        //  * oldest로 옮겨서 살아있는 가장 오래된 entry부터 전송" */
+        // if (next < oldest) {
+        //     next = oldest;
+        //     raft.cluster[static_cast<size_t>(fi)].next_index = next;
+        // }
+        // => 불가능한 경로, next는 minMatch보다 뒤로 갈 수 없음.
 
         /* Raft Consistency check */
         uint64_t prev_log_index = 0;
         uint64_t prev_log_term = 0;
         if (next > 0) {
             prev_log_index = next - 1;
-            uint64_t oldest2 = oldest_log_index();
-            if (prev_log_index >= oldest2 && prev_log_index < ring.tail_log_index) {
+            if (prev_log_index >= oldest && prev_log_index < ring.tail_log_index) {
                 prev_log_term = raft.log[log_slice(prev_log_index)].term;
             }
         }
@@ -103,6 +106,8 @@ void Server::append_entries_worker(int fi, ReplSink *sink) {
          *  already GC'd), the slot was freed -- PBA copy would read
          *  stale data. Send heartbeat only." */
         auto t_slot_map_lookup = clock_type::now();
+        // fast-backoff 또는 follower restart -> next <= GC구간인 경우 예외처리
+        // 이 분기 빼고 실험해보기
         if (len_entries > 0) {
             /* gcUpTo fast path: 이미 GC된 인덱스면 조회 스킵.
              * gc_has_run이 false면(GC를 아직 한 번도 안 돌린 상태)
@@ -111,12 +116,12 @@ void Server::append_entries_worker(int fi, ReplSink *sink) {
              * 없는 index 0을 "이미 GC됨"으로 오판한다 (실제 재현 확인). */
             auto it = ring.log_slot_map.find(next);
             if (ring.gc_has_run && next <= ring.gc_up_to) {
-                log_skip_pba_diag(fi, next, last, prev_log_index);
+                // log_skip_pba_diag(fi, next, last, prev_log_index);
                 len_entries = 0;
             } else if (it != ring.log_slot_map.end()) {
                 start_slot = it->second.start;
             } else {
-                log_skip_pba_diag(fi, next, last, prev_log_index);
+                // log_skip_pba_diag(fi, next, last, prev_log_index);
                 len_entries = 0;
             }
         }
@@ -173,7 +178,7 @@ void Server::append_entries_worker(int fi, ReplSink *sink) {
         /* PBALookup (원본 raft.go:2564-2613 그대로 포팅) */
         uint64_t leader_pba_src = 0;
         uint64_t log_block_length = 0;
-        auto t_pba_lookup = clock_type::now();
+        /* timer */ auto t_pba_lookup = clock_type::now();
         if (len_entries > 0) {
             PbaRangeResult r = leader_pba_for_range(start_slot, total_slots);
             leader_pba_src = r.pba_src;
