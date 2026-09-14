@@ -53,21 +53,20 @@ void Server::append_entries_worker(int fi) {
         next = last + 1;
         raft.cluster[static_cast<size_t>(fi)].next_index = next;
     }
-    /* "Clamp: if next fell below what we have in memory, reset to
-     * oldest -> follower에게 보내야 할 entry가 ring에서 해제됐을 때
-     * oldest로 옮겨서 살아있는 가장 오래된 entry부터 전송" */
-    if (next < oldest) {
-        next = oldest;
-        raft.cluster[static_cast<size_t>(fi)].next_index = next;
-    }
+    // /* "Clamp: if next fell below what we have in memory, reset to oldest 
+    //  * -> follower에게 보내야 할 entry가 ring에서 해제됐을 때
+    //  * oldest로 옮겨서 살아있는 가장 오래된 entry부터 전송" */
+    // if (next < oldest) {
+    //     next = oldest;
+    //     raft.cluster[static_cast<size_t>(fi)].next_index = next;
+    // }
 
     /* Raft Consistency check */
     uint64_t prev_log_index = 0;
     uint64_t prev_log_term = 0;
     if (next > 0) {
         prev_log_index = next - 1;
-        uint64_t oldest2 = oldest_log_index();
-        if (prev_log_index >= oldest2 && prev_log_index < ring.tail_log_index) {
+        if (prev_log_index >= oldest && prev_log_index < ring.tail_log_index) {
             prev_log_term = raft.log[log_slice(prev_log_index)].term;
         }
     }
@@ -169,9 +168,9 @@ void Server::append_entries_worker(int fi) {
                 counted += needed;
                 len_entries++;
             }
-            total_slots = counted;
+            total_slots = counted;  // total_slots clamping 
         }
-        log_block_length = total_slots;
+        log_block_length = total_slots; // 굳이 필요한가? 그런데 오버헤드도 없을듯
     }
 
     bool has_entries = len_entries > 0;

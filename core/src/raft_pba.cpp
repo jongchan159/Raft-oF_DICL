@@ -34,6 +34,9 @@ Server::PbaRangeResult Server::leader_pba_for_range(uint64_t start_slot, uint64_
 
     /* "Return actual available bytes -- the caller's EXTENT CLAMP logic
      * already handles partial extents by reducing the batch size." */
+    // seg.len < nbytes이면 실제로 연속된 물리 블록이 요청한 범위보다 짧다는 뜻이다. (extent 경계 제한)
+    // align_down을 해야하지 않을까?
+    // extent를 넘어가는 배치는 raft_append_entries.cpp에서 차이를 보고 자른다. 
     if (seg.len > 0 && seg.len < nbytes) {
         nbytes = align_up(seg.len, PAGE_SIZE);
     }
