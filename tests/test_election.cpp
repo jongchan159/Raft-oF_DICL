@@ -8,7 +8,7 @@
  *
  * 여기서 다루지 않는 것: become_leader와 "표를 주는" 경로는
  * persist_circular를 호출하므로 실제 링 파일(cached_fd)이 필요하다.
- * 그건 selftest와 3노드 e2e가 담당한다. 이 파일은 I/O 없이 검증할 수
+ * 그건 실클러스터 e2e가 담당한다(E2E_EXPERIMENT.md). 이 파일은 I/O 없이 검증할 수
  * 있는 판정 로직만 본다.
  * ============================================================ */
 #include "third_party/doctest.h"

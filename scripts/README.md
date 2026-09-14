@@ -1,41 +1,12 @@
-# `scripts/` — 3노드 e2e 테스트와 blockcopy 지연 실험
+# `scripts/` — blockcopy 스케일링 실험
 
-블록 디바이스도 root 권한도 없이 **PBA 블록복사 경로 전체**를 돌린다.
+3노드 e2e 스크립트(`smoke_test.sh` / `restart_test.sh`)는 **제거되었다.**
+둘 다 `-identity-pba`(논리 오프셋 == 물리 오프셋)로 링 파일 자체를 볼륨처럼
+취급해 블록 디바이스 없이 PBA 복사 경로를 돌리는 방식이었고, 그 모드가
+사라지면서 성립하지 않는다.
 
-## 호출 규약
-
-```bash
-BIN=<바이너리 디렉터리> ./scripts/smoke_test.sh   <작업디렉터리> <명령 수>
-BIN=<바이너리 디렉터리> ./scripts/restart_test.sh <작업디렉터리> <명령 수>
-```
-
-환경변수로 조절한다: `MODE`(destination / leader), `RING_PAGES`,
-`CMD_SIZE`, `BATCH`. CTest가 이 방식으로 네 가지 조합을 돌린다 —
-`smoke_destination` / `smoke_leader_side` / `smoke_ring_wrap` /
-`restart_follower`.
-
-**작업 디렉터리는 ext4 / xfs 로컬 경로여야 한다** (`/tmp` 등). 링 파일에
-O_DIRECT와 FIEMAP이 필요해서 NFS에서는 동작하지 않는다.
-
-## 왜 디바이스 없이도 실제 경로가 되는가
-
-`raft_node` 를 `-identity-pba` 로 띄워 "논리 오프셋 == 물리 오프셋" 으로
-두고, 스토리지 노드의 `-devices` 에 세 노드의 링 파일을 클러스터 인덱스
-순서로 그대로 넘긴다. 그러면 팔로워의 스토리지 노드가
-`pread(리더 링 파일, PBA)` → `pwrite(자기 링 파일, PBA)` 를 수행하므로,
-실서버에서 NVMe-oF 볼륨 사이에 일어나는 일과 **같은 코드 경로**를 탄다
-(전송만 로컬 파일 I/O로 바뀐다).
-
-실서버에서는 `-identity-pba` 를 빼고 `-devices` 에 실제 블록 디바이스를
-넣는다. 그때는 링 메타데이터 파일이 그 디바이스 위 파일시스템에 있어야
-하고 FIEMAP으로 PBA가 해석된다.
-
-## `restart_test.sh` 의 KNOWN GAP
-
-팔로워 재시작 catch-up 은 **원본 `raft.go` 도 못 한다.** 그래서 이
-스크립트는 GAP 2건을 `[KNOWN GAP]` 으로 보고하고 **종료코드 0으로
-끝난다.** GAP이 GAP으로 남는 것이 정상이고, 갑자기 통과하기 시작하면
-동작이 바뀐 것이므로 의심할 것 — DECISIONS.md §U5.
+복제 경로를 끝까지 확인하려면 실클러스터에서 돌려야 한다 —— 절차서는
+저장소 루트의 `E2E_EXPERIMENT.md`.
 
 ## `blkcopy_scaling.sh` — blockcopy 병렬도·배치 스케일링 실험
 

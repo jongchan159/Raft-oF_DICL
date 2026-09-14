@@ -26,20 +26,16 @@ struct PBASegment {
  *
  * 이미 존재하고 크기가 충분하면 그대로 둔다 (재시작 시 헤더/링 보존).
  *
- * require_zero_range: 원본 restoreCircular은 매 기동마다 파일 전체에
- * FALLOC_FL_ZERO_RANGE를 걸어 모든 extent를 "written" 상태로 뒤집는다.
- * 원본 주석: "unwritten extents cause FIEMAP to report
- * FIEMAP_EXTENT_UNWRITTEN and serialize later extent-state conversions
- * through the filesystem journal. Metadata-only on ext4/xfs/btrfs,
- * idempotent, so safe to run on every startup." FIEMAP 경로에서는 이게
- * 성능/정확성에 직결되므로 true로 주고 실패 시 예외를 낸다.
- * identity_pba 테스트 모드는 FIEMAP을 안 쓰므로 false를 주면 실패해도
- * 경고 없이 넘어간다 (tmpfs 등 ZERO_RANGE 미지원 환경 대비).
+ * 원본 restoreCircular은 매 기동마다 파일 전체에 FALLOC_FL_ZERO_RANGE를
+ * 걸어 모든 extent를 "written" 상태로 뒤집는다. 원본 주석: "unwritten
+ * extents cause FIEMAP to report FIEMAP_EXTENT_UNWRITTEN and serialize
+ * later extent-state conversions through the filesystem journal.
+ * Metadata-only on ext4/xfs/btrfs, idempotent, so safe to run on every
+ * startup." 실패하면 예외를 낸다 -- FIEMAP 경로에서 성능/정확성에 직결된다.
  *
  * 반환: 파일 크기(바이트).
  * ============================================================ */
-int64_t create_ring_file(const std::string &path, uint64_t size_bytes,
-                          bool require_zero_range = true);
+int64_t create_ring_file(const std::string &path, uint64_t size_bytes);
 
 /* ============================================================
  * extent (raft.go 원본, 소문자 비공개 타입)
@@ -61,20 +57,11 @@ public:
     /* BuildExtentCache (raft.go 원본, 팩토리 함수를 정적 멤버로) */
     static ExtentCache build(int fd, int64_t file_size);
 
-    /* identity: "논리 오프셋 == 물리 오프셋"인 단일 extent 맵.
-     * 링 메타데이터 파일 자체를 볼륨으로 취급하는 테스트 모드용
-     * (블록 디바이스 + root 없이 PBA 복사 경로를 e2e로 돌리기 위함).
-     * is_contiguous()가 true가 되므로 persist의 extent-skip 검사도
-     * 실서버의 단일 extent 케이스와 같은 fast path를 탄다. */
-    static ExtentCache identity(int64_t file_size);
-
     /* from_extents: extent 목록을 직접 주어 맵을 만든다.
      *
-     * 원본에는 없다. FIEMAP 없이 **단편화된(다중 extent) 파일**을 재현할
-     * 유일한 방법이어서 추가했다 -- identity()는 항상 단일 extent라
-     * is_contiguous()가 true가 되고, 그러면 persist_circular의
-     * extent-skip 경로와 append_entries의 extent clamp 경로가 한 번도
-     * 실행되지 않는다 (HANDOFF §7-10이 테스트를 요구하는 지점).
+     * 원본에는 없다. 실제 FIEMAP 없이 **단편화된(다중 extent) 파일**을
+     * 재현할 유일한 방법이어서 추가했다 -- persist_circular의 extent-skip
+     * 경로와 append_entries의 extent clamp 경로를 유닛 테스트로 덮는 데 쓴다.
      * 입력은 logical 오름차순으로 정렬해 보관한다. */
     static ExtentCache from_extents(std::vector<Extent> extents);
 
@@ -151,9 +138,6 @@ public:
      * "walks the file's FIEMAP extents and caches them... Must be
      *  called after fallocate ensures all blocks are allocated." */
     void cache_extents(int64_t file_size);
-
-    /* cache_identity_extents: FIEMAP 대신 identity 맵을 설치 (테스트 모드) */
-    void cache_identity_extents(int64_t file_size);
 
     int extent_cache_info() const {
         return has_extent_cache_ ? extent_cache_.num_extents() : 0;

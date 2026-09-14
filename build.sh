@@ -15,7 +15,6 @@
 #   ./build.sh client           raft_client (Client* RPC 도구 / 벤치 하네스)
 #   ./build.sh blockcopy-server server_random 대응 스토리지 서버 바이너리
 #   ./build.sh blkcopy-scale    raft_blkcopy_scale (WritePBABatch 처리량/포화점)
-#   ./build.sh selftest         raft_selftest (persist <-> read_entry_direct 왕복 검증)
 #   ./build.sh asan             raft_node_asan (ASan+UBSan, -O1 -g)
 #                               스레드 수명 버그(fire-and-forget AE 워커가
 #                               호출자 스택을 참조하던 문제)를 이걸로 잡았다.
@@ -177,20 +176,7 @@ build_blkcopy_scale() {
         "$APPS_DIR/raft_blkcopy_scale_main.cpp" "${WIRE_SRCS[@]}" "${PROTO_SRCS[@]}"
 }
 
-# selftest는 core/ 만 링크한다. 전송이 추상 인터페이스(core/include/raft_transport.h)로
-# 바뀌면서 core/가 net/의 심볼을 링크타임에 가져가지 않게 됐고, 그래서
-# protobuf도 필요하지 않다.
-build_selftest() {
-    build_bin raft_selftest \
-        "$TESTS_DIR/raft_selftest_main.cpp" \
-        "${CORE_SRCS[@]}" "${BLOCKIO_SRCS[@]}"
-}
 
-# ASan/UBSan 빌드. raft_node와 같은 소스지만 -O1 -g -fsanitize로 짓는다.
-# 사용법:
-#   PROTOBUF_SYSROOT=... ./build.sh asan
-#   (그 뒤 raft_node 대신 build/raft_node_asan을 띄우고 워크로드를 돌린다.
-#    ASan 리포트는 노드의 stderr로 나온다 -> 노드 로그를 보면 된다.)
 build_asan() {
     echo "[build.sh] linking $BUILD_DIR/raft_node_asan (ASan+UBSan) ..."
     # shellcheck disable=SC2086
@@ -209,14 +195,12 @@ case "$TARGET" in
     node)             build_node; exit 0 ;;
     client)           build_client; exit 0 ;;
     blkcopy-scale)    build_blkcopy_scale; exit 0 ;;
-    selftest)         build_selftest; exit 0 ;;
     asan)             build_asan; exit 0 ;;
     all)
         build_blockcopy_server
         build_node
         build_client
         build_blkcopy_scale
-        build_selftest
         echo "[build.sh] all binaries in $BUILD_DIR/"
         exit 0
         ;;

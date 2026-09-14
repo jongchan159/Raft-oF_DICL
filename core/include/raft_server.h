@@ -144,7 +144,7 @@ public:
      *   transport == null  -> append_entries / request_vote가 false를 반환한 것과 같다
      *   blockcopy == null  -> do_pba_copy가 예외를 던진다 (예전에 storage_host가
      *                         비었을 때와 동일)
-     * selftest처럼 네트워크를 전혀 쓰지 않는 하네스는 둘 다 null로 둔다.
+     * 유닛 테스트처럼 네트워크를 전혀 쓰지 않는 하네스는 둘 다 null로 둔다.
      *
      * 예전에는 이 자리에 net/ 에서 정의되는 blockcopy 핸들의 shared_ptr과
      * 그 전용 뮤텍스, 그리고 그 두 접근자가

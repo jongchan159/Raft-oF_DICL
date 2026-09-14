@@ -19,7 +19,7 @@
 ## 불변식
 
 - **`raft_*` 헤더를 하나도 include하지 않는다.** 의존 방향은
-  `core/ → blockio/` 한 방향이다. 이걸 뒤집으면 `raft_selftest` 의
+  `core/ → blockio/` 한 방향이다. 이걸 뒤집으면 `raft_unit_tests` 의
   링크 격리가 무너진다.
 - 링 파일은 **ext4 / xfs 로컬 경로**여야 한다. O_DIRECT와 FIEMAP이 둘 다
   필요해서 NFS에서는 동작하지 않는다 (`findmnt -no FSTYPE <path>` 로 확인).

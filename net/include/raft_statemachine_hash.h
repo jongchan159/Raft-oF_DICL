@@ -16,9 +16,9 @@
  *
  * core/ 가 아니라 net/ 에 있는 이유: Raft 알고리즘이 아니라 **이 응용이
  * 고른 상태머신 구현체**이고, 실제 사용자가 apps/raft_node_main.cpp(생성)와
- * net/include/raft_tcp_server.h(-op hash 응답)다. tests/raft_selftest_main.cpp 도
+ * net/include/raft_tcp_server.h(-op hash 응답)다.
  * 이 헤더를 include하지만, **헤더 온리이므로 링크 의존이 생기지 않는다** --
- * selftest 와 유닛 테스트는 core/ 만 링크한다(protobuf 없이).
+ * 유닛 테스트는 core/ 만 링크한다(protobuf 없이).
  * 그 성질을 깨지 않도록 **여기에 .cpp 를 만들지 말 것.**
  * ============================================================ */
 

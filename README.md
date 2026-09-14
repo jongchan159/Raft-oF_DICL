@@ -14,8 +14,8 @@ Go 원본(`~/RAFT/nvmeof_raft/raft.go`)의 C++17 포팅.
   (`raft_node_main.cpp` 가 전송 구현체를 주입하는 유일한 지점)
 - `storage/` — 스토리지(blockcopy) 노드 서버 구현
 - `proto/` — 와이어 메시지 정의와 생성된 코드
-- `tests/` — doctest 유닛 테스트 + 전송 Mock + `raft_selftest` 하네스
-- `scripts/` — 3노드 e2e 테스트
+- `tests/` — doctest 유닛 테스트 + 전송 Mock
+- `scripts/` — blockcopy 스케일링 실험
 
 각 디렉터리에 `README.md` 가 있다. 그 계층의 **불변식**(무엇이 깨지면
 회귀인지)과 진입점 심볼이 적혀 있으므로, 해당 디렉터리를 고치기 전에
@@ -113,7 +113,6 @@ export PROTOBUF_SYSROOT=/tmp/pb-sysroot
 | `./build.sh node` | `build/raft_node` — Raft 노드 |
 | `./build.sh blockcopy-server` | `build/raft_blockcopy_server` — 스토리지 노드 |
 | `./build.sh client` | `build/raft_client` — 클라이언트 / 벤치 하네스 |
-| `./build.sh selftest` | `build/raft_selftest` — 네트워크 없는 로컬 검증 |
 | `./build.sh check` | 컴파일 + 링크만 확인 (undefined 심볼 검출) |
 | `./build.sh asan` | `build/raft_node_asan` — ASan+UBSan 빌드 |
 | `./build.sh regen-proto` | `.proto` 수정 후 재생성 |
@@ -121,60 +120,33 @@ export PROTOBUF_SYSROOT=/tmp/pb-sysroot
 
 ---
 
-## 3. 돌리기 (로컬 3노드 — 블록 디바이스도 root도 필요 없음)
+## 3. 돌리기
 
-가장 빠른 길은 스크립트다. 3 Raft 노드 + 3 스토리지 노드를 띄우고
-선출 → Apply → 커밋 수렴 → 링 파일 바이트 비교까지 검증한다.
+**실제 NVMe-oF 볼륨이 필요하다.** PBA는 FIEMAP이 디바이스 기준으로
+해석하므로, 링 메타데이터 파일이 **대상 블록 디바이스 위 파일시스템**에
+있어야 하고 스토리지 노드가 그 디바이스를 `O_RDWR|O_DIRECT`로 열 수 있어야
+한다. 로컬 파일만으로 돌리는 경로는 없다.
 
-```bash
-./scripts/smoke_test.sh /tmp/raftof_smoke 200
-```
-
-`-identity-pba`(논리 오프셋 == 물리 오프셋)로 링 파일 자체를 볼륨처럼
-취급하므로, 실서버에서 NVMe-oF 볼륨 사이에 일어나는 것과 **같은 코드
-경로**를 로컬 파일 I/O로 돌린다.
-
-환경변수로 조절한다:
+이 클러스터(eternity3/5/6 + eternitystorage)에서의 전체 절차 —— 선점검,
+권한 준비, 기동, 정합성 검증, 정리 —— 는 **[E2E_EXPERIMENT.md](E2E_EXPERIMENT.md)**
+에 있다. 아래는 기동 명령의 형태만 보인 것이다.
 
 ```bash
-MODE=leader        ./scripts/smoke_test.sh /tmp/s 200   # DARE 방식 정책 비교
-CMD_SIZE=4064      ./scripts/smoke_test.sh /tmp/s 200   # 명령 크기(B)
-BATCH=1            ./scripts/smoke_test.sh /tmp/s 200   # Apply RPC당 명령 수
-RING_PAGES=1024    ./scripts/smoke_test.sh /tmp/s 3000  # 링 크기(4KiB 페이지)
-HEARTBEAT_MS=300   ./scripts/smoke_test.sh /tmp/s 200
+# 노드 i (세 호스트에서 -id 만 바꿔 실행)
+./build/raft_node -id 1 \
+  -cluster "1@10.0.0.1:6001@/dev/nvme0n1@10.0.0.1:5050,2@10.0.0.2:6001@/dev/nvme1n1@10.0.0.2:5050,3@10.0.0.3:6001@/dev/nvme2n1@10.0.0.3:5050" \
+  -metadata-dir /mnt/raftvol/node1 -heartbeat-ms 300 -ring-pages 4096
+
+# 스토리지 노드 (호스트마다 하나). -devices 는 반드시 "클러스터 인덱스 순서"
+./build/raft_blockcopy_server -addr 0.0.0.0:5050 \
+  -devices /dev/nvme0n1,/dev/nvme1n1,/dev/nvme2n1 -copy-workers 8
 ```
 
-실패하면 `/tmp/raftof_smoke/{node,stor}*.log`를 먼저 볼 것.
+`-cluster` 형식은 **`id@raft_addr@device_path@storage_host`** (쉼표 구분)이고,
+`device_path`는 그 멤버의 링 파일이 올라가 있는 볼륨이다 —— **비워 둘 수 없다.**
 
-### 손으로 띄우기
-
-```bash
-W=/tmp/raftof_manual
-RING_PAGES=4096                       # 4096 * 4096B = 16MiB / 노드
-DEV=""; CL=""
-for id in 1 2 3; do
-    mkdir -p $W/n$id
-    fallocate -l $((RING_PAGES*4096)) $W/n$id/raft-$id.ring
-    DEV+="${DEV:+,}$W/n$id/raft-$id.ring"
-    CL+="${CL:+,}$id@127.0.0.1:$((6000+id))@@127.0.0.1:$((5050+id))"
-done
-
-# 스토리지 노드 3개. -devices는 반드시 "클러스터 인덱스 순서"
-for id in 1 2 3; do
-    ./build/raft_blockcopy_server -addr 0.0.0.0:$((5050+id)) \
-        -devices "$DEV" -copy-workers 4 > $W/stor$id.log 2>&1 &
-done
-
-# Raft 노드 3개
-for id in 1 2 3; do
-    ./build/raft_node -id $id -cluster "$CL" -metadata-dir $W/n$id \
-        -heartbeat-ms 100 -ring-pages $RING_PAGES \
-        -identity-pba -profile > $W/node$id.log 2>&1 &
-done
-```
-
-`-cluster` 형식은 **`id@raft_addr@device_path@storage_host`** (쉼표 구분)
-이고, `device_path`를 비우면 노드가 자기 링 파일을 볼륨으로 쓴다.
+`-ring-pages` 기본값은 8Mi 페이지 = **32GiB/노드**다. fallocate와 ZERO_RANGE에
+시간과 공간이 드므로 처음에는 작게 잡고 올릴 것.
 
 ---
 
@@ -206,36 +178,32 @@ ADDRS=127.0.0.1:6001,127.0.0.1:6002,127.0.0.1:6003
 
 ## 5. 테스트
 
-가장 간단한 방법은 CTest다 (유닛 + selftest + e2e 4개를 순서대로 돌린다):
-
 ```bash
 cd build-cmake && ctest --output-on-failure
 ```
 
-개별로 돌리려면:
+남아 있는 것은 **유닛 테스트와 컴포넌트 격리 검사**다:
 
-```bash
-./build-cmake/raft_unit_tests                           # 유닛 테스트 (doctest)
-./build/raft_selftest /tmp/raftof_selftest              # 네트워크 없는 로컬 검증
+| 테스트 | 무엇을 보는가 |
+|---|---|
+| `unit` | doctest 유닛 테스트 (링 기하, extent 맵, AE 부기, 선거) |
+| `isolation_raft_unit_tests` | 유닛 테스트 바이너리에 protobuf 심볼이 없다 |
+| `isolation_raft_client` | `raft_client`에 `nvmeof_raft::Server::` 심볼이 없다 |
+| `isolation_raft_blockcopy_server` | 스토리지 노드도 마찬가지 |
+| `isolation_raft_blkcopy_scale` | 측정 도구도 마찬가지 |
 
-./scripts/smoke_test.sh /tmp/raftof_smoke 200           # 3노드 e2e
-MODE=leader ./scripts/smoke_test.sh /tmp/raftof_ls 200  # leader-side 정책
-
-RING_PAGES=1024 CMD_SIZE=4064 BATCH=10 \
-  ./scripts/smoke_test.sh /tmp/raftof_wrap 3000         # 링 wrap-around 스트레스
-
-./scripts/restart_test.sh /tmp/raftof_restart 100       # 팔로워 재시작
-```
-
-`restart_test.sh`의 catch-up 항목은 **현재 설계에서 통과할 수 없다**
-(`[KNOWN GAP]`으로 보고하고 종료코드 0). 이유는 HANDOFF.md §5에 있다.
+**복제 경로의 e2e 검증은 실클러스터에서만 가능하다** ——
+[E2E_EXPERIMENT.md](E2E_EXPERIMENT.md) §6 정합성 검증을 쓸 것.
+예전에는 `-identity-pba`(논리 오프셋 == 물리 오프셋)로 링 파일 자체를
+볼륨처럼 취급해 로컬에서 같은 경로를 돌리는 스크립트가 있었으나,
+그 모드는 제거되었다.
 
 메모리 버그 확인:
 
 ```bash
 ./build.sh asan
-# raft_node 대신 build/raft_node_asan을 띄우고 워크로드를 돌린 뒤
-grep -E 'ERROR: AddressSanitizer|runtime error' /tmp/.../node*.log
+# raft_node 대신 build/raft_node_asan 을 띄우고 워크로드를 돌린 뒤
+grep -E 'ERROR: AddressSanitizer|runtime error' <노드 로그>
 ```
 
 ---
@@ -246,10 +214,11 @@ grep -E 'ERROR: AddressSanitizer|runtime error' /tmp/.../node*.log
 > 절차서는 **`E2E_EXPERIMENT.md`** 에 있다 — 선점검, 권한 준비, 클러스터 스펙,
 > 정합성 검증, 측정(워밍업 포함), 정리까지. 아래는 일반적인 전제 조건이다.
 
-`-identity-pba`를 **빼고** 돌린다. 전제 조건:
+전제 조건:
 
 - 링 메타데이터 파일이 **대상 블록 디바이스 위 파일시스템**에 있어야 한다
   (FIEMAP이 그 디바이스 기준 PBA를 돌려준다)
+- `-cluster`의 `device_path`는 **비워 둘 수 없다**
 - 스토리지 노드의 `-devices`는 **클러스터 인덱스 순서**로 각 멤버의 볼륨 경로
 - `raft_blockcopy_server`가 디바이스를 `O_RDWR|O_DIRECT`로 열어야 하므로
   보통 root 또는 적절한 그룹 권한이 필요하다
@@ -287,7 +256,6 @@ ZERO_RANGE에 시간과 공간이 드므로 처음에는 작게 잡고 올릴 �
 | `-heartbeat-ms N` | 300 | 하트비트 주기. election timeout은 이것의 20~30배 |
 | `-mode destination\|leader` | destination | 복제 정책 |
 | `-ring-pages N` | 8388608 (32GiB) | 링 크기 (4KiB 페이지) |
-| `-identity-pba` | off | **테스트 전용.** FIEMAP 대신 논리==물리 |
 | `-profile` | off | 서브스테이지 프로파일링 (apply-timed에 필요) |
 | `-loop-sleep-us N` | 200 | 메인 루프 바퀴당 대기. `0` = 원본과 같은 스핀 |
 | `-log-trim N` | 8192 | in-memory 로그 벡터 트리밍 임계값. `0` = 안 함 |
@@ -309,11 +277,12 @@ ZERO_RANGE에 시간과 공간이 드므로 처음에는 작게 잡고 올릴 �
 |---|---|
 | `no leader found within timeout` | 노드 로그에 `[warn]`/`[rpc-error]`가 있는지. `-debug`로 상태 확인 |
 | `init_storage failed: ... fallocate` | 작업 디렉터리가 NFS인지 (`findmnt -no FSTYPE`) |
-| `fallocate(ZERO_RANGE)` 실패 | 파일시스템이 지원하지 않음. 테스트라면 `-identity-pba` |
+| `fallocate(ZERO_RANGE)` 실패 | 파일시스템이 ext4/xfs/btrfs 인지 확인 |
 | `PBA=0 ... hole in ring file` | 링 파일이 sparse. `fallocate`로 미리 만들 것 |
 | `libprotobuf.so.32 => not found` | `/tmp/pb-sysroot`가 사라짐 → §1 재실행 후 재빌드 |
 | 팔로워가 커밋을 안 따라옴 | 리더 로그에 `[SKIP PBA]`가 있는지 (HANDOFF.md §5) |
 | 노드가 조용히 죽음 | `./build.sh asan`으로 재현 |
+| `init_storage: device_path is empty` | `-cluster`의 세 번째 필드에 볼륨 경로를 넣을 것 |
 
 이번 세션에 수정한 지점을 코드에서 찾으려면:
 

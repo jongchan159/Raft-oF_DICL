@@ -311,11 +311,6 @@ struct StorageIo {
      * 이걸 통한다. */
     std::shared_ptr<CachedFD> cached_fd;
 
-    /* identity_pba: FIEMAP을 쓰지 않고 "논리 오프셋 == 물리 오프셋"으로
-     * 두는 테스트 모드. 링 메타데이터 파일 자체를 볼륨으로 취급하므로
-     * 블록 디바이스와 root 권한 없이 PBA 복사 경로 전체를 e2e로 돌릴 수
-     * 있다. 실서버(실제 NVMe-oF 디바이스)에서는 false로 두어야 한다. */
-    bool identity_pba = false;
 };
 
 /* ============================================================

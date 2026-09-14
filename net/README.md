@@ -21,7 +21,7 @@
   하나도 없어야 한다. CTest `isolation_raft_client`,
   `isolation_raft_blockcopy_server` 가 강제한다.
 - **`raft_statemachine_hash.h` 는 헤더-온리로 남아야 한다.** `.cpp` 를 만들면
-  `raft_selftest` 가 `net/` 을 링크해야 하고, 그건 "selftest 는 core 만
+  `raft_unit_tests` 가 `net/` 을 링크해야 하고, 그건 "유닛 테스트는 core 만
   링크한다" 는 불변식을 깬다.
 - `raft_proto_conv.h` 의 템플릿 2개(`commands_to_proto` /
   `commands_from_proto`)는 헤더에 남는다. 프로젝트에서 헤더 템플릿은 이 둘뿐이다.

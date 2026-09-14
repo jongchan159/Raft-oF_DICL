@@ -7,7 +7,6 @@
 
 | 테스트 | 단정 |
 |---|---|
-| `isolation_raft_selftest` | protobuf 링크 0 |
 | `isolation_raft_unit_tests` | protobuf 링크 0 |
 | `isolation_raft_client` | `nvmeof_raft::Server::` 심볼 0 |
 | `isolation_raft_blockcopy_server` | `nvmeof_raft::Server::` 심볼 0 |

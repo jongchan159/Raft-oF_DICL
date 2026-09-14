@@ -50,7 +50,7 @@ void ensure_dir(const std::string &path) {
  *
  * 1) 메타데이터(=링) 파일을 만들고 fallocate로 블록을 실제 할당
  * 2) CachedFD open (meta O_RDONLY / meta O_RDWR|O_DIRECT / device O_DIRECT x2)
- * 3) extent 캐시 빌드 (FIEMAP, 또는 테스트 모드의 identity 맵)
+ * 3) extent 캐시 빌드 (FIEMAP)
  * 4) 헤더(offset 0, 512B)를 읽어 term/votedFor 복구
  * 5) sentinel 로그와 슬롯 상태 초기화
  *
@@ -75,25 +75,22 @@ void Server::init_storage() {
     std::string meta_path = io.metadata_dir + "/raft-" + std::to_string(raft.id) + ".ring";
 
     uint64_t want = ring.file_size_bytes();
-    /* ZERO_RANGE는 FIEMAP 경로에서만 필수 (identity_pba 테스트 모드는
-     * FIEMAP을 쓰지 않으므로 미지원 파일시스템에서도 돌아가게 둔다) */
-    int64_t actual = create_ring_file(meta_path, want, !io.identity_pba);
+    int64_t actual = create_ring_file(meta_path, want);
     if (static_cast<uint64_t>(actual) < want) {
         throw std::runtime_error("init_storage: ring file " + meta_path + " is " +
             std::to_string(actual) + " bytes, need " + std::to_string(want));
     }
 
-    /* identity_pba 테스트 모드에서는 device_path가 링 파일 자신이다
-     * (블록 디바이스 없이 PBA 복사 경로를 그대로 돌리기 위함). */
-    std::string dev = io.device_path.empty() ? meta_path : io.device_path;
-
-    io.cached_fd = std::make_shared<CachedFD>(CachedFD::open(meta_path, dev));
-
-    if (io.identity_pba) {
-        io.cached_fd->cache_identity_extents(static_cast<int64_t>(want));
-    } else {
-        io.cached_fd->cache_extents(static_cast<int64_t>(want));
+    /* PBA는 이 디바이스 기준으로 해석된다. 링 파일은 반드시 이 디바이스
+     * 위 파일시스템에 있어야 FIEMAP이 맞는 물리 주소를 돌려준다. */
+    if (io.device_path.empty()) {
+        throw std::runtime_error(
+            "init_storage: device_path is empty -- set it in -cluster "
+            "(id@raft_addr@device_path@storage_host)");
     }
+
+    io.cached_fd = std::make_shared<CachedFD>(CachedFD::open(meta_path, io.device_path));
+    io.cached_fd->cache_extents(static_cast<int64_t>(want));
 
     /* 헤더는 논리 오프셋 0에 있다 (write_at_file이 논리 오프셋을 쓴다).
      * PBA는 replication 경로가 아니라 진단용으로만 캐시해둔다. */

@@ -72,7 +72,8 @@ Server::ReadEntryResult Server::read_entry_direct(uint64_t header_slot) {
          * (core/raft_basics.h의 entry_hdr::kCmdBytesInFirstSlot).
          * [수정-13] 이 480바이트를 건너뛰면 1슬롯 엔트리는 명령이 전부 0이 되고
          * 여러 슬롯 엔트리는 480B씩 밀린다 -- DECISIONS.md D13.
-         * selftest T1이 경계값으로 이 경로를 직접 검증한다. */
+         * 이 경로를 직접 덮는 테스트는 현재 없다 (selftest 하네스와 함께
+         * 사라졌다) -- 고칠 때 주의할 것. */
         {
             size_t chunk = static_cast<size_t>(SECTOR_SIZE - ENTRY_META_SIZE);
             if (chunk > cmd_len) {

@@ -85,12 +85,6 @@ ExtentCache ExtentCache::build(int fd, int64_t file_size) {
     return cache;
 }
 
-ExtentCache ExtentCache::identity(int64_t file_size) {
-    ExtentCache cache;
-    cache.extents_.push_back(Extent{0, 0, static_cast<uint64_t>(file_size)});
-    return cache;
-}
-
 ExtentCache ExtentCache::from_extents(std::vector<Extent> extents) {
     ExtentCache cache;
     std::sort(extents.begin(), extents.end(),
@@ -157,8 +151,7 @@ std::pair<uint64_t, int> ExtentCache::remaining_at(int64_t logical, int hint) co
  * create_ring_file
  * ============================================================ */
 
-int64_t create_ring_file(const std::string &path, uint64_t size_bytes,
-                          bool require_zero_range) {
+int64_t create_ring_file(const std::string &path, uint64_t size_bytes) {
     int fd = ::open(path.c_str(), O_RDWR | O_CREAT, kRingFileMode);
     if (fd < 0) {
         throw std::runtime_error("create_ring_file: open " + path + ": " + strerror(errno));
@@ -202,15 +195,11 @@ int64_t create_ring_file(const std::string &path, uint64_t size_bytes,
     if (::fallocate(fd, FALLOC_FL_ZERO_RANGE | FALLOC_FL_KEEP_SIZE, 0,
                     static_cast<off_t>(size_bytes)) != 0) {
         int e = errno;
-        if (require_zero_range) {
-            ::close(fd);
-            throw std::runtime_error(
-                "create_ring_file: fallocate(ZERO_RANGE) on " + path + ": " +
-                strerror(e) + " -- the filesystem must support "
-                "FALLOC_FL_ZERO_RANGE (ext4/xfs/btrfs). identity-pba "
-                "테스트 모드라면 이 요구를 끌 수 있다");
-        }
-        /* identity 모드: FIEMAP을 안 쓰므로 무시 */
+        ::close(fd);
+        throw std::runtime_error(
+            "create_ring_file: fallocate(ZERO_RANGE) on " + path + ": " +
+            strerror(e) + " -- the filesystem must support "
+            "FALLOC_FL_ZERO_RANGE (ext4/xfs/btrfs)");
     } else if (::fdatasync(fd) != 0) {
         int e = errno;
         ::close(fd);
@@ -348,11 +337,6 @@ void CachedFD::fdatasync() {
 
 void CachedFD::cache_extents(int64_t file_size) {
     extent_cache_ = ExtentCache::build(meta_fd_, file_size);
-    has_extent_cache_ = true;
-}
-
-void CachedFD::cache_identity_extents(int64_t file_size) {
-    extent_cache_ = ExtentCache::identity(file_size);
     has_extent_cache_ = true;
 }
 

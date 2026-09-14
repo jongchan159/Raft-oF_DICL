@@ -20,9 +20,8 @@ DECISIONS.md §X "헤더에 구현을 남기는 유일한 이유들 (R0)" 에 �
 - **`net/` 을 include하지 않는다.** 링크타임에도 `net/` 심볼을 요구하지 않는다.
   전송은 `raft_transport.h` 의 순수 가상 인터페이스(`RaftTransport` /
   `BlockCopyClient`)로만 닿고, 구현체는 `apps/` 가 주입한다.
-- **protobuf를 링크하지 않는다.** 그래서 `raft_selftest` / `raft_unit_tests` 가
-  protobuf 없이 링크된다. CTest `isolation_raft_selftest`,
-  `isolation_raft_unit_tests` 가 이걸 강제한다.
+- **protobuf를 링크하지 않는다.** 그래서 `raft_unit_tests` 가 protobuf 없이
+  링크된다. CTest `isolation_raft_unit_tests` 가 이걸 강제한다.
 - 의존 방향은 `core/ → blockio/` 한 방향이다. `raft_constants.h` 가
   `blockio/block_geometry.h` 의 `kSectorSize`/`kPageSize` 를 `SECTOR_SIZE`/
   `PAGE_SIZE` 로 재수출한다 — 값의 단일 출처는 `blockio/` 쪽이다.

@@ -68,7 +68,7 @@ namespace {
 std::unique_ptr<Server> make_server_with_log(size_t n) {
     auto s = std::make_unique<Server>();
     /* 링 크기는 이제 인스턴스 필드다 -- 테스트마다 다르게 줄 수 있다.
-     * 2048 페이지 = 8MiB (selftest와 동일). */
+     * 2048 페이지 = 8MiB. */
     s->ring.configure(2048);
     s->raft.log.clear();
     s->raft.log.push_back(Entry{});           /* sentinel */

@@ -24,8 +24,6 @@
  *     -metadata-dir /var/lib/raftof -heartbeat-ms 300
  *
  * -cluster 항목 형식: id@raft_addr@device_path@storage_host
- *   device_path가 비어 있으면 링 메타데이터 파일 자신을 볼륨으로 쓴다
- *   (-identity-pba 테스트 모드와 함께 사용).
  * ============================================================ */
 #include "raft_server.h"
 #include "raft_constants.h"
@@ -60,7 +58,7 @@ struct MemberSpec {
 };
 
 /* "id@raft_addr@device@storage_host" 하나를 파싱.
- * device는 비어 있을 수 있다 (identity-pba 테스트 모드). */
+ */
 MemberSpec parse_member(const std::string &spec) {
     std::vector<std::string> f = split(spec, '@');
     if (f.size() < 4) {
@@ -88,8 +86,8 @@ void usage(const char *prog) {
       "usage: %s -id N -cluster SPEC[,SPEC...] [options]\n"
       "\n"
       "  SPEC = id@raft_addr@device_path@storage_host\n"
-      "         device_path may be empty to use the ring file itself as the\n"
-      "         volume (pair with -identity-pba for testing).\n"
+      "         device_path is the NVMe-oF volume this member's ring file\n"
+      "         lives on; FIEMAP resolves PBAs against it.\n"
       "\n"
       "  -id N              this node's id (must appear in -cluster)\n"
       "  -metadata-dir DIR  where the ring file lives (default .)\n"
@@ -99,11 +97,6 @@ void usage(const char *prog) {
       "                     policy for comparison (hpdc15dare 3.1.2)\n"
       "  -ring-pages N      ring size in 4KiB pages (default %llu = 32GiB).\n"
       "                     Ring file is N*4096 bytes and is fallocate'd.\n"
-      "  -identity-pba      treat logical offset == physical offset instead of\n"
-      "                     using FIEMAP. Test mode: lets the whole PBA-copy\n"
-      "                     path run on plain files without a block device or\n"
-      "                     root. Do NOT use against a real NVMe-oF device.\n"
-      "  -profile           enable sub-stage profiling atomics\n"
       "  -loop-sleep-us N   main loop pause per iteration (default 200, 0=spin)\n"
       "  -log-trim N        trim the in-memory log vector once N entries are\n"
       "                     reclaimable (default 8192, 0=never)\n"
@@ -124,7 +117,6 @@ int main(int argc, char **argv) {
     int heartbeat_ms = 300;
     std::string mode = "destination";
     uint64_t ring_pages = DEFAULT_NUM_PAGES;
-    bool identity_pba = false;
     bool profile = false;
     bool debug = false;
     int loop_sleep_us = 200;
@@ -146,9 +138,7 @@ int main(int argc, char **argv) {
             mode = next_arg_value(argc, argv, i, "-mode");
         } else if (arg == "-ring-pages") {
             ring_pages = std::strtoull(next_arg_value(argc, argv, i, "-ring-pages").c_str(), nullptr, 10);
-        } else if (arg == "-identity-pba") {
-            identity_pba = true;
-        } else if (arg == "-profile") {
+                } else if (arg == "-profile") {
             profile = true;
         } else if (arg == "-debug") {
             debug = true;
@@ -222,7 +212,6 @@ int main(int argc, char **argv) {
     server->io.device_path = members[static_cast<size_t>(my_index)].device_path;
     server->io.metadata_dir = metadata_dir;
     server->raft.heartbeat_ms = heartbeat_ms;
-    server->io.identity_pba = identity_pba;
     server->debug_enabled = debug;
     server->loop_sleep_us = loop_sleep_us;
     server->ring.log_trim_threshold = log_trim;
@@ -282,9 +271,7 @@ int main(int argc, char **argv) {
     std::printf("  storage host : %s\n",
                 members[static_cast<size_t>(my_index)].storage_host.c_str());
     std::printf("  device       : %s\n",
-                server->io.device_path.empty() ? "(ring file itself)"
-                                            : server->io.device_path.c_str());
-    std::printf("  pba mode     : %s\n", identity_pba ? "identity (TEST)" : "FIEMAP");
+                server->io.device_path.c_str());
     std::printf("  replication  : %s-side\n", mode.c_str());
     std::printf("  heartbeat    : %d ms\n", heartbeat_ms);
     std::printf("  term/tail    : term=%llu tail_log_index=%llu tail_slot=%llu\n",

@@ -168,7 +168,7 @@ target_link_libraries(raft_blockio_obj PUBLIC raft_includes)
 
 add_library(raft_core_obj OBJECT ${CORE_SRCS})
 # core/ 는 protobuf 를 전혀 모른다 (grep 확인). raft_protobuf 를 붙여 두면
-# raft_selftest / raft_unit_tests 의 링크 라인에 -lprotobuf 가 실리고, 실제로
+# raft_unit_tests 의 링크 라인에 -lprotobuf 가 실리고, 실제로
 # 의존이 안 생기는 것은 --as-needed 덕분이 된다. 빼서 그 성질을 우연이 아니라
 # 빌드 그래프의 사실로 만든다.
 target_link_libraries(raft_core_obj PUBLIC raft_includes Threads::Threads)
@@ -205,15 +205,6 @@ target_link_libraries(raft_blockcopy_server PRIVATE
 add_executable(raft_blkcopy_scale apps/raft_blkcopy_scale_main.cpp)
 target_link_libraries(raft_blkcopy_scale PRIVATE
     raft_wire_obj raft_proto_obj raft_includes raft_protobuf Threads::Threads)
-
-# selftest는 이제 **core/ 만** 링크한다. 예전에는 core/가 net/의 심볼 5개를
-# 링크타임에 가져갔기 때문에 net/ 과 protobuf(5,502줄)를 함께 링크해야 했다
-# -- 네트워크를 전혀 쓰지 않는 로컬 검증인데도. 전송이 추상 인터페이스가
-# 되면서 그 종속이 사라졌다 (transport/blockcopy를 주입하지 않으면 그 경로가
-# 실패로 취급된다 -- selftest는 그 경로를 타지 않는다).
-add_executable(raft_selftest tests/raft_selftest_main.cpp)
-target_link_libraries(raft_selftest PRIVATE
-    raft_core_obj raft_blockio_obj raft_includes Threads::Threads)
 
 # --- ASan+UBSan (build.sh asan 대응) --------------------------------------
 # 플래그가 달라 오브젝트를 공유할 수 없으므로 소스에서 직접 짓는다.
@@ -284,11 +275,11 @@ add_test(NAME unit COMMAND raft_unit_tests)
 # 이 네 개가 계층 규약을 **테스트로** 표현한다. 헤더에 구현을 두면 링크 관계가
 # 코드 독해로만 드러나는데, 그걸 막으려고 선언/정의를 분리했고 그 결과를 여기서
 # 고정한다. 깨지면 누군가 경계를 넘은 것이다.
-#   selftest/unit_tests : core 만 링크 -> protobuf 심볼이 있으면 안 된다
+#   unit_tests          : core 만 링크 -> protobuf 심볼이 있으면 안 된다
 #   client/blockcopy    : core 를 링크하지 않음 -> Server:: 심볼이 있으면 안 된다
 find_program(NM_EXECUTABLE nm)
 if(NM_EXECUTABLE)
-    foreach(_t raft_selftest raft_unit_tests)
+    foreach(_t raft_unit_tests)
         add_test(NAME isolation_${_t} COMMAND ${CMAKE_COMMAND}
                  -DBIN=$<TARGET_FILE:${_t}> -DNM=${NM_EXECUTABLE}
                  -DPATTERN=protobuf -DWHAT=protobuf
@@ -302,38 +293,3 @@ if(NM_EXECUTABLE)
     endforeach()
 endif()
 
-# 1) 네트워크 없는 로컬 검증. 종료코드 0 = T1~T4 전부 통과
-add_test(NAME selftest
-         COMMAND raft_selftest "${CMAKE_CURRENT_BINARY_DIR}/selftest-workdir")
-
-# 2~4) 3노드 e2e. BIN 을 CMake 출력 디렉터리로 돌려 준다.
-#      세 스크립트가 포트 6001-6003 / 5051-5053 을 공유하므로 반드시 직렬 실행.
-set(_e2e_env "BIN=${CMAKE_CURRENT_BINARY_DIR}")
-
-add_test(NAME smoke_destination
-         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/smoke_test.sh
-                 "${CMAKE_CURRENT_BINARY_DIR}/e2e-smoke" 200)
-set_tests_properties(smoke_destination PROPERTIES
-                     ENVIRONMENT "${_e2e_env}" RUN_SERIAL TRUE TIMEOUT 300)
-
-add_test(NAME smoke_leader_side
-         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/smoke_test.sh
-                 "${CMAKE_CURRENT_BINARY_DIR}/e2e-leader" 200)
-set_tests_properties(smoke_leader_side PROPERTIES
-                     ENVIRONMENT "${_e2e_env};MODE=leader" RUN_SERIAL TRUE TIMEOUT 300)
-
-# 링 wrap-around + slot GC 스트레스 (4MiB 링에 12MB = 링 3바퀴)
-add_test(NAME smoke_ring_wrap
-         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/smoke_test.sh
-                 "${CMAKE_CURRENT_BINARY_DIR}/e2e-wrap" 3000)
-set_tests_properties(smoke_ring_wrap PROPERTIES
-                     ENVIRONMENT "${_e2e_env};RING_PAGES=1024;CMD_SIZE=4064;BATCH=10"
-                     RUN_SERIAL TRUE TIMEOUT 600)
-
-# 5) 팔로워 재시작. KNOWN GAP 2건은 종료코드 0으로 보고된다 (DECISIONS.md U5).
-#    복원 경로를 구현한 뒤 EXPECT_CATCHUP=1 로 하드 검증할 수 있다.
-add_test(NAME restart_follower
-         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/restart_test.sh
-                 "${CMAKE_CURRENT_BINARY_DIR}/e2e-restart" 100)
-set_tests_properties(restart_follower PROPERTIES
-                     ENVIRONMENT "${_e2e_env}" RUN_SERIAL TRUE TIMEOUT 300)

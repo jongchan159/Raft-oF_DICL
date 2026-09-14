@@ -2,7 +2,7 @@
  * ExtentCache 단위 테스트 -- extent 경계 clamp
  *
  * HANDOFF §7-10이 요구한 두 번째 지점이다. 지금까지 이 경로에 테스트가
- * 없었던 이유는 구조적이다: 테스트 모드(identity_pba)의 extent 맵은
+ * 없었던 이유는 구조적이다: e2e에서 쓰던 extent 맵은
  * **항상 단일 extent**라 is_contiguous()가 true가 되고, 그러면
  * persist_circular의 extent-skip 검사와 append_entries_worker의
  * extent clamp 루프가 한 번도 실행되지 않는다. 즉 e2e 스모크를 몇 번
@@ -18,24 +18,6 @@
 #include "raft_constants.h"
 
 using namespace nvmeof_raft;
-
-TEST_CASE("identity 맵은 단일 extent이고 경계 검사를 건너뛴다") {
-    const int64_t kSize = 1 << 20;   /* 1MiB */
-    ExtentCache c = ExtentCache::identity(kSize);
-
-    CHECK(c.num_extents() == 1);
-    CHECK(c.is_contiguous() == true);
-
-    /* 논리 오프셋 == 물리 오프셋 */
-    PBASegment seg = c.lookup(4096, 8192);
-    CHECK(seg.pba == 4096);
-    CHECK(seg.len == 8192);
-
-    /* 파일 끝까지 남은 바이트 */
-    auto [rem, idx] = c.remaining_at(kSize - 512, -1);
-    CHECK(rem == 512);
-    CHECK(idx == 0);
-}
 
 TEST_CASE("단편화된 맵은 is_contiguous()가 false다") {
     ExtentCache c = ExtentCache::from_extents({

@@ -493,27 +493,15 @@ LD_LIBRARY_PATH=/tmp/pb-sysroot/usr/lib/x86_64-linux-gnu \
 export PROTOBUF_SYSROOT=/tmp/pb-sysroot
 ./build.sh all
 
-# 1) 네트워크 없는 로컬 검증 (T1~T4). 종료코드 0 = 전부 통과
-mkdir -p /tmp/raftof_selftest && ./build/raft_selftest /tmp/raftof_selftest
+# 유닛 테스트 + 컴포넌트 격리 (CMake 전용)
+cd build-cmake && ctest --output-on-failure
 
-# 2) 3노드 e2e (destination-side)
-./scripts/smoke_test.sh /tmp/raftof_smoke 200
+# 복제 경로 e2e 는 실클러스터에서만 가능하다 (E2E_EXPERIMENT.md).
+# 예전에 있던 raft_selftest / smoke_test.sh / restart_test.sh 는
+# -identity-pba 테스트 모드 위에서만 성립하던 것이라 함께 제거되었다.
 
-# 3) 3노드 e2e (leader-side / DARE 정책)
-MODE=leader ./scripts/smoke_test.sh /tmp/raftof_smoke_ls 200
-
-# 4) 링 wrap-around + slot GC 스트레스 (4MiB 링에 12MB = 링 3바퀴)
-RING_PAGES=1024 CMD_SIZE=4064 BATCH=10 \
-  ./scripts/smoke_test.sh /tmp/raftof_wrap 3000
-
-# 5) 팔로워 재시작 (§5의 KNOWN GAP 포함)
-./scripts/restart_test.sh /tmp/raftof_restart 100
-EXPECT_CATCHUP=1 ./scripts/restart_test.sh   # 복원 구현 후 하드 검증용
-
-# 6) ASan + UBSan (노드만)
+# ASan + UBSan (노드만)
 ./build.sh asan
-#   raft_node 대신 build/raft_node_asan을 띄우고 위 워크로드를 돌린 뒤
-#   노드 로그에서 'ERROR: AddressSanitizer' / 'runtime error'를 grep
 ```
 
 ### 조회/측정
