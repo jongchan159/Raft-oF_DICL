@@ -25,7 +25,7 @@ Raft 를 띄우고, 복제 정합성을 확인한 뒤 지연·처리량을 측�
 
 | 멤버 | subsystem | 컴퓨트 노드에서의 경로 | **스토리지 노드에서의 경로** |
 |---|---|---|---|
-| id 3 (eternity3) | `node3` | `/dev/nvme1n1` | `/dev/nvme1n1` |
+| id 7 (eternity7) | `node3` | `/dev/nvme1n1` | `/dev/nvme1n1` |
 | id 5 (eternity5) | `node5` | `/dev/nvme2n1` | **`/dev/nvme3n1`** |
 | id 6 (eternity6) | `node6` | `/dev/nvme3n1` | **`/dev/nvme5n1`** |
 
@@ -187,14 +187,14 @@ sudo mount /dev/<위에서 나온 것> /mnt/raftvol
 한 문자열을 **세 컴퓨트 노드에 그대로** 넘긴다.
 
 ```bash
-CLUSTER="3@115.145.173.245:6001@/dev/nvme1n1@115.145.173.243:5050,\
-5@115.145.173.124:6001@/dev/nvme2n1@115.145.173.243:5050,\
-6@115.145.173.125:6001@/dev/nvme3n1@115.145.173.243:5050"
+CLUSTER="7@10.0.0.7:6001@/dev/nvme1n1@10.0.0.91:5050,\
+5@10.0.0.5:6001@/dev/nvme2n1@10.0.0.91:5050,\
+6@10.0.0.6:6001@/dev/nvme3n1@10.0.0.91:5050"
 ```
 
 형식은 `id@raft_addr@device_path@storage_host`.
 
-- **`storage_host` 는 세 항목 모두 `115.145.173.243:5050`** — disaggregated 구조라
+- **`storage_host` 는 세 항목 모두 `10.0.0.91:5050`** — disaggregated 구조라
   스토리지 노드가 하나다.
 - **`device_path` 는 컴퓨트 노드에서 본 경로**다. 각 노드는 **자기 항목만** 쓴다
   (`apps/raft_node_main.cpp:222` → `io.device_path`, FIEMAP 기준 디바이스).
@@ -226,10 +226,19 @@ raft_blockcopy_server` 로 확인하고, **`-devices` 가 위와 같은지 반�
 ### 5-2. 컴퓨트 노드 3개
 
 ```bash
-# eternity3
-./build/raft_node -id 3 -cluster "$CLUSTER" -metadata-dir /mnt/raftvol/raftof-cpp \
-    -ring-pages 4096 -heartbeat-ms 300 -profile > /tmp/node.log 2>&1 &
+# eternity7
+sudo ./build/raft_node -id 7 -cluster "$CLUSTER" -metadata-dir /mnt/raftvol/node7 \
+    -ring-pages 4096 -heartbeat-ms 300 -profile > /tmp/node.log 2>&1 
 # eternity5 는 -id 5, eternity6 은 -id 6 (나머지 동일)
+
+
+# eternity5
+sudo ./build/raft_node -id 5 -cluster "$CLUSTER" -metadata-dir /mnt/raftvol/node5 \
+    -ring-pages 4096 -heartbeat-ms 300 -profile > /tmp/node.log 2>&1 
+
+# eternity6
+sudo ./build/raft_node -id 6 -cluster "$CLUSTER" -metadata-dir /mnt/raftvol/node6 \
+    -ring-pages 4096 -heartbeat-ms 300 -profile > /tmp/node.log 2>&1 
 ```
 
 **측정용 링은 `-ring-pages 4096`(16 MiB)으로 잡는다.** 기본값 8Mi 페이지 =
@@ -238,7 +247,7 @@ raft_blockcopy_server` 로 확인하고, **`-devices` 가 위와 같은지 반�
 **세 노드의 `-ring-pages` 는 반드시 같아야 한다.** `-profile` 은 처음부터 켠다.
 
 ```bash
-ADDRS=115.145.173.245:6001,115.145.173.124:6001,115.145.173.125:6001
+ADDRS=10.0.0.7:6001,10.0.0.5:6001,10.0.0.6:6001
 ./build/raft_client -addrs $ADDRS -op commit-index    # 세 줄이 나와야 한다
 ```
 막히면 `-debug` 로 다시 띄우면 1초마다 상태 한 줄이 나온다.
@@ -317,7 +326,7 @@ ZERO_RANGE 를 걸어 되돌린다. 링이 원형이므로 **한 바퀴 돌려 �
 ### 7-2. ApplyTimings 7항 분해 (지연)
 
 ```bash
-./build/raft_client -addrs $ADDRS -op apply-timed -n 20 -size 4064 -batch 1
+./build/raft_client -addrs $ADDRS -op apply-timed -n 10000 -size 4064 -batch 1
 ```
 
 항등식이 성립해야 한다:
@@ -385,7 +394,7 @@ done
 
 | 증상 | 원인 / 대응 |
 |---|---|
-| `bind() failed on port 5050` | 스토리지 노드가 이미 떠 있다. `-devices` 가 §1 오른쪽 열과 같은지 확인하고 같으면 그대로 쓴다 |
+| `bind() failed on port 505` | 스토리지 노드가 이미 떠 있다. `-devices` 가 §1 오른쪽 열과 같은지 확인하고 같으면 그대로 쓴다 |
 | 복제는 되는데 **엉뚱한 볼륨이 깨짐** | `-devices` 순서가 cluster 인덱스와 어긋났다. 컴퓨트/스토리지의 경로가 다르다(§1). 에러가 안 나므로 §2 로만 잡을 수 있다 |
 | `do_pba_copy: PBA=0 ... hole in ring file` | 링 파일이 sparse 다. 파일시스템이 `FALLOC_FL_ZERO_RANGE` 를 지원해야 한다(ext4/xfs/btrfs) |
 | 스토리지 노드가 즉시 종료 | 디바이스를 못 연다. `sudo` 로 띄웠는지, 경로가 타깃 로컬 경로인지 |
