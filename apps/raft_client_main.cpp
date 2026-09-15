@@ -20,6 +20,7 @@
  * 버퍼 풀까지) 전체를 끌어오고 있었다. 필요한 것은 rpcproto.pb.h뿐이다. */
 #include "rpcproto.pb.h"
 #include "raft_rpc_methods.h"
+#include "raft_stats.h"
 
 #include <chrono>
 #include <cstdio>
@@ -35,6 +36,7 @@ namespace {
 
 using namespace nvmeof_raft;
 using namespace nvmeof_raft::cli;
+using namespace nvmeof_raft::stats;   /* summarize / print_stats_brief (raft_stats.h) */
 using clock_type = std::chrono::steady_clock;
 
 /* 하나의 노드로의 RPC 왕복. 실패 시 예외. */
@@ -56,7 +58,8 @@ void usage(const char *prog) {
       "usage: %s -addrs host:port[,host:port...] -op OP [options]\n"
       "\n"
       "  -op apply         apply -n commands of -size bytes, -batch per RPC\n"
-      "  -op apply-timed   same, but print the ApplyTimings breakdown\n"
+      "  -op apply-timed   same, plus per-RPC ApplyTimings and a mean/p50/p99\n"
+      "                    summary per term at the end\n"
       "  -op echo          codec/network round-trip only (no log write)\n"
       "  -op commit-index  print each node's commitIndex\n"
       "  -op hash          print each node's state machine hash/count\n"
@@ -249,6 +252,22 @@ int main(int argc, char **argv) {
         uint64_t busy_retries = 0;
         auto t0 = clock_type::now();
 
+        /* -op apply-timed 요약용 표본 (ns 원시값). 순서는 per-RPC 줄과 같고,
+         * 마지막 residual 은 항등식 검산이다:
+         *   Total ~= LHandler + LPersist + AENet + FHandler + ReplNet
+         *            + StorageIO + QuorumWait        (core/include/raft_timings.h)
+         * 항들이 전부 timings_clamp0 을 거치므로 0 이 아닐 수 있고, 음수도
+         * 나올 수 있다 -- 그 부호 자체가 정보다.
+         *
+         * busy 재시도는 아래에서 continue 로 빠지므로 표본이 안 쌓인다.
+         * 즉 표본 수 = **성공한 RPC 수**이고 n/batch 와 다를 수 있다. */
+        static const char *kTimedTerms[] = {
+            "Total", "LHandler", "LPersist", "AENet", "FHandler",
+            "ReplNet", "StorageIO", "QuorumWait", "Mutex", "CommitWait", "residual",
+        };
+        constexpr size_t kNTimedTerms = sizeof(kTimedTerms) / sizeof(kTimedTerms[0]);
+        std::vector<int64_t> timed[kNTimedTerms];
+
         int remaining = n;
         while (remaining > 0) {
             int this_batch = (remaining < batch) ? remaining : batch;
@@ -271,6 +290,25 @@ int main(int argc, char **argv) {
                 if (!rsp.err().empty()) {
                     throw std::runtime_error("apply-timed: " + rsp.err());
                 }
+
+                /* StorageIO 는 응답 필드명이 replication_nanos 다 -- 서버가
+                 * rsp.replication_ns = t.storage_io_ns 로 채운다
+                 * (net/src/raft_tcp_server.cpp). 라벨 쪽이 맞다. */
+                const int64_t sum7 =
+                    rsp.l_handler_nanos() + rsp.l_persist_nanos() + rsp.ae_net_nanos() +
+                    rsp.f_handler_nanos() + rsp.repl_net_nanos() + rsp.replication_nanos() +
+                    rsp.quorum_wait_nanos();
+                const int64_t vals[kNTimedTerms] = {
+                    rsp.total_nanos(),      rsp.l_handler_nanos(), rsp.l_persist_nanos(),
+                    rsp.ae_net_nanos(),     rsp.f_handler_nanos(), rsp.repl_net_nanos(),
+                    rsp.replication_nanos(), rsp.quorum_wait_nanos(),
+                    rsp.mutex_nanos(),      rsp.commit_wait_nanos(),
+                    rsp.total_nanos() - sum7,
+                };
+                for (size_t k = 0; k < kNTimedTerms; k++) {
+                    timed[k].push_back(vals[k]);
+                }
+
                 std::printf("  batch=%d total=%.1fus LHandler=%.1f LPersist=%.1f "
                             "AENet=%.1f FHandler=%.1f ReplNet=%.1f StorageIO=%.1f "
                             "QuorumWait=%.1f Mutex=%.1f CommitWait=%.1f\n",
@@ -306,6 +344,15 @@ int main(int argc, char **argv) {
             }
             applied += static_cast<uint64_t>(this_batch);
             remaining -= this_batch;
+        }
+
+        if (op == "apply-timed" && !timed[0].empty()) {
+            std::printf("\napply-timed summary (n=%zu samples, microseconds):\n",
+                        timed[0].size());
+            for (size_t k = 0; k < kNTimedTerms; k++) {
+                print_stats_brief(kTimedTerms[k], summarize(timed[k]));
+            }
+            std::printf("  (residual = Total - sum of the 7 identity terms)\n\n");
         }
 
         int64_t ns = std::chrono::duration_cast<std::chrono::nanoseconds>(

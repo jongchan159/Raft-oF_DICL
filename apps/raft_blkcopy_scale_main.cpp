@@ -42,6 +42,7 @@
  * storage/raft_blockcopy_server.h 전체를 끌어온다. 필요한 건 pb.h 뿐이다. */
 #include "rpcproto.pb.h"
 #include "raft_rpc_methods.h"
+#include "raft_stats.h"
 
 #include <algorithm>
 #include <chrono>
@@ -58,6 +59,7 @@ namespace {
 
 using namespace nvmeof_raft;
 using namespace nvmeof_raft::cli;
+using namespace nvmeof_raft::stats;   /* Stats / summarize / print_stats (raft_stats.h) */
 using clock_type = std::chrono::steady_clock;
 
 /* 정렬 단위. blockio::kPageSize 와 같은 값이지만 blockio 를 링크하지 않으므로
@@ -132,63 +134,6 @@ uint64_t parse_bytes(const std::string &s, const char *flag) {
         std::exit(1);
     }
     return static_cast<uint64_t>(v);
-}
-
-/* 백분위수. 정렬된 v 에 대해 nearest-rank. */
-int64_t pct(const std::vector<int64_t> &sorted, double p) {
-    if (sorted.empty()) {
-        return 0;
-    }
-    size_t rank = static_cast<size_t>(std::ceil(p / 100.0 * static_cast<double>(sorted.size())));
-    if (rank == 0) {
-        rank = 1;
-    }
-    if (rank > sorted.size()) {
-        rank = sorted.size();
-    }
-    return sorted[rank - 1];
-}
-
-struct Stats {
-    size_t n = 0;
-    double mean = 0, stddev = 0;
-    int64_t min = 0, p50 = 0, p90 = 0, p99 = 0, p999 = 0, max = 0;
-};
-
-Stats summarize(std::vector<int64_t> v) {
-    Stats s;
-    if (v.empty()) {
-        return s;
-    }
-    std::sort(v.begin(), v.end());
-    s.n = v.size();
-    double sum = 0;
-    for (int64_t x : v) {
-        sum += static_cast<double>(x);
-    }
-    s.mean = sum / static_cast<double>(v.size());
-    double acc = 0;
-    for (int64_t x : v) {
-        double d = static_cast<double>(x) - s.mean;
-        acc += d * d;
-    }
-    s.stddev = std::sqrt(acc / static_cast<double>(v.size()));
-    s.min = v.front();
-    s.max = v.back();
-    s.p50 = pct(v, 50);
-    s.p90 = pct(v, 90);
-    s.p99 = pct(v, 99);
-    s.p999 = pct(v, 99.9);
-    return s;
-}
-
-void print_stats(const char *name, const Stats &s) {
-    std::printf("  %-8s n=%-6zu mean=%10.1f sd=%10.1f  p50=%9lld p90=%9lld "
-                "p99=%9lld p99.9=%9lld  min=%9lld max=%9lld\n",
-                name, s.n, s.mean / 1000.0, s.stddev / 1000.0,
-                static_cast<long long>(s.p50 / 1000), static_cast<long long>(s.p90 / 1000),
-                static_cast<long long>(s.p99 / 1000), static_cast<long long>(s.p999 / 1000),
-                static_cast<long long>(s.min / 1000), static_cast<long long>(s.max / 1000));
 }
 
 /* bytes/ns -> MiB/s. ns 가 0이면 0을 돌려준다 (분모 보호). */
