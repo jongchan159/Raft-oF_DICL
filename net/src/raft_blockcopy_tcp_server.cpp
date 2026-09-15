@@ -1,4 +1,5 @@
 #include "raft_blockcopy_tcp_server.h"
+#include "raft_rdma_transport.h"
 
 #include "raft_proto_conv.h"
 #include "raft_rpc_methods.h"
@@ -43,6 +44,20 @@ void run_blockcopy_tcp_server(int port, blockcopy::BlockCopyServer *bcs,
     run_rpc_listener(port, "blockcopy",
                      [bcs](int conn_fd) { blockcopy_serve_connection(conn_fd, bcs); },
                      stop_flag);
+}
+
+void run_blockcopy_server(TransportKind kind, int port, blockcopy::BlockCopyServer *bcs,
+                           std::atomic<bool> *stop_flag) {
+    if (kind == TransportKind::Rdma) {
+        run_rdma_listener(port, "blockcopy",
+            [bcs](const std::string &method, const std::vector<uint8_t> &body,
+                  std::vector<uint8_t> &rsp_body) {
+                return dispatch_blockcopy_method(bcs, method, body, rsp_body);
+            },
+            stop_flag);
+        return;
+    }
+    run_blockcopy_tcp_server(port, bcs, stop_flag);
 }
 
 } /* namespace nvmeof_raft */

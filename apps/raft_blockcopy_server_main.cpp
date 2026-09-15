@@ -21,6 +21,7 @@
  */
 #include "raft_blockcopy_server.h"
 #include "raft_blockcopy_tcp_server.h"
+#include "raft_rdma_transport.h"   /* rdma_devices_available */
 #include "raft_cli.h"
 
 #include <cstdio>
@@ -38,7 +39,9 @@ namespace {
 void usage(const char *prog) {
     std::fprintf(stderr,
         "usage: %s [-addr host:port] [-devices dev1,dev2,...] [-copy-workers N]\n"
+        "             [-transport rdma|tcp]\n"
         "  -addr         listen address (default 0.0.0.0:5050)\n"
+        "  -transport    rdma (default) | tcp\n"
         "  -devices      comma-separated NVMe device paths, one per cluster\n"
         "                member index (default /dev/nvme0n1)\n"
         "  -copy-workers parallel workers per WritePBABatch (default: nproc,\n"
@@ -50,6 +53,7 @@ void usage(const char *prog) {
 
 int main(int argc, char **argv) {
     std::string addr = "0.0.0.0:5050";
+    std::string transport = "rdma";
     std::string devices_str = "/dev/nvme0n1";
     unsigned hw = std::thread::hardware_concurrency();
     int copy_workers = static_cast<int>(hw == 0 ? 4 : hw);
@@ -61,6 +65,8 @@ int main(int argc, char **argv) {
         std::string arg = argv[i];
         if (arg == "-addr") {
             addr = next_arg_value(argc, argv, i, "-addr");
+        } else if (arg == "-transport") {
+            transport = next_arg_value(argc, argv, i, "-transport");
         } else if (arg == "-devices") {
             devices_str = next_arg_value(argc, argv, i, "-devices");
         } else if (arg == "-copy-workers") {
@@ -99,6 +105,19 @@ int main(int argc, char **argv) {
 
     nvmeof_raft::blockcopy::BlockCopyServer server(fds, devices, copy_workers);
 
+    nvmeof_raft::TransportKind transport_kind = nvmeof_raft::TransportKind::Rdma;
+    if (!nvmeof_raft::parse_transport_kind(transport, &transport_kind)) {
+        std::fprintf(stderr, "-transport must be 'rdma' or 'tcp'\n");
+        return 1;
+    }
+    if (transport_kind == nvmeof_raft::TransportKind::Rdma &&
+        !nvmeof_raft::rdma_devices_available()) {
+        std::fprintf(stderr,
+                     "-transport rdma: no RDMA device found on this host "
+                     "(use -transport tcp)\n");
+        return 1;
+    }
+
     HostPort listen_at = parse_host_port(addr);
     if (!listen_at.has_port) {
         std::fprintf(stderr, "invalid -addr %s (expected host:port)\n", addr.c_str());
@@ -106,15 +125,14 @@ int main(int argc, char **argv) {
     }
     int port = listen_at.port;
 
-    std::printf("raft_blockcopy_server listening (TCP): %s  (%zu devices)\n",
+    std::printf("raft_blockcopy_server listening (%s): %s  (%zu devices)\n",
+                nvmeof_raft::transport_kind_name(transport_kind),
                 addr.c_str(), devices.size());
-    /* 리슨 쪽은 아직 TCP 전용이다. 클라이언트 쪽은
-     * core/raft_transport.h의 BlockCopyClient 인터페이스로 추상화됐지만,
-     * 서버 쪽 accept 루프(net/include/raft_rpc_listener.h)에는 대응하는 인터페이스가
-     * 없다. rdmacm.Listen 대응으로 갈 때는 그 리스너에 짝이 되는 구현을
-     * 추가하고 이 호출부만 바꾸면 되며, 스토리지 서버 로직
-     * (storage/raft_blockcopy_server.h)은 그대로 둘 수 있다. */
-    nvmeof_raft::run_blockcopy_tcp_server(port, &server);
+    /* 전송은 -transport 로 고른다 (기본 rdma). 메서드 디스패치
+     * (dispatch_blockcopy_method)와 스토리지 서버 로직
+     * (storage/raft_blockcopy_server.h)은 전송을 전혀 모른다 -- 갈리는 것은
+     * run_blockcopy_server 안의 리스너 한 줄뿐이다. */
+    nvmeof_raft::run_blockcopy_server(transport_kind, port, &server);
 
     return 0;
 }

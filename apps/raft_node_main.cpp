@@ -16,7 +16,7 @@
  *      core/ 는 건드리지 않는다 (core는 net/ 헤더를 하나도 모른다).
  *   -> init_storage()
  *   -> start()          (메인 루프 / apply 워커 / slot GC 워커)
- *   -> run_tcp_server() (AppendEntries / RequestVote / Client* 수신)
+ *   -> run_raft_server() (AppendEntries / RequestVote / Client* 수신)
  *
  * 사용법:
  *   raft_node -id 1 \
@@ -29,7 +29,8 @@
 #include "raft_constants.h"
 #include "raft_statemachine_hash.h"
 #include "raft_tcp_server.h"
-#include "raft_tcp_clients.h"
+#include "raft_rpc_clients.h"
+#include "raft_rdma_transport.h"   /* rdma_devices_available */
 #include "raft_cli.h"
 
 #include <atomic>
@@ -92,6 +93,9 @@ void usage(const char *prog) {
       "  -id N              this node's id (must appear in -cluster)\n"
       "  -metadata-dir DIR  where the ring file lives (default .)\n"
       "  -heartbeat-ms N    heartbeat interval (default 300)\n"
+      "  -transport KIND    rdma (default) | tcp. RDMA uses rdma_cm over the\n"
+      "                     IPoIB addresses given in -cluster; tcp is the\n"
+      "                     fallback for hosts without an IB link.\n"
       "  -mode MODE         destination (default) | leader\n"
       "                     replication policy; 'leader' is the DARE-style\n"
       "                     policy for comparison (hpdc15dare 3.1.2)\n"
@@ -116,6 +120,7 @@ int main(int argc, char **argv) {
     std::string metadata_dir = ".";
     int heartbeat_ms = 300;
     std::string mode = "destination";
+    std::string transport = "rdma";
     uint64_t ring_pages = DEFAULT_NUM_PAGES;
     bool profile = false;
     bool debug = false;
@@ -134,6 +139,8 @@ int main(int argc, char **argv) {
             metadata_dir = next_arg_value(argc, argv, i, "-metadata-dir");
         } else if (arg == "-heartbeat-ms") {
             heartbeat_ms = std::atoi(next_arg_value(argc, argv, i, "-heartbeat-ms").c_str());
+        } else if (arg == "-transport") {
+            transport = next_arg_value(argc, argv, i, "-transport");
         } else if (arg == "-mode") {
             mode = next_arg_value(argc, argv, i, "-mode");
         } else if (arg == "-ring-pages") {
@@ -227,6 +234,18 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    TransportKind transport_kind = TransportKind::Rdma;
+    if (!parse_transport_kind(transport, &transport_kind)) {
+        std::fprintf(stderr, "-transport must be 'rdma' or 'tcp'\n");
+        return 1;
+    }
+    if (transport_kind == TransportKind::Rdma && !rdma_devices_available()) {
+        std::fprintf(stderr,
+                     "-transport rdma: no RDMA device found on this host "
+                     "(use -transport tcp)\n");
+        return 1;
+    }
+
     server->raft.cluster.resize(members.size());
     for (size_t i = 0; i < members.size(); i++) {
         server->raft.cluster[i].id = members[i].id;
@@ -237,19 +256,19 @@ int main(int argc, char **argv) {
 
     // 2. 네트워크
     /* ---- 전송 구현체 주입 (core/include/raft_transport.h) ----
-     * core/ 는 인터페이스만 알고, 여기서 TCP 구현을 꽂아 준다. RDMA로 갈
-     * 때 바뀌는 곳은 이 두 줄이다 (그리고 새 구현체 파일 하나).
-     * 커넥션 상태와 dial backoff는 구현체가 자기 안에 갖는다. */
+     * core/ 는 인터페이스만 알고, 여기서 구현을 꽂아 준다. 전송 선택이
+     * 일어나는 곳은 이 두 줄뿐이고(-transport), 커넥션 상태와 dial backoff는
+     * 구현체가 자기 안에 갖는다. */
     {
         std::vector<PeerEndpoint> peers;
         peers.reserve(members.size());
         for (const auto &m : members) {
             peers.push_back(PeerEndpoint{m.id, m.address});
         }
-        server->transport = std::make_shared<TcpRaftTransport>(std::move(peers));
+        server->transport = make_raft_transport(transport_kind, std::move(peers));
     }
-    server->blockcopy = std::make_shared<TcpBlockCopyClient>(
-        members[static_cast<size_t>(my_index)].storage_host);
+    server->blockcopy = make_blockcopy_client(
+        transport_kind, members[static_cast<size_t>(my_index)].storage_host);
 
     // 3. 스토리지
     try {
@@ -273,6 +292,7 @@ int main(int argc, char **argv) {
     std::printf("  device       : %s\n",
                 server->io.device_path.c_str());
     std::printf("  replication  : %s-side\n", mode.c_str());
+    std::printf("  transport    : %s\n", transport_kind_name(transport_kind));
     std::printf("  heartbeat    : %d ms\n", heartbeat_ms);
     std::printf("  term/tail    : term=%llu tail_log_index=%llu tail_slot=%llu\n",
                 static_cast<unsigned long long>(server->raft.current_term),
@@ -293,9 +313,9 @@ int main(int argc, char **argv) {
     std::atomic<bool> listener_stop{false};
     std::thread listener([&]() {
         try {
-            run_tcp_server(port, server.get(), &listener_stop);
+            run_raft_server(transport_kind, port, server.get(), &listener_stop);
         } catch (const std::exception &e) {
-            std::fprintf(stderr, "run_tcp_server failed: %s\n", e.what());
+            std::fprintf(stderr, "raft rpc listener failed: %s\n", e.what());
             g_stop.store(true);
         }
     });

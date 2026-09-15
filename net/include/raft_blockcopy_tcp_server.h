@@ -6,6 +6,7 @@
 #include "raft_proto_conv.h"
 #include "raft_rpc_listener.h"   /* accept 루프 / 커넥션 처리 / HTTP 핸드셰이크 (공용) */
 #include "raft_rpc_methods.h"
+#include "raft_rpc_conn.h"   /* TransportKind */
 
 #include <atomic>
 #include <string>
@@ -41,6 +42,10 @@ bool dispatch_blockcopy_method(blockcopy::BlockCopyServer *bcs, const std::strin
 void blockcopy_serve_connection(int fd, blockcopy::BlockCopyServer *bcs);
 
 void run_blockcopy_tcp_server(int port, blockcopy::BlockCopyServer *bcs, std::atomic<bool> *stop_flag = nullptr);
+
+/* 전송을 골라서 리슨한다 (디스패치는 전송과 무관하게 공유). */
+void run_blockcopy_server(TransportKind kind, int port, blockcopy::BlockCopyServer *bcs,
+                           std::atomic<bool> *stop_flag = nullptr);
 
 } /* namespace nvmeof_raft */
 

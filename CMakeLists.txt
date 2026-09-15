@@ -124,8 +124,7 @@ set(CORE_SRCS
 # (현재 구조상 그렇다는 뜻이며, 진짜 인터페이스는 아니다 — DECISIONS.md 참고)
 # net/ 중 **core 심볼을 필요로 하는** 것들. raft_node 전용이다.
 set(NET_SRCS
-    net/src/raft_rpc_client.cpp
-    net/src/raft_blkcopy_rpc_client.cpp
+    net/src/raft_rpc_clients.cpp
     net/src/raft_tcp_server.cpp
 )
 
@@ -141,8 +140,13 @@ set(BLOCKIO_SRCS blockio/cached_fd.cpp)
 # 세 개의 main(raft_node / raft_client / raft_blockcopy_server)이 전부 링크한다.
 # 이 그룹이 있어야 raft_client 와 raft_blockcopy_server 가 core 를 끌어오지
 # 않고도 헤더 밖 구현을 쓸 수 있다.
+# WIRE_SRCS 는 core 심볼을 요구하지 않는다 -- 세 바이너리 전부가 링크한다.
+# RDMA 전송(raft_rdma_transport.cpp)과 커넥션/ dialer(raft_rpc_conn.cpp)도
+# core 를 모르므로 여기 있다. core 인터페이스 구현(RpcRaftTransport /
+# RpcBlockCopyClient)만 NET_SRCS 에 있다.
 set(WIRE_SRCS net/src/raft_cli.cpp net/src/raft_wire_codec.cpp
-              net/src/raft_tcp_transport.cpp net/src/raft_rpc_listener.cpp)
+              net/src/raft_tcp_transport.cpp net/src/raft_rpc_listener.cpp
+              net/src/raft_rdma_transport.cpp net/src/raft_rpc_conn.cpp)
 
 set(PROTO_SRCS proto/rpcproto.pb.cc)
 
@@ -176,8 +180,14 @@ target_link_libraries(raft_core_obj PUBLIC raft_includes Threads::Threads)
 add_library(raft_storage_obj OBJECT ${STORAGE_SRCS})
 target_link_libraries(raft_storage_obj PUBLIC raft_includes raft_protobuf)
 
+# RDMA 전송이 WIRE 그룹에 있으므로 이 그룹을 링크하는 바이너리는 전부
+# librdmacm / libibverbs 를 함께 링크한다. 세 바이너리 모두 -transport rdma
+# 를 고를 수 있어야 하므로 맞는 배치다.
+add_library(raft_rdma INTERFACE)
+target_link_libraries(raft_rdma INTERFACE rdmacm ibverbs)
+
 add_library(raft_wire_obj OBJECT ${WIRE_SRCS})
-target_link_libraries(raft_wire_obj PUBLIC raft_includes)
+target_link_libraries(raft_wire_obj PUBLIC raft_includes raft_rdma)
 
 add_library(raft_net_obj OBJECT ${NET_SRCS})
 target_link_libraries(raft_net_obj PUBLIC raft_includes raft_protobuf Threads::Threads)
@@ -188,15 +198,15 @@ target_link_libraries(raft_net_obj PUBLIC raft_includes raft_protobuf Threads::T
 # ---------------------------------------------------------------------------
 add_executable(raft_node apps/raft_node_main.cpp)
 target_link_libraries(raft_node PRIVATE
-    raft_core_obj raft_blockio_obj raft_net_obj raft_wire_obj raft_proto_obj raft_includes raft_protobuf Threads::Threads)
+    raft_core_obj raft_blockio_obj raft_net_obj raft_wire_obj raft_proto_obj raft_includes raft_protobuf raft_rdma Threads::Threads)
 
 add_executable(raft_client apps/raft_client_main.cpp)
 target_link_libraries(raft_client PRIVATE
-    raft_wire_obj raft_proto_obj raft_includes raft_protobuf Threads::Threads)
+    raft_wire_obj raft_proto_obj raft_includes raft_protobuf raft_rdma Threads::Threads)
 
 add_executable(raft_blockcopy_server apps/raft_blockcopy_server_main.cpp)
 target_link_libraries(raft_blockcopy_server PRIVATE
-    raft_storage_obj raft_wire_obj raft_proto_obj raft_includes raft_protobuf Threads::Threads)
+    raft_storage_obj raft_wire_obj raft_proto_obj raft_includes raft_protobuf raft_rdma Threads::Threads)
 
 # blockcopy 처리량/포화점 측정 도구 (지연 전용이던 raft_blkcopy_bench 를
 # 2026-09-10 에 대체했다 -- DECISIONS.md 참고). raft_client 와 링크 구성이
@@ -204,14 +214,14 @@ target_link_libraries(raft_blockcopy_server PRIVATE
 # 필요 없다.
 add_executable(raft_blkcopy_scale apps/raft_blkcopy_scale_main.cpp)
 target_link_libraries(raft_blkcopy_scale PRIVATE
-    raft_wire_obj raft_proto_obj raft_includes raft_protobuf Threads::Threads)
+    raft_wire_obj raft_proto_obj raft_includes raft_protobuf raft_rdma Threads::Threads)
 
 # --- ASan+UBSan (build.sh asan 대응) --------------------------------------
 # 플래그가 달라 오브젝트를 공유할 수 없으므로 소스에서 직접 짓는다.
 # 기본 빌드에서 제외: cmake --build build-cmake --target raft_node_asan
 add_executable(raft_node_asan EXCLUDE_FROM_ALL
     apps/raft_node_main.cpp ${CORE_SRCS} ${BLOCKIO_SRCS} ${NET_SRCS} ${WIRE_SRCS} ${PROTO_SRCS})
-target_link_libraries(raft_node_asan PRIVATE raft_includes raft_protobuf Threads::Threads)
+target_link_libraries(raft_node_asan PRIVATE raft_includes raft_protobuf raft_rdma Threads::Threads)
 target_compile_options(raft_node_asan PRIVATE
     -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer)
 target_link_options(raft_node_asan PRIVATE -fsanitize=address,undefined)

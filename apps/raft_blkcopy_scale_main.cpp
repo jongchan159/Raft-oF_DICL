@@ -16,7 +16,7 @@
  * 가 돈다 -- W 는 서버 시작 플래그라 지점마다 서버를 다시 띄워야 하고, 그
  * 수명 관리는 스크립트 몫이다.
  *
- * 링크는 raft_client 와 같이 wire + proto 뿐이다 -- tcp_dial_http / rpc_invoke
+ * 링크는 raft_client 와 같이 wire + proto 뿐이다 -- RpcConn / dialer
  * 가 WIRE_SRCS 에 있어서 core 심볼이 필요한 raft_net_obj 를 끌어올 이유가
  * 없다 (계층 규약: CMake 의 isolation_* 테스트가 강제한다).
  *
@@ -34,7 +34,8 @@
  *
  * dst 장치/파일의 해당 구간을 **덮어쓴다.** -yes-destroy-dst 없이는 거부한다.
  * ============================================================ */
-#include "raft_tcp_transport.h"
+#include "raft_rpc_conn.h"
+#include "raft_rdma_transport.h"   /* rdma_devices_available */
 #include "raft_cli.h"
 /* raft_proto_conv.h 는 include 하지 않는다 (raft_client 와 같은 이유):
  * 변환 함수를 하나도 안 쓰면서 core/raft_entry.h 와
@@ -96,6 +97,7 @@ void usage(const char *prog) {
       "  -csv FILE       write per-iteration raw samples here\n"
       "  -label NAME     tag written into the CSV and the summary line\n"
       "  -arm NAME       arm tag (e.g. A-local, B-rdma) for the CSV\n"
+      "  -transport KIND rdma (default) | tcp\n"
       "  -yes-destroy-dst   required: acknowledges the destination is overwritten\n"
       "\n"
       "Throughput is always computed from wall time. copy_nanos is a SUM across\n"
@@ -107,11 +109,11 @@ void usage(const char *prog) {
 /* 하나의 스토리지 노드로의 RPC 왕복. 실패 시 예외. (raft_client 의 call 과
  * 같은 형태지만 그 파일을 include 할 수 없어 -- 둘 다 main 이다 -- 재정의한다) */
 template <typename ReqProtoT, typename RspProtoT>
-RspProtoT call(RpcClientHandle *h, const std::string &method, const ReqProtoT &req) {
+RspProtoT call(RpcConn *h, const std::string &method, const ReqProtoT &req) {
     std::vector<uint8_t> body(static_cast<size_t>(req.ByteSizeLong()));
     req.SerializeToArray(body.data(), static_cast<int>(body.size()));
 
-    std::vector<uint8_t> rsp_body = rpc_invoke(h, method, body);
+    std::vector<uint8_t> rsp_body = h->invoke(method, body);
     RspProtoT rsp;
     if (!rsp.ParseFromArray(rsp_body.data(), static_cast<int>(rsp_body.size()))) {
         throw std::runtime_error("parse response failed");
@@ -202,6 +204,7 @@ double mib_per_s(uint64_t bytes, int64_t ns) {
 
 int main(int argc, char **argv) {
     std::string storage_addr, csv_path, label = "unnamed", arm = "unnamed";
+    std::string transport = "rdma";
     int src_dev = -1, dst_dev = -1;
     uint64_t chunk = 0;
     uint64_t src_off = 4ull << 30, dst_off = 4ull << 30;
@@ -248,6 +251,8 @@ int main(int argc, char **argv) {
             csv_path = next_arg_value(argc, argv, i, "-csv");
         } else if (a == "-label") {
             label = next_arg_value(argc, argv, i, "-label");
+        } else if (a == "-transport") {
+            transport = next_arg_value(argc, argv, i, "-transport");
         } else if (a == "-arm") {
             arm = next_arg_value(argc, argv, i, "-arm");
         } else if (a == "-yes-destroy-dst") {
@@ -260,6 +265,17 @@ int main(int argc, char **argv) {
             usage(argv[0]);
             return 1;
         }
+    }
+
+    TransportKind transport_kind = TransportKind::Rdma;
+    if (!parse_transport_kind(transport, &transport_kind)) {
+        std::fprintf(stderr, "-transport must be 'rdma' or 'tcp'\n");
+        return 1;
+    }
+    if (transport_kind == TransportKind::Rdma && !rdma_devices_available()) {
+        std::fprintf(stderr, "-transport rdma: no RDMA device found "
+                             "(use -transport tcp)\n");
+        return 1;
     }
 
     if (storage_addr.empty() || src_dev < 0 || dst_dev < 0 || chunk == 0) {
@@ -328,9 +344,9 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    std::shared_ptr<RpcClientHandle> h;
+    std::shared_ptr<RpcConn> h;
     try {
-        h.reset(tcp_dial_http(storage_addr));
+        h = dialer_for(transport_kind)(storage_addr);
     } catch (const std::exception &e) {
         std::fprintf(stderr, "connect %s failed: %s\n", storage_addr.c_str(), e.what());
         return 1;

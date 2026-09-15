@@ -61,12 +61,11 @@ CORE_SRCS=(
     "$CORE_DIR/raft_types.cpp"
 )
 
-# net/의 .cpp (rpc_call_append_entries/rpc_call_request_vote/
-# blkcopy_write_pba_batch의 실제 구현. 이 파일들만 RDMA 버전으로
-# 교체하면 core/는 안 건드려도 됨)
+# net/ 중 core 인터페이스(RaftTransport / BlockCopyClient)를 구현하는 것.
+# 전송 종류(TCP/RDMA)는 여기가 아니라 WIRE 그룹의 raft_rpc_conn.cpp 에서
+# 갈린다 -- 이 파일은 dial backoff 와 protobuf 인코딩만 갖는다.
 NET_SRCS=(
-    "$NET_DIR/raft_rpc_client.cpp"
-    "$NET_DIR/raft_blkcopy_rpc_client.cpp"
+    "$NET_DIR/raft_rpc_clients.cpp"
     "$NET_DIR/raft_tcp_server.cpp"
 )
 
@@ -90,6 +89,8 @@ WIRE_SRCS=(
     "$NET_DIR/raft_wire_codec.cpp"
     "$NET_DIR/raft_tcp_transport.cpp"
     "$NET_DIR/raft_rpc_listener.cpp"
+    "$NET_DIR/raft_rdma_transport.cpp"
+    "$NET_DIR/raft_rpc_conn.cpp"
 )
 
 PROTO_SRCS=(
@@ -118,7 +119,7 @@ else
 fi
 
 CXXFLAGS=(-std=$STD -Wall -Wextra -O2 "${INCLUDES[@]}")
-LDFLAGS=(-lpthread)
+LDFLAGS=(-lpthread -lrdmacm -libverbs)
 
 # 단일 바이너리 빌드 헬퍼: build_bin <out> <src...>
 build_bin() {

@@ -244,6 +244,40 @@ ZERO_RANGE에 시간과 공간이 드므로 처음에는 작게 잡고 올릴 �
 
 ---
 
+## 6.5 전송 (RDMA 기본)
+
+Raft RPC(AppendEntries / RequestVote / Client\*)와 blockcopy RPC(WritePBABatch)는
+**기본적으로 RDMA**(`rdma_cm` + RC QP, SEND/RECV)로 오간다. TCP 는 IB 링크가 없는
+호스트를 위한 선택지로 남아 있다.
+
+```bash
+# 기본값 -- 아무것도 안 주면 rdma
+./build/raft_node -id 5 -cluster "..." ...
+# 명시적으로 TCP
+./build/raft_node -id 5 -cluster "..." -transport tcp
+```
+
+**주소가 전송을 결정하지 않는다 — 플래그가 결정한다.** `rdma_cm` 은 IP 주소로
+RDMA 장치를 찾으므로, `-transport rdma` 일 때 `-cluster` 의 `raft_addr` 과
+`storage_host` 는 **IPoIB 주소**여야 한다 (이 클러스터에서는 `10.0.0.x`).
+1GbE 주소를 주면 `rdma_resolve_addr` 이 실패한다.
+
+세 바이너리(`raft_node` / `raft_blockcopy_server` / `raft_client`)가 같은 플래그를
+갖고, **양쪽 끝이 같은 전송이어야 한다** (프레이밍이 다르다 — TCP 는 Go net/rpc
+HTTP CONNECT + 길이 프레이밍, RDMA 는 SEND 메시지 하나가 프레임 하나).
+
+와이어에 실리는 **protobuf 바디와 메서드 이름은 두 전송이 완전히 같다.**
+`dispatch_raft_method` / `dispatch_blockcopy_method` 는 전송을 전혀 모른다.
+
+실측(eternity5 → eternity6, 파일 백엔드 64MiB, chunk 64KiB, batch 4, 100회):
+
+| 전송 | 처리량 | wall p50 | wall p99 |
+|---|---|---|---|
+| rdma | 299.9 MiB/s | 826 µs | 934 µs |
+| tcp (IPoIB 경유) | 261.6 MiB/s | 940 µs | 1074 µs |
+
+---
+
 ## 7. 주요 플래그
 
 **`raft_node`**
@@ -254,6 +288,7 @@ ZERO_RANGE에 시간과 공간이 드므로 처음에는 작게 잡고 올릴 �
 | `-cluster SPEC` | (필수) | `id@raft_addr@device_path@storage_host` 쉼표 구분 |
 | `-metadata-dir DIR` | `.` | 링 파일 위치 |
 | `-heartbeat-ms N` | 300 | 하트비트 주기. election timeout은 이것의 20~30배 |
+| `-transport rdma\|tcp` | **rdma** | Raft/blockcopy RPC 전송. rdma는 `-cluster`의 주소를 **IPoIB 주소**로 해석한다 |
 | `-mode destination\|leader` | destination | 복제 정책 |
 | `-ring-pages N` | 8388608 (32GiB) | 링 크기 (4KiB 페이지) |
 | `-profile` | off | 서브스테이지 프로파일링 (apply-timed에 필요) |
@@ -264,7 +299,8 @@ ZERO_RANGE에 시간과 공간이 드므로 처음에는 작게 잡고 올릴 �
 | `-debug` | off | 1초 간격 상태 덤프 |
 
 **`raft_blockcopy_server`**: `-addr` (기본 `0.0.0.0:5050`),
-`-devices` (쉼표 구분, 클러스터 인덱스 순서), `-copy-workers` (기본 nproc, 최대 16)
+`-devices` (쉼표 구분, 클러스터 인덱스 순서), `-copy-workers` (기본 nproc, 최대 16),
+`-transport rdma|tcp` (기본 **rdma**)
 
 **`raft_client`**: `-addrs`, `-op apply|apply-timed|echo|commit-index|hash|ae-stats`,
 `-n`, `-size`, `-batch`, `-at-count`, `-timeout-s`

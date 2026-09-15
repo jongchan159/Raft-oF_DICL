@@ -3,6 +3,7 @@
 
 #include "raft_server.h"
 #include "raft_rpc_listener.h"   /* accept 루프 / 커넥션 처리 (공용) */
+#include "raft_rpc_conn.h"       /* TransportKind */
 
 #include <atomic>
 #include <string>
@@ -40,8 +41,14 @@ bool dispatch_raft_method(Server *server, const std::string &method, const std::
 /* 커넥션 하나를 처리한다 (fd 소유권을 넘겨받아 닫는다). */
 void serve_connection(int fd, Server *server);
 
-/* Raft 노드의 RPC 리슨 루프. stop_flag로 종료를 폴링한다. */
+/* Raft 노드의 RPC 리슨 루프 (TCP). stop_flag로 종료를 폴링한다. */
 void run_tcp_server(int port, Server *server, std::atomic<bool> *stop_flag = nullptr);
+
+/* 전송을 골라서 리슨한다. 메서드 디스패치(dispatch_raft_method /
+ * dispatch_client_method)는 전송과 무관하게 **같은 코드**를 쓴다 --
+ * 갈리는 것은 프레이밍과 운반뿐이다. */
+void run_raft_server(TransportKind kind, int port, Server *server,
+                      std::atomic<bool> *stop_flag = nullptr);
 
 } /* namespace nvmeof_raft */
 

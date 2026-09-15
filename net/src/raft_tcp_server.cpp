@@ -1,4 +1,5 @@
 #include "raft_tcp_server.h"
+#include "raft_rdma_transport.h"
 
 #include "raft_statemachine_hash.h"
 #include "raft_wire_codec.h"
@@ -212,6 +213,20 @@ void run_tcp_server(int port, Server *server,
     run_rpc_listener(port, "raft",
                      [server](int conn_fd) { serve_connection(conn_fd, server); },
                      stop_flag);
+}
+
+void run_raft_server(TransportKind kind, int port, Server *server,
+                      std::atomic<bool> *stop_flag) {
+    if (kind == TransportKind::Rdma) {
+        run_rdma_listener(port, "raft",
+            [server](const std::string &method, const std::vector<uint8_t> &body,
+                     std::vector<uint8_t> &rsp_body) {
+                return dispatch_raft_method(server, method, body, rsp_body);
+            },
+            stop_flag);
+        return;
+    }
+    run_tcp_server(port, server, stop_flag);
 }
 
 } /* namespace nvmeof_raft */

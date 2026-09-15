@@ -12,7 +12,8 @@
  *   raft_client -addrs ... -op commit-index
  *   raft_client -addrs ... -op ae-stats
  * ============================================================ */
-#include "raft_tcp_transport.h"
+#include "raft_rpc_conn.h"
+#include "raft_rdma_transport.h"   /* rdma_devices_available */
 #include "raft_cli.h"
 /* raft_proto_conv.h는 include하지 않는다: 이 바이너리는 변환 함수를 하나도
  * 쓰지 않으면서 core/raft_entry.h와 storage/raft_blockcopy_server.h(pread/pwrite
@@ -38,11 +39,11 @@ using clock_type = std::chrono::steady_clock;
 
 /* 하나의 노드로의 RPC 왕복. 실패 시 예외. */
 template <typename ReqProtoT, typename RspProtoT>
-RspProtoT call(RpcClientHandle *h, const std::string &method, const ReqProtoT &req) {
+RspProtoT call(RpcConn *h, const std::string &method, const ReqProtoT &req) {
     std::vector<uint8_t> body(static_cast<size_t>(req.ByteSizeLong()));
     req.SerializeToArray(body.data(), static_cast<int>(body.size()));
 
-    std::vector<uint8_t> rsp_body = rpc_invoke(h, method, body);
+    std::vector<uint8_t> rsp_body = h->invoke(method, body);
     RspProtoT rsp;
     if (!rsp.ParseFromArray(rsp_body.data(), static_cast<int>(rsp_body.size()))) {
         throw std::runtime_error("parse response failed");
@@ -65,7 +66,8 @@ void usage(const char *prog) {
       "  -size N     bytes per command (default 512)\n"
       "  -batch N    commands per Apply RPC (default 1)\n"
       "  -at-count N for -op hash: wait until count reaches N\n"
-      "  -timeout-s  leader discovery timeout (default 15)\n",
+      "  -timeout-s  leader discovery timeout (default 15)\n"
+      "  -transport  rdma (default) | tcp\n",
       prog);
 }
 
@@ -75,19 +77,20 @@ void usage(const char *prog) {
  * 이 명령도 로그에 들어가므로, 이후 카운트에 포함해서 계산한다. */
 struct Leader {
     size_t index = 0;
-    std::shared_ptr<RpcClientHandle> handle;
+    std::shared_ptr<RpcConn> handle;
     uint64_t probe_commands = 0;   /* 리더 탐색 중 실제로 apply된 명령 수 */
 };
 
-Leader find_leader(const std::vector<std::string> &addrs, int timeout_s) {
+Leader find_leader(const std::vector<std::string> &addrs, int timeout_s,
+                    const RpcDial &dial) {
     auto deadline = clock_type::now() + std::chrono::seconds(timeout_s);
     uint64_t probes = 0;
 
     while (clock_type::now() < deadline) {
         for (size_t i = 0; i < addrs.size(); i++) {
-            std::shared_ptr<RpcClientHandle> h;
+            std::shared_ptr<RpcConn> h;
             try {
-                h.reset(tcp_dial_http(addrs[i]));
+                h = dial(addrs[i]);
             } catch (const std::exception &) {
                 continue;   /* 아직 안 떴을 수 있다 */
             }
@@ -124,6 +127,7 @@ int main(int argc, char **argv) {
     int batch = 1;
     uint64_t at_count = 0;
     int timeout_s = 15;
+    std::string transport = "rdma";
 
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
@@ -141,6 +145,8 @@ int main(int argc, char **argv) {
             at_count = std::strtoull(next_arg_value(argc, argv, i, "-at-count").c_str(), nullptr, 10);
         } else if (arg == "-timeout-s") {
             timeout_s = std::atoi(next_arg_value(argc, argv, i, "-timeout-s").c_str());
+        } else if (arg == "-transport") {
+            transport = next_arg_value(argc, argv, i, "-transport");
         } else if (arg == "-h" || arg == "--help") {
             usage(argv[0]);
             return 0;
@@ -158,13 +164,25 @@ int main(int argc, char **argv) {
     }
     if (batch < 1) batch = 1;
 
+    TransportKind transport_kind = TransportKind::Rdma;
+    if (!parse_transport_kind(transport, &transport_kind)) {
+        std::fprintf(stderr, "-transport must be 'rdma' or 'tcp'\n");
+        return 1;
+    }
+    if (transport_kind == TransportKind::Rdma && !rdma_devices_available()) {
+        std::fprintf(stderr, "-transport rdma: no RDMA device found "
+                             "(use -transport tcp)\n");
+        return 1;
+    }
+    RpcDial dial = dialer_for(transport_kind);
+
     try {
         /* ---- 노드별 조회 op은 리더 탐색 없이 전부에 물어본다 ---- */
         if (op == "commit-index" || op == "hash" || op == "ae-stats") {
             for (const auto &addr : addrs) {
-                std::shared_ptr<RpcClientHandle> h;
+                std::shared_ptr<RpcConn> h;
                 try {
-                    h.reset(tcp_dial_http(addr));
+                    h = dial(addr);
                 } catch (const std::exception &e) {
                     std::printf("%-22s unreachable (%s)\n", addr.c_str(), e.what());
                     continue;
@@ -202,7 +220,7 @@ int main(int argc, char **argv) {
 
         /* ---- echo: 리더 탐색 없이 첫 노드에 ---- */
         if (op == "echo") {
-            std::shared_ptr<RpcClientHandle> h(tcp_dial_http(addrs[0]));
+            std::shared_ptr<RpcConn> h = dial(addrs[0]);
             std::string payload(static_cast<size_t>(size), 'e');
             auto t0 = clock_type::now();
             for (int i = 0; i < n; i++) {
@@ -221,7 +239,7 @@ int main(int argc, char **argv) {
         }
 
         /* ---- apply / apply-timed ---- */
-        Leader leader = find_leader(addrs, timeout_s);
+        Leader leader = find_leader(addrs, timeout_s, dial);
         std::printf("leader: %s (probe applied %llu command)\n",
                     addrs[leader.index].c_str(),
                     static_cast<unsigned long long>(leader.probe_commands));
