@@ -215,10 +215,10 @@ void run_tcp_server(int port, Server *server,
                      stop_flag);
 }
 
-void run_raft_server(TransportKind kind, int port, Server *server,
-                      std::atomic<bool> *stop_flag) {
+void run_raft_server(TransportKind kind, const std::string &bind_host, int port,
+                      Server *server, std::atomic<bool> *stop_flag) {
     if (kind == TransportKind::Rdma) {
-        run_rdma_listener(port, "raft",
+        run_rdma_listener(bind_host, port, "raft",
             [server](const std::string &method, const std::vector<uint8_t> &body,
                      std::vector<uint8_t> &rsp_body) {
                 return dispatch_raft_method(server, method, body, rsp_body);

@@ -46,10 +46,11 @@ void run_blockcopy_tcp_server(int port, blockcopy::BlockCopyServer *bcs,
                      stop_flag);
 }
 
-void run_blockcopy_server(TransportKind kind, int port, blockcopy::BlockCopyServer *bcs,
+void run_blockcopy_server(TransportKind kind, const std::string &bind_host, int port,
+                           blockcopy::BlockCopyServer *bcs,
                            std::atomic<bool> *stop_flag) {
     if (kind == TransportKind::Rdma) {
-        run_rdma_listener(port, "blockcopy",
+        run_rdma_listener(bind_host, port, "blockcopy",
             [bcs](const std::string &method, const std::vector<uint8_t> &body,
                   std::vector<uint8_t> &rsp_body) {
                 return dispatch_blockcopy_method(bcs, method, body, rsp_body);

@@ -310,10 +310,13 @@ int main(int argc, char **argv) {
 
     // 5. accept 루프 (별도 스레드)
     int port = port_of(server->raft.address);
+    /* RDMA 는 자기 주소(-cluster 의 raft_addr)에 바인드한다. TCP 리스너는
+     * 예전처럼 INADDR_ANY 라 이 값을 쓰지 않는다. */
+    std::string listen_host = parse_host_port(server->raft.address).host;
     std::atomic<bool> listener_stop{false};
     std::thread listener([&]() {
         try {
-            run_raft_server(transport_kind, port, server.get(), &listener_stop);
+            run_raft_server(transport_kind, listen_host, port, server.get(), &listener_stop);
         } catch (const std::exception &e) {
             std::fprintf(stderr, "raft rpc listener failed: %s\n", e.what());
             g_stop.store(true);

@@ -132,7 +132,13 @@ int main(int argc, char **argv) {
      * (dispatch_blockcopy_method)와 스토리지 서버 로직
      * (storage/raft_blockcopy_server.h)은 전송을 전혀 모른다 -- 갈리는 것은
      * run_blockcopy_server 안의 리스너 한 줄뿐이다. */
-    nvmeof_raft::run_blockcopy_server(transport_kind, port, &server);
+    try {
+        nvmeof_raft::run_blockcopy_server(transport_kind, listen_at.host, port, &server);
+    } catch (const std::exception &e) {
+        /* 리슨 실패(포트 충돌 등)를 abort/코어덤프 대신 한 줄로 알린다. */
+        std::fprintf(stderr, "listener failed: %s\n", e.what());
+        return 1;
+    }
 
     return 0;
 }

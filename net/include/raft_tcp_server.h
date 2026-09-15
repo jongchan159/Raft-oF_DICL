@@ -47,8 +47,8 @@ void run_tcp_server(int port, Server *server, std::atomic<bool> *stop_flag = nul
 /* 전송을 골라서 리슨한다. 메서드 디스패치(dispatch_raft_method /
  * dispatch_client_method)는 전송과 무관하게 **같은 코드**를 쓴다 --
  * 갈리는 것은 프레이밍과 운반뿐이다. */
-void run_raft_server(TransportKind kind, int port, Server *server,
-                      std::atomic<bool> *stop_flag = nullptr);
+void run_raft_server(TransportKind kind, const std::string &bind_host, int port,
+                      Server *server, std::atomic<bool> *stop_flag = nullptr);
 
 } /* namespace nvmeof_raft */
 

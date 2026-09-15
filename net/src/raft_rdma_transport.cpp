@@ -441,7 +441,7 @@ void serve_rdma_connection(RdmaConn *c, const char *tag,
 
 } /* anonymous namespace */
 
-void run_rdma_listener(int port, const char *tag,
+void run_rdma_listener(const std::string &bind_host, int port, const char *tag,
                         const RpcMethodDispatcher &dispatch,
                         std::atomic<bool> *stop_flag) {
     rdma_event_channel *ec = rdma_create_event_channel();
@@ -454,8 +454,27 @@ void run_rdma_listener(int port, const char *tag,
     sin.sin_family = AF_INET;
     sin.sin_port = htons(static_cast<uint16_t>(port));
     sin.sin_addr.s_addr = INADDR_ANY;
+    if (!bind_host.empty() && bind_host != "0.0.0.0") {
+        if (::inet_pton(AF_INET, bind_host.c_str(), &sin.sin_addr) != 1) {
+            throw std::runtime_error("rdma: bind address '" + bind_host +
+                                      "' is not an IPv4 address (RDMA needs the "
+                                      "IPoIB address, not a hostname)");
+        }
+    }
     if (rdma_bind_addr(listener, reinterpret_cast<sockaddr *>(&sin)) != 0) {
-        fail("rdma_bind_addr(port " + std::to_string(port) + ")");
+        int e = errno;
+        std::string where = (bind_host.empty() ? std::string("0.0.0.0") : bind_host) +
+                            ":" + std::to_string(port);
+        /* RDMA CM 은 **커널 TCP 포트 테이블과 별개의 포트 공간**을 쓴다.
+         * 그래서 (1) 같은 포트를 이미 쓰는 RDMA 리스너가 있어도 `ss` 에는
+         * 안 보이고, (2) librdmacm 은 그 충돌을 EADDRINUSE 가 아니라
+         * EADDRNOTAVAIL 로 보고한다. 실제로 이 메시지 때문에 "주소가 없다"로
+         * 오해하기 쉬워서 확인 방법을 같이 적는다. */
+        throw std::runtime_error(
+            "rdma: rdma_bind_addr(" + where + "): " + std::strerror(e) +
+            " -- RDMA 포트 공간은 ss 에 안 보인다. 같은 포트를 쓰는 리스너가"
+            " 있는지 `rdma resource show cm_id | grep :" + std::to_string(port) +
+            "` 로 확인할 것");
     }
     if (rdma_listen(listener, 16) != 0) { fail("rdma_listen"); }
 

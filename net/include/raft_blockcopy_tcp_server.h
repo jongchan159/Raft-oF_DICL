@@ -44,7 +44,8 @@ void blockcopy_serve_connection(int fd, blockcopy::BlockCopyServer *bcs);
 void run_blockcopy_tcp_server(int port, blockcopy::BlockCopyServer *bcs, std::atomic<bool> *stop_flag = nullptr);
 
 /* 전송을 골라서 리슨한다 (디스패치는 전송과 무관하게 공유). */
-void run_blockcopy_server(TransportKind kind, int port, blockcopy::BlockCopyServer *bcs,
+void run_blockcopy_server(TransportKind kind, const std::string &bind_host, int port,
+                           blockcopy::BlockCopyServer *bcs,
                            std::atomic<bool> *stop_flag = nullptr);
 
 } /* namespace nvmeof_raft */

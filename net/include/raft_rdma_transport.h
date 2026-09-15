@@ -78,7 +78,10 @@ std::vector<uint8_t> rdma_invoke(RdmaClientHandle *h, const std::string &method,
  * stop_flag 가 서면 200ms 안에 루프를 빠져나오고 모든 커넥션 스레드를
  * 정리한 뒤 반환한다.
  * ============================================================ */
-void run_rdma_listener(int port, const char *tag,
+/* bind_host 가 비었거나 "0.0.0.0" 이면 모든 RDMA 장치에 리슨한다. 여러 IB
+ * 포트가 있는 호스트(eternitystorage 는 두 개)에서 특정 포트로 고정하려면
+ * IPoIB 주소를 준다 -- TCP 쪽 -addr 의 host 부분이 그대로 여기로 온다. */
+void run_rdma_listener(const std::string &bind_host, int port, const char *tag,
                         const RpcMethodDispatcher &dispatch,
                         std::atomic<bool> *stop_flag = nullptr);
 
