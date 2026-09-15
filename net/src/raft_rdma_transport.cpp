@@ -272,16 +272,18 @@ struct RdmaClientHandle {
 
 namespace {
 
-/* cm 이벤트 하나를 기다린다. 기대한 타입이 아니면 예외. */
-void expect_cm_event(rdma_event_channel *ec, rdma_cm_event_type want, int timeout_ms) {
+/* cm 이벤트 하나를 기다린다. 기대한 타입이 아니면 예외.
+ * peer 는 에러 메시지에만 쓴다 ("어느 주소로 가다 실패했나"). */
+void expect_cm_event(rdma_event_channel *ec, rdma_cm_event_type want, int timeout_ms,
+                     const std::string &peer) {
     pollfd pfd{};
     pfd.fd = ec->fd;
     pfd.events = POLLIN;
     int pr = ::poll(&pfd, 1, timeout_ms);
     if (pr < 0) { fail("poll(cm event channel)"); }
     if (pr == 0) {
-        throw std::runtime_error(std::string("rdma: timed out waiting for ") +
-                                  rdma_event_str(want));
+        throw std::runtime_error(std::string("rdma: ") + peer +
+                                  ": timed out waiting for " + rdma_event_str(want));
     }
 
     rdma_cm_event *ev = nullptr;
@@ -291,9 +293,28 @@ void expect_cm_event(rdma_event_channel *ec, rdma_cm_event_type want, int timeou
     rdma_ack_cm_event(ev);
 
     if (got != want) {
-        throw std::runtime_error(std::string("rdma: expected ") + rdma_event_str(want) +
-                                  " but got " + rdma_event_str(got) +
-                                  " (status " + std::to_string(status) + ")");
+        std::string msg = std::string("rdma: ") + peer + ": " + rdma_event_str(got);
+        if (status < 0) {
+            msg += " (" + std::string(std::strerror(-status)) + ")";
+        }
+        /* 자주 나오는 둘은 원인을 같이 적는다. rdma_cm 은 목적지 IP 로 가는
+         * 경로를 **IPoIB 넷디바이스에서** 찾는다. 그래서 IB 링크가 DOWN 이거나
+         * 그 인터페이스에 IPv4 주소가 없으면 라우트가 이더넷으로 빠지고
+         * ENODEV 가 된다 -- "주소가 틀렸다" 가 아니다. */
+        if (got == RDMA_CM_EVENT_ADDR_ERROR) {
+            msg += " -- 이 호스트에서 그 IP 로 가는 RDMA 경로가 없다. "
+                   "`ip route get <ip>` 가 ib 인터페이스로 나가는지, "
+                   "`ip -4 addr show` 에 IPoIB 주소가 있는지, "
+                   "링크가 ACTIVE 인지 확인할 것 (아니면 -transport tcp)";
+        } else if (got == RDMA_CM_EVENT_ROUTE_ERROR) {
+            msg += " -- IPoIB 주소는 있으나 경로 해석이 실패했다 "
+                   "(서브넷 매니저 / 상대 링크 상태 확인)";
+        } else if (got == RDMA_CM_EVENT_REJECTED ||
+                   got == RDMA_CM_EVENT_CONNECT_ERROR) {
+            msg += " -- 상대가 그 포트에 RDMA 로 리슨하고 있지 않을 수 있다 "
+                   "(원격에서 `rdma resource show cm_id | grep :<port>`)";
+        }
+        throw std::runtime_error(msg);
     }
 }
 
@@ -325,10 +346,10 @@ RdmaClientHandle *rdma_dial(const std::string &address, int timeout_ms) {
     if (rdma_resolve_addr(id, nullptr, ai->ai_addr, timeout_ms) != 0) {
         fail("rdma_resolve_addr(" + address + ")");
     }
-    expect_cm_event(h->ec, RDMA_CM_EVENT_ADDR_RESOLVED, timeout_ms);
+    expect_cm_event(h->ec, RDMA_CM_EVENT_ADDR_RESOLVED, timeout_ms, address);
 
     if (rdma_resolve_route(id, timeout_ms) != 0) { fail("rdma_resolve_route"); }
-    expect_cm_event(h->ec, RDMA_CM_EVENT_ROUTE_RESOLVED, timeout_ms);
+    expect_cm_event(h->ec, RDMA_CM_EVENT_ROUTE_RESOLVED, timeout_ms, address);
 
     setup_conn(&h->conn, id);
     post_recv(&h->conn);   /* 응답을 받을 자리를 먼저 깔아 둔다 */
@@ -339,7 +360,7 @@ RdmaClientHandle *rdma_dial(const std::string &address, int timeout_ms) {
     cp.retry_count = 7;
     cp.rnr_retry_count = 7;
     if (rdma_connect(id, &cp) != 0) { fail("rdma_connect(" + address + ")"); }
-    expect_cm_event(h->ec, RDMA_CM_EVENT_ESTABLISHED, timeout_ms);
+    expect_cm_event(h->ec, RDMA_CM_EVENT_ESTABLISHED, timeout_ms, address);
 
     return h.release();
 }
