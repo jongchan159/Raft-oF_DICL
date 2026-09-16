@@ -39,13 +39,6 @@ void blockcopy_serve_connection(int fd, blockcopy::BlockCopyServer *bcs) {
         });
 }
 
-void run_blockcopy_tcp_server(int port, blockcopy::BlockCopyServer *bcs,
-                                      std::atomic<bool> *stop_flag) {
-    run_rpc_listener(port, "blockcopy",
-                     [bcs](int conn_fd) { blockcopy_serve_connection(conn_fd, bcs); },
-                     stop_flag);
-}
-
 void run_blockcopy_server(TransportKind kind, const std::string &bind_host, int port,
                            blockcopy::BlockCopyServer *bcs,
                            std::atomic<bool> *stop_flag) {
@@ -58,7 +51,11 @@ void run_blockcopy_server(TransportKind kind, const std::string &bind_host, int 
             stop_flag);
         return;
     }
-    run_blockcopy_tcp_server(port, bcs, stop_flag);
+
+    // run_blockcopy_tcp_server(port, bcs, stop_flag);
+    run_rpc_listener(port, "blockcopy",
+                     [bcs](int conn_fd) { blockcopy_serve_connection(conn_fd, bcs); },
+                     stop_flag);
 }
 
 } /* namespace nvmeof_raft */
