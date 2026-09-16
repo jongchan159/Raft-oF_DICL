@@ -1,10 +1,11 @@
 # raftof 3노드 E2E 실험 — 실클러스터 런북 (disaggregated storage)
 
-실제 NVMe-oF 볼륨 위에서 `-identity-pba` **없이** (FIEMAP 으로 PBA 해석) 3노드
-Raft 를 띄우고, 복제 정합성을 확인한 뒤 지연·처리량을 측정한다.
+실제 NVMe-oF 볼륨 위에서 FIEMAP 으로 PBA 를 해석해 3노드 Raft 를 띄우고,
+복제 정합성을 확인한 뒤 지연·처리량을 측정한다.
 
-로컬 단일 호스트 검증은 `scripts/smoke_test.sh` 가 따로 있다. 이 문서는
-**실클러스터 전용**이며 거기서만 나타나는 함정을 다룬다.
+**로컬 단일 호스트 검증 수단은 더 이상 없다.** `-identity-pba` 테스트 모드와
+`scripts/smoke_test.sh` / `scripts/restart_test.sh` / `raft_selftest` 는 2026-09-14 에
+제거됐다. 복제 경로를 검증하는 곳은 이 문서의 §6 뿐이며, 거기서만 나타나는 함정을 다룬다.
 
 ---
 
@@ -270,28 +271,101 @@ ADDRS=10.0.0.7:6001,10.0.0.5:6001,10.0.0.6:6001
 `ae_entries ≈ 2 × 엔트리수` 여야 정상이다(팔로워 2개 × 1회). 훨씬 크면 팔로워가
 못 따라오고 리더가 백로그를 재전송하는 중이다.
 
-### 6-2. 블록 복사가 옳은 바이트를 옮겼는가
+### 6-2. 무엇으로는 검증할 수 없는가 — 6-3 전에 읽을 것
 
-세 링 파일이 **512B 헤더 이후 바이트 단위로 같아야** 한다. 파일이 서로 다른
-컴퓨트 노드에 있으므로 각자 해시를 떠서 비교한다.
+**두 가지가 안 된다. 둘 다 예전에 이 문서와 `HANDOFF.md` 가 지정했던 방법이다.**
+
+**(a) `-op hash` 는 리더만 본다.** `apply_pending` 이 리더 전용이다 —
+`core/src/raft_commit.cpp:141` 이 `state == Leader` 일 때만 `apply_notify_cv` 를
+깨우므로 팔로워의 apply 워커는 영원히 안 깬다. 팔로워가
+`count=0  hash=cbf29ce484222325`(FNV offset basis = 빈 상태머신)로 나오는 것이
+**정상**이고, 이것을 "팔로워가 복제를 못 받았다"로 읽으면 안 된다 (`HANDOFF.md` §7.4).
+
+**(b) 링 파일 md5 비교는 팔로워에 대해 성립하지 않는다.** Destination-side 복제에서
+팔로워의 바이트는 스토리지 노드가 **raw 디바이스에 직접 pwrite** 한다 — 팔로워의 ext4 를
+거치지 않는다. 그런데 U11 때문에 팔로워 링의 블록은 기동 직후 전부 `unwritten` extent 이고,
+**ext4 는 unwritten extent 읽기를 장치에 내리지 않고 0 으로 채워 돌려준다**
+(`iflag=direct` 를 줘도 같다). 그래서 팔로워 링 파일은 팔로워가 *자기 파일시스템을 통해* 쓴
+블록 — 512B 헤더가 들어 있는 **블록 0 하나** — 말고는 전부 0 으로 보인다.
+
+증상은 "리더 해시만 바뀌고 팔로워 둘은 그대로"다. extent 를 보면 바로 구분된다
+(2026-09-15 실측, 65536B × 21 적용 직후):
+
+```
+eternity5 (리더)    0..322 written / 323..4095 unwritten   <- 자기가 쓴 만큼만 written
+eternity7 (팔로워)  0..0   written / 1..4095   unwritten
+eternity6 (팔로워)  0..0   written / 1..4095   unwritten
+```
+
+그리고 불일치 경계가 **엔트리 경계가 아니라 4096B 블록 경계**(파일 오프셋 4096)에 떨어진다 —
+복제가 끊긴 게 아니라 파일시스템 레이어에서 잘렸다는 신호다. 엔트리 한가운데서 잘렸다면
+언제나 이쪽을 의심할 것.
+
+여기에 **페이지 캐시 staleness** 가 하나 더 겹친다. 컴퓨트 노드의 페이지 캐시는 타깃이
+밑에서 raw 로 쓴 것을 모르므로, `dd` 를 그냥 쓰면 낡은 내용이 나온다. 즉 이 검사는
+**독립적인 이유로 두 번** 깨져 있다.
+
+> 이 절은 예전에 "세 링 파일 md5 가 같아야 한다"였다. 그 검사가 통했던 것은
+> `scripts/smoke_test.sh` 의 `-identity-pba` 모드에서 **링 파일 자신이 디바이스**여서 복사가
+> 파일을 통해 들어왔기 때문이다. 그 모드와 스크립트는 2026-09-14 에 제거됐고 실클러스터에서는
+> 성립하지 않는다. 함께 지정돼 있던 non-zero 검사도 구해주지 못한다 — 복제가 완벽해도
+> 팔로워는 0 으로 읽힌다.
+
+### 6-3. 블록 복사가 옳은 바이트를 옮겼는가 — 타깃에서 raw 디바이스로 비교
+
+**지금 유일하게 성립하는 검사다.** 세 멤버 볼륨이 전부 스토리지 노드의 로컬 디바이스이므로
+(§1), 거기서 같은 PBA 구간을 읽어 비교하면 컴퓨트 노드의 ext4 와 페이지 캐시를 통째로
+우회한다.
+
+전제 두 가지: **클러스터는 떠 있되 apply 를 멈춘 상태**여야 하고, 리더가 비교 구간만큼은
+이미 써 둔 뒤여야 한다(아래 예는 1 MiB 를 비교하므로 6-1 의 200×512B 로는 부족하다 —
+`-size 4096 -n 300` 정도를 먼저 흘려보낼 것).
+
+**PBA 는 매 기동마다 바뀐다.** 외우지 말고 매번 `filefrag` 로 다시 뽑는다:
 
 ```bash
-for hi in eternity3:3 eternity5:5 eternity6:6; do
+# 1) 각 링 파일의 시작 PBA -> 512B 섹터 오프셋 (+1 = 512B 헤더 건너뜀)
+for hi in eternity7:7 eternity5:5 eternity6:6; do
   h=${hi%%:*}; id=${hi##*:}
-  ssh $h "dd if=/mnt/raftvol/raftof-cpp/raft-$id.ring bs=512 skip=1 2>/dev/null | md5sum"
+  blk=$(ssh $h "filefrag -v /mnt/raftvol/node$id/raft-$id.ring | awk 'NR==4{print \$4}'" | tr -d '.')
+  echo "id=$id  skip=$((blk*8+1))"
 done
 ```
 
-**세 해시가 같아야 한다.** 그리고 반드시 함께:
+`filefrag -v` 의 4번째 줄이 첫 extent 이고 4번째 필드가 physical_offset 시작값(4 KiB 블록
+단위)이다. `× 8` 로 512B 섹터로 바꾸고 `+ 1` 로 헤더를 건너뛴다.
 
 ```bash
-ssh eternity3 'dd if=/mnt/raftvol/raftof-cpp/raft-3.ring bs=512 skip=1 2>/dev/null \
-               | tr -d "\0" | wc -c'
+# 2) 타깃에서 세 볼륨의 같은 구간을 읽어 비교한다 (id -> 타깃 로컬 장치명은 §1 표)
+#    아래 skip 값은 예시다. 반드시 1) 의 출력으로 갈아끼울 것.
+ssh eternitystorage '
+  sudo dd if=/dev/nvme3n1 bs=512 skip=267485185  count=2047 iflag=direct 2>/dev/null | md5sum  # id 5
+  sudo dd if=/dev/nvme1n1 bs=512 skip=1421017089 count=2047 iflag=direct 2>/dev/null | md5sum  # id 7
+  sudo dd if=/dev/nvme5n1 bs=512 skip=80019457   count=2047 iflag=direct 2>/dev/null | md5sum  # id 6
+'
 ```
 
-> **non-zero 검사를 빼면 안 된다.** 복제가 아예 일어나지 않아 세 파일이 전부 0
-> 이어도 해시는 사이좋게 일치한다. `scripts/smoke_test.sh:205` 에 이 검사가 들어간
-> 이유가 정확히 그것이다(리더 선출이 안 되던 동안 `cmp` 가 무의미하게 통과했다).
+`iflag=direct` 를 빼지 말 것 — blockcopy 서버가 O_DIRECT 로 쓰므로 타깃의 버퍼 캐시가
+낡아 있을 수 있다. `count=2047` 은 헤더를 뺀 약 1 MiB 다.
+
+**세 해시가 같아야 한다.** 그리고 6-2 의 교훈대로 **전부 0 이 아닌지 함께 확인한다**:
+
+```bash
+ssh eternitystorage 'sudo dd if=/dev/nvme3n1 bs=512 skip=267485185 count=2047 iflag=direct \
+                     2>/dev/null | tr -d "\0" | wc -c'      # 0 이면 리더가 아직 안 쓴 것
+```
+
+#### 결과를 어떻게 읽나
+
+- **세 해시가 같다** → 복제 정상. 6-2 에서 팔로워 링 파일이 0 으로 보이던 것은 U11 의
+  관측 부작용일 뿐이다.
+- **다르다** → 진짜 복제 결함이다. `do_pba_copy` 의 목적지 계산부터 본다
+  (`core/src/raft_handle_append_entries.cpp` — `dst_slot = old_tail_slot`,
+  `dst_dev = raft.cluster_index`, 그리고 `-devices` 순서가 cluster 인덱스와 맞는지 §2).
+
+> **미해결로 기록해 둘 것.** 이 절차는 스토리지 노드의 root 권한을 요구하고 수동이다.
+> U11 을 고쳐 extent 가 실제로 written 이 되면 6-2 의 파일 단위 비교가 되살아난다 —
+> U11 은 지연(첫 랩 `LPersist` 2배)뿐 아니라 **복제 관측 가능성**의 선결 조건이기도 하다.
 
 ---
 
@@ -377,9 +451,9 @@ ssh eternitystorage 'sudo pkill -f raft_blockcopy_server'
 **재실행할 때는 링 파일을 지우고 깨끗하게 시작한다:**
 
 ```bash
-for hi in eternity3:3 eternity5:5 eternity6:6; do
+for hi in eternity5:5 eternity6:6 eternity7:7; do
   h=${hi%%:*}; id=${hi##*:}
-  ssh $h "rm -f /mnt/raftvol/raftof-cpp/raft-$id.ring"
+  ssh $h "rm -f /mnt/raftvol/node$id/raft-$id.ring"
 done
 ```
 
