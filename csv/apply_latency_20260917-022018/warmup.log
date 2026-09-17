@@ -1,0 +1,3 @@
+leader: 10.0.0.6:6001 (probe applied 1 command)
+applied 4917 commands (incl. 1 leader probe), 773.75 ms total, 157.4 us/command, busy_retries=0
+TOTAL_APPLIED=4917
