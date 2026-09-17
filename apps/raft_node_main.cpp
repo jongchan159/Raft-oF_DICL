@@ -28,6 +28,7 @@
 #include "raft_server.h"
 #include "raft_constants.h"
 #include "raft_statemachine_hash.h"
+#include "raft_statemachine_noop.h"
 #include "raft_tcp_server.h"
 #include "raft_rpc_clients.h"
 #include "raft_rdma_transport.h"   /* rdma_devices_available */
@@ -99,6 +100,11 @@ void usage(const char *prog) {
       "  -mode MODE         destination (default) | leader\n"
       "                     replication policy; 'leader' is the DARE-style\n"
       "                     policy for comparison (hpdc15dare 3.1.2)\n"
+      "  -statemachine KIND noop (default) | hash. noop costs nothing, so the\n"
+      "                     numbers assume a zero-cost application. Use hash\n"
+      "                     when you need -op hash to verify that every node\n"
+      "                     applied the same commands in the same order --\n"
+      "                     it costs ~2ms per 1 MiB command.\n"
       "  -ring-pages N      ring size in 4KiB pages (default %llu = 32GiB).\n"
       "                     Ring file is N*4096 bytes and is fallocate'd.\n"
       "  -loop-sleep-us N   main loop pause per iteration (default 200, 0=spin)\n"
@@ -121,6 +127,7 @@ int main(int argc, char **argv) {
     int heartbeat_ms = 300;
     std::string mode = "destination";
     std::string transport = "rdma";
+    std::string statemachine = "noop";
     uint64_t ring_pages = DEFAULT_NUM_PAGES;
     bool profile = false;
     bool debug = false;
@@ -141,6 +148,8 @@ int main(int argc, char **argv) {
             heartbeat_ms = std::atoi(next_arg_value(argc, argv, i, "-heartbeat-ms").c_str());
         } else if (arg == "-transport") {
             transport = next_arg_value(argc, argv, i, "-transport");
+        } else if (arg == "-statemachine") {
+            statemachine = next_arg_value(argc, argv, i, "-statemachine");
         } else if (arg == "-mode") {
             mode = next_arg_value(argc, argv, i, "-mode");
         } else if (arg == "-ring-pages") {
@@ -222,7 +231,22 @@ int main(int argc, char **argv) {
     server->debug_enabled = debug;
     server->loop_sleep_us = loop_sleep_us;
     server->ring.log_trim_threshold = log_trim;
-    server->statemachine = std::make_shared<HashStateMachine>();
+    /* 상태머신 선택. **기본은 noop** -- 상태머신은 Raft 가 아니라 애플리케이션이고,
+     * 자리를 채워 둔 해시는 1 MiB 명령당 ~2ms 를 먹어 측정을 왜곡한다
+     * (core/include/raft_statemachine_noop.h 주석 참고).
+     * `-op hash` 로 정합성을 확인하려면 hash 로 띄워야 한다.
+     *
+     * **어느 경로로도 null 이 남으면 안 된다.** apply_pending
+     * (core/src/raft_commit.cpp) 과 become_leader(core/src/raft_election.cpp)
+     * 가 null 체크 없이 역참조한다. 그래서 파싱 실패는 주입 전에 exit 한다. */
+    if (statemachine == "noop") {
+        server->statemachine = std::make_shared<NoopStateMachine>();
+    } else if (statemachine == "hash") {
+        server->statemachine = std::make_shared<HashStateMachine>();
+    } else {
+        std::fprintf(stderr, "-statemachine must be 'noop' or 'hash'\n");
+        return 1;
+    }
     server->prof.enabled.store(profile ? 1 : 0);
 
     if (mode == "leader") {
@@ -293,6 +317,9 @@ int main(int argc, char **argv) {
                 server->io.device_path.c_str());
     std::printf("  replication  : %s-side\n", mode.c_str());
     std::printf("  transport    : %s\n", transport_kind_name(transport_kind));
+    /* 이 줄이 "그 수치는 어느 상태머신으로 잰 것인가" 의 근거다. 측정 결과와
+     * 함께 남길 것 -- noop 이면 애플리케이션 비용 0 을 가정한 수치다. */
+    std::printf("  statemachine : %s\n", statemachine.c_str());
     std::printf("  heartbeat    : %d ms\n", heartbeat_ms);
     std::printf("  term/tail    : term=%llu tail_log_index=%llu tail_slot=%llu\n",
                 static_cast<unsigned long long>(server->raft.current_term),

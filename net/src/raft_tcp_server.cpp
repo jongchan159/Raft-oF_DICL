@@ -124,7 +124,11 @@ bool dispatch_client_method(const std::string &method,
         ClientGetHashResponse rsp;
         auto *hsm = dynamic_cast<HashStateMachine *>(server->statemachine.get());
         if (hsm == nullptr) {
-            rsp.error = "state machine does not expose a hash";
+            /* 기본 상태머신이 noop 이라 이 경로가 정상적으로 자주 밟힌다.
+             * "무엇을 해야 하는지" 까지 적어 준다 -- 안 그러면 복제가 깨진
+             * 것으로 오해하기 쉽다. */
+            rsp.error = "state machine does not expose a hash -- "
+                        "start the node with -statemachine hash";
         } else {
             /* at_count > 0이면 그 개수만큼 apply될 때까지 짧게 기다린다
              * (apply는 apply 워커가 비동기로 하므로 클라이언트가 커밋

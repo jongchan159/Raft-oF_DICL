@@ -511,6 +511,8 @@ ADDRS=127.0.0.1:6001,127.0.0.1:6002,127.0.0.1:6003
 ./build/raft_client -addrs $ADDRS -op apply-timed -n 20 -size 4064 -batch 1
 ./build/raft_client -addrs $ADDRS -op commit-index
 ./build/raft_client -addrs $ADDRS -op hash -at-count 201
+#   ↑ 노드를 `-statemachine hash` 로 띄웠을 때만 값이 나온다. 기본 상태머신은
+#     noop(비용 0)이라 기본값으로 띄운 노드에서는 err=... 가 돌아온다.
 ./build/raft_client -addrs $ADDRS -op ae-stats
 
 # 노드 상태를 1초마다 한 줄로 (신규): -debug

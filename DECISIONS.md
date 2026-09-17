@@ -418,14 +418,15 @@ workers  WorkerPool     상시 스레드 3개 + CV + 복제 스레드 수명 관
 ### 헤더에 구현을 남기는 유일한 이유들 (R0)
 
 선언/정의 분리를 하면서 **일부 헤더는 의도적으로 구현을 그대로 뒀다.**
-예외는 이 다섯 가지뿐이고, 새 예외를 만들려면 여기에 이유를 적어야 한다:
+예외는 이 여섯 가지뿐이고, 새 예외를 만들려면 여기에 이유를 적어야 한다:
 
 | 대상 | 이유 |
 |---|---|
 | `core/include/raft_basics.h` 전부 | **핫패스.** `elapsed_ns` 는 Apply 한 번에 수십 번, `put_u64_le` 는 엔트리당 4번 불린다. (예전에 여기 적혀 있던 두 번째 근거 — "`storage/` 가 include 하는데 그 바이너리는 core 를 링크하지 않는다" — 는 **더 이상 성립하지 않는다.** Phase A-2 가 `storage/` → `core/` 의존을 없앴고, 지금 이 헤더를 include 하는 것은 `core/src/*.cpp` 뿐이다. 핫패스 근거만 남는다) |
 | `core/include/raft_entry.h` 의 `Entry::signal_committed` | 이 헤더는 core 를 링크하지 않는 TU 3개도 본다. `.cpp` 를 만들면 그 바이너리가 core 를 요구하게 된다 |
 | `net/include/raft_proto_conv.h` 의 template 2개 | 템플릿은 헤더에 있어야 한다. **나머지 34개 변환 함수는 일부러 헤더에 남겼다** — 헤더가 여전히 `rpcproto.pb.h` 를 include해야 해서 컴파일 이득이 없고, 시그니처 68줄이 중복되며 proto 필드 추가 시 고칠 곳이 2배가 된다 |
-| `net/include/raft_statemachine_hash.h` 전부 | `tests/` 가 `net/` 을 링크하지 않고 이 헤더만 include 한다. `.cpp` 를 만들면 `raft_selftest` 가 net 을 링크해야 하고 protobuf-0 성질이 깨진다 |
+| `net/include/raft_statemachine_hash.h` 전부 | `.cpp` 를 만들면 이 헤더를 쓰는 TU 가 `net/` 링크를 요구하게 되고, "유닛 테스트는 core 만 링크한다(protobuf 0)" 가 깨진다. (예전 근거였던 "`tests/` 가 이 헤더를 include 한다" 는 **더 이상 사실이 아니다** — 그러던 `raft_selftest` 하네스가 2026-09-14 에 제거됐다. 결론만 유효하다) |
+| `core/include/raft_statemachine_noop.h` 전부 (2026-09-17 추가) | **기본 상태머신.** 의존성이 `raft_server.h` + 표준 헤더 셋뿐이고 본문이 10줄이다. `.cpp` 를 만들면 core TU 전부가 링크 의존을 얻는다. `net/` 이 아니라 `core/` 에 둔 이유는 유닛 테스트가 이걸로 `apply_pending` 을 protobuf 없이 덮을 수 있게 하기 위함이다 |
 | 한두 줄짜리 접근자 (`Server::get_voted_for`, `AlignedBuffer::data()`, `ProfilingSink::on()`, `timings_clamp0` 등) | 내려서 얻는 것이 없다 |
 
 이 규약이 지켜지는지는 `ctest -R isolation` 4개가 감시한다.

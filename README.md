@@ -163,6 +163,8 @@ ADDRS=127.0.0.1:6001,127.0.0.1:6002,127.0.0.1:6003
 
 ./build/raft_client -addrs $ADDRS -op commit-index      # 노드별 커밋 인덱스
 ./build/raft_client -addrs $ADDRS -op hash -at-count 201 # 상태머신 해시/카운트
+#   ↑ 노드를 `-statemachine hash` 로 띄웠을 때만 값이 나온다. 기본값(noop)에서는
+#     err=state machine does not expose a hash ... 가 돌아온다 (§7 참고)
 ./build/raft_client -addrs $ADDRS -op ae-stats          # AE 배치 카운터
 ./build/raft_client -addrs $ADDRS -op echo -n 100       # 코덱/네트워크 왕복만
 ```
@@ -289,6 +291,7 @@ HTTP CONNECT + 길이 프레이밍, RDMA 는 SEND 메시지 하나가 프레임 
 | `-metadata-dir DIR` | `.` | 링 파일 위치 |
 | `-heartbeat-ms N` | 300 | 하트비트 주기. election timeout은 이것의 20~30배 |
 | `-transport rdma\|tcp` | **rdma** | Raft/blockcopy RPC 전송. rdma는 `-cluster`의 주소를 **IPoIB 주소**로 해석한다 |
+| `-statemachine noop\|hash` | **noop** | noop은 명령 바이트를 읽지 않는다 = 애플리케이션 비용 0. `-op hash`로 정합성을 확인하려면 `hash`로 띄워야 하고, 그 해시는 1 MiB 명령당 ~2ms를 먹는다 |
 | `-mode destination\|leader` | destination | 복제 정책 |
 | `-ring-pages N` | 8388608 (32GiB) | 링 크기 (4KiB 페이지) |
 | `-profile` | off | 서브스테이지 프로파일링 (apply-timed에 필요) |
