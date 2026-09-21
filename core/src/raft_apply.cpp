@@ -1,5 +1,5 @@
 /* ============================================================
- * raft_apply.cpp -- 클라이언트 진입점 (raft.go의 Apply/ApplyTimed 대응)
+ * raft_apply.cpp -- 클라이언트 진입점 (raft.go의 Apply 대응)
  *
  * 이 파일이 없어서 지금까지 "리더 로그에 엔트리를 넣는 경로"가 아예
  * 비어 있었다. 나머지 조각(persist_circular, append_entries,
@@ -12,13 +12,12 @@
  *     -> persist_circular(true, n)  [O_DIRECT 쓰기 + fdatasync,
  *                                    log_slot_map에 슬롯 기록]
  *   unlock ---------------------------------------------------------
- *     append_entries(sink)  -> 팔로워마다 스레드, PBA 메타만 전송
+ *     append_entries()  -> 팔로워마다 스레드, PBA 메타만 전송
  *     마지막 엔트리의 committed 신호 대기 (advance_commit_index가 signal)
  *     -> apply_pending이 상태머신에 반영하고 result_sink 호출
  *
- * ApplyTimings의 항등식은 raft_timings.h 주석 그대로 따른다:
- *   Total ~= LHandler + LPersist + AENet + FHandler + ReplNet
- *            + StorageIO + QuorumWait
+ * 원본에는 이 경로를 구간별로 분해해 채우는 ApplyTimed가 나란히 있었으나
+ * 레이턴시 계측 제거와 함께 삭제했다.
  * ============================================================ */
 #include "raft_server.h"
 #include "raft_constants.h"
@@ -62,12 +61,10 @@ constexpr int kResultWaitMs = 200;
 } /* anonymous namespace */
 
 /* ============================================================
- * apply_internal: apply와 apply_timed의 공통 본문.
- * timings != nullptr이면 ReplSink를 붙여 구간을 분해한다.
+ * apply_internal: Apply의 본문.
  * ============================================================ */
 static ApplyResult apply_internal(Server *s,
                                    const std::vector<std::vector<uint8_t>> &commands,
-                                   ApplyTimings *timings,
                                    bool *out_busy) {
     ApplyResult out;
     if (out_busy != nullptr) {
@@ -77,26 +74,13 @@ static ApplyResult apply_internal(Server *s,
         return out;   /* 빈 요청은 성공 처리 (원본과 동일) */
     }
 
-    /* ReplSink는 timed 경로에서만 할당 (원본: "non-timed Apply passes
-     * nil and goroutines skip the push") */
-    /* [수정-7] ReplSink는 반드시 힙에 둔다 (스택에 두면 AE 워커가 죽은
-     * 프레임을 건드린다) -- DECISIONS.md D7 */
-    std::shared_ptr<ReplSink> sink =
-        (timings != nullptr) ? std::make_shared<ReplSink>() : nullptr;
-
     auto collector = std::make_shared<ApplyCollector>();
     std::shared_ptr<EntryCommitSignal> last_signal;
     size_t n = commands.size();
     collector->expected = n;
 
     /* ---- Lock A ---- */
-    auto t_lock_a = clock_type::now();
     std::unique_lock<std::mutex> lk(s->mu);
-    int64_t mutex_a = elapsed_ns(t_lock_a);
-    if (sink != nullptr) {
-        sink->set_mutex_a(mutex_a);
-    }
-    auto t_a_held = clock_type::now();
 
     if (s->raft.state != ServerState::Leader) {
         out.error = "not leader";
@@ -157,10 +141,9 @@ static ApplyResult apply_internal(Server *s,
     }
 
     /* persist_circular: O_DIRECT로 device에 엔트리를 쓰고 log_slot_map에
-     * 슬롯을 기록한다. 반환값 nvme_ns가 곧 LPersist. */
-    int64_t nvme_ns = 0;
+     * 슬롯을 기록한다. */
     try {
-        nvme_ns = s->persist_circular(true, static_cast<int>(n));
+        s->persist_circular(true, static_cast<int>(n));
     } catch (const std::exception &e) {
         /* persist 실패: 방금 넣은 엔트리를 되돌린다 (device에 안 올라간
          * 엔트리를 로그에 남기면 이후 PBA 복제가 쓰레기를 읽는다) */
@@ -172,24 +155,16 @@ static ApplyResult apply_internal(Server *s,
         return out;
     }
 
-    int64_t a_held_ns = elapsed_ns(t_a_held);
-    if (timings != nullptr) {
-        s->prof.ae_lock_a_held_ns.store(a_held_ns);
-    }
-
     lk.unlock();   /* ---- Lock A 끝 ---- */
 
     /* ---- 복제 ---- */
-    auto t_repl = clock_type::now();
-    s->append_entries(sink);   /* shared_ptr 복사가 워커에게 전달된다 */
+    s->append_entries();
 
     /* 마지막 엔트리가 커밋될 때까지 대기.
      * advance_commit_index가 signal_committed()를 호출한다 (메인 루프에서
      * 주기적으로 돌고, AE 성공 시 heartbeat_timeout을 즉시 만료시켜
      * 다음 라운드를 앞당긴다). */
-    int64_t commit_wait_ns = 0;
     {
-        auto t_cw = clock_type::now();
         /* 주의: last_signal->mu를 잡은 상태에서 s.mu를 잡으면 안 된다.
          * advance_commit_index는 s.mu를 잡은 채로 signal_committed()가
          * committed->mu를 잡으므로(s.mu -> committed->mu), 여기서
@@ -217,9 +192,7 @@ static ApplyResult apply_internal(Server *s,
                 return out;
             }
         }
-        commit_wait_ns = elapsed_ns(t_cw);
     }
-    int64_t replicate_commit_ns = elapsed_ns(t_repl);
 
     /* apply_pending이 상태머신에 반영하고 result_sink를 호출한다.
      * committed 신호는 advance_commit_index가, apply는 apply 워커가
@@ -242,35 +215,12 @@ static ApplyResult apply_internal(Server *s,
         }
     }
 
-    if (timings == nullptr) {
-        return out;
-    }
-
-    /* 항등식 계산은 순수 산술이므로 분리해 뒀다 (위 derive_apply_timings) */
-    ApplyWalls walls;
-    walls.nvme_ns = nvme_ns;
-    walls.a_held_ns = a_held_ns;
-    walls.replicate_commit_ns = replicate_commit_ns;
-    walls.mutex_a_ns = mutex_a;
-    walls.commit_wait_ns = commit_wait_ns;
-    derive_apply_timings(walls, sink.get(), s->prof, *timings);
-
     return out;
 }
 
 ApplyResult Server::apply(const std::vector<std::vector<uint8_t>> &commands,
                            bool *out_busy) {
-    return apply_internal(this, commands, nullptr, out_busy);
-}
-
-ApplyResult Server::apply_timed(const std::vector<std::vector<uint8_t>> &commands,
-                                 ApplyTimings *out_timings, bool *out_busy) {
-    ApplyTimings local;
-    ApplyTimings *target = (out_timings != nullptr) ? out_timings : &local;
-    auto t0 = clock_type::now();
-    ApplyResult r = apply_internal(this, commands, target, out_busy);
-    target->total_ns = elapsed_ns(t0);
-    return r;
+    return apply_internal(this, commands, out_busy);
 }
 
 /* busy 응답에 붙일 retry-after (net/ 쪽 RPC 핸들러가 사용) */

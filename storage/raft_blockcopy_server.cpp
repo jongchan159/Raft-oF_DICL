@@ -11,7 +11,6 @@
 
 #include <fcntl.h>
 #include <unistd.h>
-#include <time.h>
 
 /**
  *
@@ -19,7 +18,7 @@
 
 /* storage/raft_blockcopy_server.h 의 구현. 선언은 그 헤더를 볼 것.
  *
- * ns_diff / write_pba_copy_buf / write_pba_copy 는 이 파일 밖에서 쓰이지
+ * write_pba_copy_buf / write_pba_copy 는 이 파일 밖에서 쓰이지
  * 않으므로 익명 namespace 에 둔다 -- 예전에는 헤더에 inline 으로 노출돼 있어
  * 이 헤더를 include 하는 4개 TU 가 pread/pwrite 루프를 매번 컴파일했다. */
 
@@ -28,29 +27,14 @@ namespace blockcopy {
 
 namespace {
 
-uint64_t ns_diff(const struct timespec &a, const struct timespec &b) {
-    return static_cast<uint64_t>(b.tv_sec - a.tv_sec) * 1000000000ull +
-           static_cast<uint64_t>(b.tv_nsec - a.tv_nsec);
-}
-
 int write_pba_copy_buf(int src_fd, int dst_fd,
                                int64_t pba_src, int64_t pba_dst,
-                               int nbytes, void *buf,
-                               uint64_t *read_ns, uint64_t *write_ns) {
-    struct timespec t0{}, t1{};
-
-    clock_gettime(CLOCK_MONOTONIC_RAW, &t0);
+                               int nbytes, void *buf) {
     ssize_t r = pread(src_fd, buf, static_cast<size_t>(nbytes), pba_src);
-    clock_gettime(CLOCK_MONOTONIC_RAW, &t1);
-    *read_ns = ns_diff(t0, t1);
     if (r != nbytes) {
         return -1;
     }
-
-    clock_gettime(CLOCK_MONOTONIC_RAW, &t0);
     ssize_t w = pwrite(dst_fd, buf, static_cast<size_t>(nbytes), pba_dst);
-    clock_gettime(CLOCK_MONOTONIC_RAW, &t1);
-    *write_ns = ns_diff(t0, t1);
     if (w != nbytes) {
         return -1;
     }
@@ -59,13 +43,12 @@ int write_pba_copy_buf(int src_fd, int dst_fd,
 
 int write_pba_copy(int src_fd, int dst_fd,
                            int64_t pba_src, int64_t pba_dst,
-                           int nbytes, uint64_t *read_ns, uint64_t *write_ns) {
+                           int nbytes) {
     void *buf = nullptr;
     if (posix_memalign(&buf, kAlign, static_cast<size_t>(nbytes)) != 0) {
         return -1;
     }
-    int rc = write_pba_copy_buf(src_fd, dst_fd, pba_src, pba_dst, nbytes, buf,
-                                 read_ns, write_ns);
+    int rc = write_pba_copy_buf(src_fd, dst_fd, pba_src, pba_dst, nbytes, buf);
     free(buf);
     return rc;
 }
@@ -142,22 +125,16 @@ WritePBARsp BlockCopyServer::handle_write_pba(const WritePBAReq &req){
             return rsp;
         }
 
-        uint64_t read_ns = 0, write_ns = 0;
         int rc = write_pba_copy(src_fd, dst_fd,
                                  static_cast<int64_t>(req.pba_src),
                                  static_cast<int64_t>(req.pba_dst),
-                                 static_cast<int>(req.nbytes), &read_ns, &write_ns);
+                                 static_cast<int>(req.nbytes));
         if (rc != 0) {
             rsp.error = "write_pba_copy failed (src_dev=" + std::to_string(req.src_dev) +
                         " dst_dev=" + std::to_string(req.dst_dev) +
                         " nbytes=" + std::to_string(req.nbytes) + ")";
             return rsp;
         }
-
-        rsp.copy_nanos = static_cast<int64_t>(read_ns + write_ns);
-        std::lock_guard<std::mutex> lk(mu_);
-        read_ns_ += read_ns;
-        write_ns_ += write_ns;
         return rsp;
     }
 
@@ -238,25 +215,20 @@ WritePBABatchRsp BlockCopyServer::handle_write_pba_batch(const WritePBABatchReq 
             return rsp;
         }
 
-        std::mutex stats_mu;
         std::atomic<bool> has_error{false};
         std::string first_error;
         std::mutex err_mu;
-        uint64_t total_read_ns = 0, total_write_ns = 0;
 
         std::vector<std::thread> workers;
         workers.reserve(static_cast<size_t>(w));
         for (int wid = 0; wid < w; wid++) {
             workers.emplace_back([&, wid]() {
-                uint64_t local_read = 0, local_write = 0;
                 for (size_t i = static_cast<size_t>(wid); i < count; i += static_cast<size_t>(w)) {
-                    uint64_t r = 0, wr = 0;
                     int rc = write_pba_copy_buf(
                         src_fd, dst_fd,
                         static_cast<int64_t>(req.pba_srcs[i]),
                         static_cast<int64_t>(req.pba_dsts[i]),
-                        static_cast<int>(sizes[i]), bufs[static_cast<size_t>(wid)],
-                        &r, &wr);
+                        static_cast<int>(sizes[i]), bufs[static_cast<size_t>(wid)]);
                     if (rc != 0) {
                         bool expected = false;
                         if (has_error.compare_exchange_strong(expected, true)) {
@@ -266,12 +238,7 @@ WritePBABatchRsp BlockCopyServer::handle_write_pba_batch(const WritePBABatchReq 
                         }
                         return;
                     }
-                    local_read += r;
-                    local_write += wr;
                 }
-                std::lock_guard<std::mutex> lk(stats_mu);
-                total_read_ns += local_read;
-                total_write_ns += local_write;
             });
         }
         for (auto &t : workers) {
@@ -286,23 +253,7 @@ WritePBABatchRsp BlockCopyServer::handle_write_pba_batch(const WritePBABatchReq 
             return rsp;
         }
 
-        rsp.read_nanos = static_cast<int64_t>(total_read_ns);
-        rsp.write_nanos = static_cast<int64_t>(total_write_ns);
-        rsp.copy_nanos = static_cast<int64_t>(total_read_ns + total_write_ns);
-        std::lock_guard<std::mutex> lk(mu_);
-        read_ns_ += total_read_ns;
-        write_ns_ += total_write_ns;
         return rsp;
-    }
-
-GetTimeRsp BlockCopyServer::handle_get_time(){
-        std::lock_guard<std::mutex> lk(mu_);
-        return {read_ns_, write_ns_, other_ns_};
-    }
-
-void BlockCopyServer::handle_reset_time(){
-        std::lock_guard<std::mutex> lk(mu_);
-        read_ns_ = write_ns_ = other_ns_ = 0;
     }
 
 bool BlockCopyServer::get_fd(int dev_idx, int &out_fd) const{

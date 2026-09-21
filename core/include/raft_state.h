@@ -26,7 +26,6 @@
  *   RaftState      합의 상태 (term, log, cluster, commit_index, state, 타이머)
  *   RingLog        링버퍼 부기 + 링 크기 설정
  *   StorageIo      링 파일 / 디바이스 I/O 상태
- *   ProfilingSink  계측 (core/include/raft_timings.h)
  *   WorkerPool     상시 스레드 + 복제 스레드 수명 관리
  *
  * 메서드는 전부 Server:: 에 있고 락(Server::mu)도 하나다 -- 이 파일은

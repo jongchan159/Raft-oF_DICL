@@ -24,16 +24,14 @@ namespace nvmeof_raft {
  * join_all_replication_threads로 관리 (raft_server.h 참고,
  * use-after-free 방지를 위해 join도 detach도 아닌 절충안).
  * ============================================================ */
-void Server::append_entries(std::shared_ptr<ReplSink> sink) {
+void Server::append_entries() {
     for (size_t i = 0; i < raft.cluster.size(); i++) {
         int fi = static_cast<int>(i);
         if (fi == raft.cluster_index) {
             continue;   /* "Don't need to send message to self" */
         }
-        /* sink를 값으로 캡처해 워커가 살아 있는 동안 ReplSink도 살아
-         * 있게 한다 (raft_server.h의 append_entries 주석 참고) */
-        spawn_replication_thread([this, fi, sink]() {
-            append_entries_worker(fi, sink.get());
+        spawn_replication_thread([this, fi]() {
+            append_entries_worker(fi);
         });
     }
 }
@@ -41,13 +39,10 @@ void Server::append_entries(std::shared_ptr<ReplSink> sink) {
 /* append_entries_worker: 팔로워 한 명에 대한 처리 로직.
  * 원본 append_entries의 go func(fi) {...} 본문 그대로 (로직 변경 없음,
  * 감싸는 함수만 분리) */
-void Server::append_entries_worker(int fi, ReplSink *sink) {
+void Server::append_entries_worker(int fi) {
     {
         /* ---- 4-1. waitLockB ---- */
-        auto t_b = clock_type::now();
         mu.lock();
-        auto t_b_held_start = clock_type::now();
-        int64_t mutex_b = elapsed_ns(t_b);
 
         /* ---- 4-2. logValid ---- */
         uint64_t next = raft.cluster[static_cast<size_t>(fi)].next_index;
@@ -98,14 +93,11 @@ void Server::append_entries_worker(int fi, ReplSink *sink) {
         uint64_t total_slots = 0;
         uint64_t slots_per_entry = 0;
         uint64_t start_slot = 0;
-        int64_t ae_sub_slot_map_ns = 0;
-        int64_t ae_sub_mark_slots_ns = 0;
 
         /* ---- 4-3. slotMapLookup (원본 raft.go:2475-2554 그대로 포팅) ----
          * "Get start slot from first entry's slot map. If missing (or
          *  already GC'd), the slot was freed -- PBA copy would read
          *  stale data. Send heartbeat only." */
-        auto t_slot_map_lookup = clock_type::now();
         // fast-backoff 또는 follower restart -> next <= GC구간인 경우 예외처리
         // 이 분기 빼고 실험해보기
         if (len_entries > 0) {
@@ -173,12 +165,9 @@ void Server::append_entries_worker(int fi, ReplSink *sink) {
                 }
             }
         }
-        ae_sub_slot_map_ns = elapsed_ns(t_slot_map_lookup);
-
         /* PBALookup (원본 raft.go:2564-2613 그대로 포팅) */
         uint64_t leader_pba_src = 0;
         uint64_t log_block_length = 0;
-        /* timer */ auto t_pba_lookup = clock_type::now();
         if (len_entries > 0) {
             PbaRangeResult r = leader_pba_for_range(start_slot, total_slots);
             leader_pba_src = r.pba_src;
@@ -209,8 +198,6 @@ void Server::append_entries_worker(int fi, ReplSink *sink) {
             }
             log_block_length = total_slots;
         }
-        int64_t ae_sub_pba_lookup_ns = elapsed_ns(t_pba_lookup);
-
         uint64_t sent_next = next;
         bool has_entries = len_entries > 0;
         if (has_entries) {
@@ -222,9 +209,7 @@ void Server::append_entries_worker(int fi, ReplSink *sink) {
          *  in-memory log without readback. Command payload is on the
          *  device via PBA copy; follower loads it lazily at apply time." */
         std::vector<EntryMeta> metas;
-        int64_t ae_sub_meta_build_ns = 0;
         if (len_entries > 0) {
-            auto t_mb = clock_type::now();
             metas.resize(len_entries);
             for (uint64_t k = 0; k < len_entries; k++) {
                 Entry &e = raft.log[log_slice(next + k)];
@@ -234,7 +219,6 @@ void Server::append_entries_worker(int fi, ReplSink *sink) {
                 }
                 metas[k] = EntryMeta{e.term, cl};
             }
-            ae_sub_meta_build_ns = elapsed_ns(t_mb);
         }
 
         AppendEntriesRequest req;
@@ -251,7 +235,6 @@ void Server::append_entries_worker(int fi, ReplSink *sink) {
         req.leader_dev_index = raft.cluster_index;
         req.entry_metas = std::move(metas);
 
-        int64_t ae_lock_b_held = elapsed_ns(t_b_held_start);
         mu.unlock();   /* "lockB Finish" */
 
         /* ---- Leader-Side replication (Server::ReplicationMode::LeaderSide,
@@ -263,12 +246,11 @@ void Server::append_entries_worker(int fi, ReplSink *sink) {
          * 직접 써라"라고 지시한다. 복사가 실패하면 이 배치는 스킵하고
          * (다음 heartbeat에서 재시도), 성공하면 data_already_copied=true로
          * 표시해 follower가 do_pba_copy를 다시 하지 않도록 한다. */
-        DoPbaCopyResult leader_side_copy{};
         bool leader_side_copy_failed = false;
         if (has_entries && replication_mode == ReplicationMode::LeaderSide) {
             try {
-                leader_side_copy = do_pba_copy(leader_pba_src, log_block_length,
-                                                start_slot, raft.cluster_index, fi);
+                do_pba_copy(leader_pba_src, log_block_length,
+                            start_slot, raft.cluster_index, fi);
                 req.data_already_copied = true;
             } catch (const std::exception &) {
                 leader_side_copy_failed = true;
@@ -289,22 +271,17 @@ void Server::append_entries_worker(int fi, ReplSink *sink) {
             return;
         }
 
-        /* REPLICATION LATENCY */
         if (has_entries) {
-            prof.ae_count.fetch_add(1);
-            prof.ae_entries.fetch_add(len_entries);
+            ae_count.fetch_add(1);
+            ae_entries.fetch_add(len_entries);
         }
 
         AppendEntriesResponse rsp;
-        auto t_rep = clock_type::now();
         /* transport가 없으면(주입 안 된 하네스) 전송 실패와 동일하게 다룬다 */
         bool ok = (transport != nullptr) && transport->append_entries(fi, req, rsp);
-        int64_t rt_ns = elapsed_ns(t_rep);
 
         /* ---- Lock C: post-RPC bookkeeping ---- */
-        auto t_c = clock_type::now();
         mu.lock();
-        int64_t mutex_c = elapsed_ns(t_c);
 
         if (has_entries) {
             raft.cluster[static_cast<size_t>(fi)].inflight = false;
@@ -333,58 +310,6 @@ void Server::append_entries_worker(int fi, ReplSink *sink) {
             return;
         }
 
-        /* 샘플 수집은 sink 유무와 무관하게 한다.
-         *
-         * ProfilingSink의 sample_* 는 apply_timed가 "이 Apply 안에서
-         * data-bearing AE를 못 잡았을 때" 쓰는 폴백이다. 그 상황이
-         * 발생하는 이유가 **바로 직전 하트비트가 이미 복제를 끝냈기
-         * 때문**이므로(하트비트는 sink == nullptr), 폴백 값을 남기는
-         * 코드가 sink 가드 안에 있으면 영원히 채워지지 않는다.
-         * 실제로 그랬다 -- store가 0건이어서 폴백이 항상 0을 읽었다
-         * (DECISIONS.md U4). 그래서 가드는 push에만 건다. */
-        if (rsp.success && has_entries) {
-            ReplSample sample;
-            sample.r2_ns = rsp.handler_duration_ns;
-            /* Leader-Side: 팔로워는 do_pba_copy를 안 돌리므로
-             * rsp.write_pba_rt_ns/storage_copy_ns는 0 -- 대신 leader가
-             * RPC 전에 직접 측정한 leader_side_copy 값을 기록해야
-             * Destination-Side와 동일한 지표로 비교 가능하다. */
-            if (replication_mode == ReplicationMode::LeaderSide) {
-                sample.write_pba_rt_ns = leader_side_copy.write_pba_rt_ns;
-                sample.storage_copy_ns = leader_side_copy.storage_copy_ns;
-            } else {
-                sample.write_pba_rt_ns = rsp.write_pba_rt_ns;
-                sample.storage_copy_ns = rsp.storage_copy_ns;
-            }
-            /* sink가 없으면 Apply가 아니므로 Lock A 대기도 없다 */
-            sample.mutex_ns = (sink != nullptr ? sink->mutex_a_ns() : 0) + mutex_b + mutex_c;
-            sample.mutex_c_ns = mutex_c;
-            sample.ae_rt_ns = rt_ns;
-            sample.lock_b_held_ns = ae_lock_b_held;
-            sample.slot_map_ns = ae_sub_slot_map_ns;
-            sample.mark_slots_ns = ae_sub_mark_slots_ns;
-            sample.pba_lookup_ns = ae_sub_pba_lookup_ns;
-            sample.meta_build_ns = ae_sub_meta_build_ns;
-            sample.handle_ae_lock_wait_ns = rsp.handle_ae_lock_wait_ns;
-            sample.handle_ae_pre_ns = rsp.handle_ae_pre_ns;
-            sample.handle_ae_lock_wait2_ns = rsp.handle_ae_lock_wait2_ns;
-            sample.handle_ae_persist_ns = rsp.handle_ae_persist_ns;
-            sample.handle_ae_post_ns = rsp.handle_ae_post_ns;
-
-            /* 폴백용 "최근 값". prof.enabled로 게이팅하지 않는다 --
-             * apply_timed의 항등식 7항은 -profile 없이도 동작해야 한다. */
-            prof.sample_ae_rt_ns.store(sample.ae_rt_ns);
-            prof.sample_r2_ns.store(sample.r2_ns);
-            prof.sample_write_pba_rt_ns.store(sample.write_pba_rt_ns);
-            prof.sample_storage_copy_ns.store(sample.storage_copy_ns);
-            prof.sample_mutex_ns.store(sample.mutex_ns);
-            prof.sample_mutex_c_ns.store(sample.mutex_c_ns);
-
-            if (sink != nullptr) {
-                sink->push(sample);
-            }
-        }
-
         /* 성공/실패 처리는 각각 별도 메서드로 뽑아 뒀다 -- 둘 다 순수하게
          * cluster[fi]와 log만 만지는 산술이라 단위 테스트가 붙는다
          * (tests/test_ae_bookkeeping.cpp). 호출 시 mu를 보유해야 한다. */
@@ -399,10 +324,6 @@ void Server::append_entries_worker(int fi, ReplSink *sink) {
             }
         }
 
-        /* Lock C 보유 시간을 재놓고 버린다. ReplSample::lock_c_held_ns와
-         * ProfilingSink::… 둘 다 기록하는 코드가 없어서, ApplyTimings의
-         * post_rpc_ns가 항상 0으로 남고 wg_scheduling_ns 역산이 부정확하다
-         * -- DECISIONS.md U4 (계측 배선 미완, 리팩토링 범위 밖). */
         mu.unlock();
     }
 }

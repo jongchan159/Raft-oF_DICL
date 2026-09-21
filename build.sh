@@ -14,7 +14,6 @@
 #   ./build.sh node             raft_node (Raft 노드 프로세스)
 #   ./build.sh client           raft_client (Client* RPC 도구 / 벤치 하네스)
 #   ./build.sh blockcopy-server server_random 대응 스토리지 서버 바이너리
-#   ./build.sh blkcopy-scale    raft_blkcopy_scale (WritePBABatch 처리량/포화점)
 #   ./build.sh asan             raft_node_asan (ASan+UBSan, -O1 -g)
 #                               스레드 수명 버그(fire-and-forget AE 워커가
 #                               호출자 스택을 참조하던 문제)를 이걸로 잡았다.
@@ -172,11 +171,6 @@ build_client() {
 
 # blockcopy 처리량/포화점 측정 도구 (지연 전용이던 raft_blkcopy_bench 를
 # 2026-09-10 에 대체). raft_client 와 링크 구성이 같다 (wire + proto).
-build_blkcopy_scale() {
-    build_bin raft_blkcopy_scale \
-        "$APPS_DIR/raft_blkcopy_scale_main.cpp" "${WIRE_SRCS[@]}" "${PROTO_SRCS[@]}"
-}
-
 
 build_asan() {
     echo "[build.sh] linking $BUILD_DIR/raft_node_asan (ASan+UBSan) ..."
@@ -195,13 +189,11 @@ case "$TARGET" in
     blockcopy-server) build_blockcopy_server; exit 0 ;;
     node)             build_node; exit 0 ;;
     client)           build_client; exit 0 ;;
-    blkcopy-scale)    build_blkcopy_scale; exit 0 ;;
     asan)             build_asan; exit 0 ;;
     all)
         build_blockcopy_server
         build_node
         build_client
-        build_blkcopy_scale
         echo "[build.sh] all binaries in $BUILD_DIR/"
         exit 0
         ;;

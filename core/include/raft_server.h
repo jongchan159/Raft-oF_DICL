@@ -23,7 +23,6 @@
 #include "raft_constants.h"   /* SECTOR_SIZE (AlignedBuffer 기본 정렬) */
 #include "raft_entry.h"
 #include "raft_state.h"
-#include "raft_timings.h"
 #include "raft_transport.h"
 
 namespace nvmeof_raft {
@@ -54,7 +53,6 @@ public:
  *   raft     RaftState     합의 상태 (term, log, cluster, commit_index, state...)
  *   ring     RingLog       링버퍼 부기 + 링 크기 설정
  *   io       StorageIo     링 파일 / 디바이스 I/O 상태
- *   prof     ProfilingSink 계측 (Raft 로직과 무관)
  *   workers  WorkerPool    상시 스레드 3개 + 복제 스레드 수명 관리
  * 그 밖의 최상위 필드는 락(mu), 주입받는 것(statemachine, transport,
  * blockcopy), 그리고 런타임 튜닝 플래그다.
@@ -79,10 +77,11 @@ public:
      * join하도록 만들어, 이 실수를 원천적으로 방지한다. */
     ~Server();
 
-    /* --- 계측 상태는 전부 prof에 모여 있다 (core/include/raft_timings.h).
-     * 예전에는 프로파일링 atomic 26개가 이 클래스의 다른 필드들과 섞여
-     * 있었고 그중 12개는 참조가 0건이었다. --- */
-    ProfilingSink prof;
+    /* AE 배치 통계. 시간이 아니라 **개수**라서 레이턴시 계측을 걷어낼 때
+     * 남겼다 -- ClientGetAEBatchStats RPC가 이 둘을 읽는다. 예전에는
+     * ProfilingSink 안에 타이밍 atomic들과 섞여 있었다. */
+    std::atomic<uint64_t> ae_count{0};     /* data-bearing AE 전송 횟수 */
+    std::atomic<uint64_t> ae_entries{0};   /* 그 AE들이 나른 엔트리 총합 */
 
     /* 워커 스레드와 그 신호 (core/include/raft_server.h 위 WorkerPool 참고) */
     WorkerPool workers;
@@ -191,10 +190,10 @@ public:
 
 
     /* persistCircular (raft_persist.cpp에서 정의)
-     * 반환값: nvmeNs -- O_DIRECT WriteAtFile + Fdatasync에 실제로 쓴
-     * wall time (실제 NVMe-oF 트래픽). 호출자는 이걸로 in-memory
-     * bookkeeping(LeaderMem)과 write+sync(LeaderPersist)를 분리 가능 */
-    int64_t persist_circular(bool write_log, int n_new_entries);
+     * 원본은 nvmeNs(O_DIRECT WriteAtFile + Fdatasync wall)를 반환해
+     * 호출자가 LPersist를 분리할 수 있게 했으나, 계측 제거와 함께
+     * 반환값을 없앴다. */
+    void persist_circular(bool write_log, int n_new_entries);
 
     /* advanceCommitIndex, applyPending, doSlotGC (raft_commit.cpp에서 정의) */
     void advance_commit_index();
@@ -216,19 +215,17 @@ public:
     void reset_election_timeout();
 
     /* ============================================================
-     * 클라이언트 진입점 (raft.go의 Apply/ApplyTimed 대응,
-     * raft_apply.cpp에서 정의)
+     * 클라이언트 진입점 (raft.go의 Apply 대응, raft_apply.cpp에서 정의)
      *
      * Apply: commands를 리더 로그에 append -> persist_circular(write_log)
      * -> append_entries로 복제 -> 마지막 엔트리의 committed 신호를 대기
      * -> 상태머신 apply 결과 반환. 리더가 아니거나 링이 꽉 차면 error/busy.
-     * ApplyTimed: 같은 일을 하면서 raft_timings.h의 ApplyTimings 항등식대로
-     * 구간을 분해해 채운다 (destination-side vs leader-side 비교 실험용).
+     *
+     * 원본에는 같은 일을 하면서 구간을 분해해 채우는 ApplyTimed가 있었으나
+     * 레이턴시 계측 제거와 함께 삭제했다.
      * ============================================================ */
     ApplyResult apply(const std::vector<std::vector<uint8_t>> &commands,
                        bool *out_busy = nullptr);
-    ApplyResult apply_timed(const std::vector<std::vector<uint8_t>> &commands,
-                             ApplyTimings *out_timings, bool *out_busy = nullptr);
 
     /* ============================================================
      * 생명주기 (raft_lifecycle.cpp에서 정의)
@@ -249,16 +246,12 @@ public:
 
     /* append_entries: 팔로워마다 스레드를 하나 띄워 append_entries_worker를
      * 실행하고 **결과를 기다리지 않고 즉시 리턴한다** (원본 Go의
-     * fire-and-forget goroutine과 동일).
-     * sink: 계측용 ReplSink. nullptr이면 측정을 건너뛴다 (non-timed Apply와
-     *   하트비트가 그 경우다). (raft_append_entries.cpp) */
-    /* [수정-7] sink는 shared_ptr로 받는다. AE 워커가 호출자보다 오래 살기
-     * 때문에 스택 sink는 use-after-return이 된다 -- DECISIONS.md D7 */
-    void append_entries(std::shared_ptr<ReplSink> sink);
+     * fire-and-forget goroutine과 동일). (raft_append_entries.cpp) */
+    void append_entries();
 
     /* append_entries의 팔로워 1명분 처리 로직. 병렬화를 위해 별도
      * 함수로 분리 -- append_entries가 팔로워마다 스레드를 띄워 이걸 호출 */
-    void append_entries_worker(int fi, ReplSink *sink);
+    void append_entries_worker(int fi);
 
     /* append_entries_worker가 RPC 응답을 받은 뒤 Lock C 안에서 수행하는
      * 기록 갱신. 파일 I/O도 네트워크도 만지지 않는 순수 산술이라 단위
@@ -276,9 +269,8 @@ public:
     PbaRangeResult leader_pba_for_range(uint64_t start_slot, uint64_t total_slots);
 
     /* HandleAppendEntriesRequest, doPBACopy (raft_handle_append_entries.cpp) */
-    struct DoPbaCopyResult { int64_t write_pba_rt_ns; int64_t storage_copy_ns; };
-    DoPbaCopyResult do_pba_copy(uint64_t leader_pba_src, uint64_t log_block_length,
-                                uint64_t dst_slot, int src_dev, int dst_dev);
+    void do_pba_copy(uint64_t leader_pba_src, uint64_t log_block_length,
+                     uint64_t dst_slot, int src_dev, int dst_dev);
     void handle_append_entries_request(const AppendEntriesRequest &req,
                                         AppendEntriesResponse &rsp);
 

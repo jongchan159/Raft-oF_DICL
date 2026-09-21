@@ -158,9 +158,6 @@ ADDRS=127.0.0.1:6001,127.0.0.1:6002,127.0.0.1:6003
 # 명령 적용 (리더는 자동으로 찾는다)
 ./build/raft_client -addrs $ADDRS -op apply -n 2000 -size 512 -batch 10
 
-# 레이턴시 분해 — Total ≈ LHandler+LPersist+AENet+FHandler+ReplNet+StorageIO+QuorumWait
-./build/raft_client -addrs $ADDRS -op apply-timed -n 20 -size 4064 -batch 1
-
 ./build/raft_client -addrs $ADDRS -op commit-index      # 노드별 커밋 인덱스
 ./build/raft_client -addrs $ADDRS -op hash -at-count 201 # 상태머신 해시/카운트
 #   ↑ 노드를 `-statemachine hash` 로 띄웠을 때만 값이 나온다. 기본값(noop)에서는
@@ -192,7 +189,6 @@ cd build-cmake && ctest --output-on-failure
 | `isolation_raft_unit_tests` | 유닛 테스트 바이너리에 protobuf 심볼이 없다 |
 | `isolation_raft_client` | `raft_client`에 `nvmeof_raft::Server::` 심볼이 없다 |
 | `isolation_raft_blockcopy_server` | 스토리지 노드도 마찬가지 |
-| `isolation_raft_blkcopy_scale` | 측정 도구도 마찬가지 |
 
 **복제 경로의 e2e 검증은 실클러스터에서만 가능하다** ——
 [E2E_EXPERIMENT.md](E2E_EXPERIMENT.md) §6 정합성 검증을 쓸 것.
@@ -230,7 +226,7 @@ grep -E 'ERROR: AddressSanitizer|runtime error' <노드 로그>
 # 노드 i
 ./build/raft_node -id 1 \
   -cluster "1@10.0.0.1:6001@/dev/nvme0n1@10.0.0.1:5050,2@10.0.0.2:6001@/dev/nvme1n1@10.0.0.2:5050,3@10.0.0.3:6001@/dev/nvme2n1@10.0.0.3:5050" \
-  -metadata-dir /mnt/nvme0/raftof -heartbeat-ms 300 -ring-pages 262144 -profile
+  -metadata-dir /mnt/nvme0/raftof -heartbeat-ms 300 -ring-pages 262144
 
 # 스토리지 노드
 ./build/raft_blockcopy_server -addr 0.0.0.0:5050 \
@@ -294,7 +290,6 @@ HTTP CONNECT + 길이 프레이밍, RDMA 는 SEND 메시지 하나가 프레임 
 | `-statemachine noop\|hash` | **noop** | noop은 명령 바이트를 읽지 않는다 = 애플리케이션 비용 0. `-op hash`로 정합성을 확인하려면 `hash`로 띄워야 하고, 그 해시는 1 MiB 명령당 ~2ms를 먹는다 |
 | `-mode destination\|leader` | destination | 복제 정책 |
 | `-ring-pages N` | 8388608 (32GiB) | 링 크기 (4KiB 페이지) |
-| `-profile` | off | 서브스테이지 프로파일링 (apply-timed에 필요) |
 | `-loop-sleep-us N` | 200 | 메인 루프 바퀴당 대기. `0` = 원본과 같은 스핀 |
 | `-log-trim N` | 8192 | in-memory 로그 벡터 트리밍 임계값. `0` = 안 함 |
 | `-ae-batch N` | 1000000 | `MaxAppendEntriesBatch` 상한 |
@@ -305,7 +300,7 @@ HTTP CONNECT + 길이 프레이밍, RDMA 는 SEND 메시지 하나가 프레임 
 `-devices` (쉼표 구분, 클러스터 인덱스 순서), `-copy-workers` (기본 nproc, 최대 16),
 `-transport rdma|tcp` (기본 **rdma**)
 
-**`raft_client`**: `-addrs`, `-op apply|apply-timed|echo|commit-index|hash|ae-stats`,
+**`raft_client`**: `-addrs`, `-op apply|echo|commit-index|hash|ae-stats`,
 `-n`, `-size`, `-batch`, `-at-count`, `-timeout-s`
 
 ---

@@ -23,12 +23,12 @@ namespace nvmeof_raft {
  * 나뉜다. Pass 1은 GetPBA → seg.Len/ring-wrap(maxBeforeWrap)/
  * MaxPBACopyChunkBytes 순으로 clamp (원본 raft.go:3122-3155 확인 완료).
  * Pass 2는 전체 청크 목록을 단일 배치 RPC(WritePBABatch)로 전달한다. */
-Server::DoPbaCopyResult Server::do_pba_copy(uint64_t leader_pba_src,
-                                             uint64_t log_block_length,
-                                             uint64_t dst_slot,
-                                             int src_dev, int dst_dev) {
+void Server::do_pba_copy(uint64_t leader_pba_src,
+                         uint64_t log_block_length,
+                         uint64_t dst_slot,
+                         int src_dev, int dst_dev) {
     if (leader_pba_src == 0 || log_block_length == 0) {
-        return {0, 0};
+        return;
     }
 
     /* 스토리지 노드로의 연결과 그 재시도(lazy connect)는 BlockCopyClient
@@ -97,50 +97,27 @@ Server::DoPbaCopyResult Server::do_pba_copy(uint64_t leader_pba_src,
     }
 
     /* Pass 2: 배치 RPC 발사 (단일 배치 호출로 전체 청크 목록 전달) */
-    auto t_rpc = clock_type::now();
-    int64_t storage_copy_ns = 0;
     std::string bc_error;
     if (!blockcopy->write_pba_batch(pba_srcs, pba_dsts, chunk_nbytes,
-                                     src_dev, dst_dev, &storage_copy_ns, &bc_error)) {
+                                     src_dev, dst_dev, &bc_error)) {
         /* 예전에는 구현체가 예외를 던졌다. 인터페이스는 bool을 쓰되 core
          * 내부의 제어 흐름은 그대로 둔다 -- 호출부
          * (handle_append_entries_request / append_entries_worker)가 예외를
          * 잡아 fail-soft로 이 배치를 건너뛰고 다음 라운드에 재시도한다. */
         throw std::runtime_error("do_pba_copy: " + bc_error);
     }
-    int64_t write_pba_rt_ns = elapsed_ns(t_rpc);
-
-    return {write_pba_rt_ns, storage_copy_ns};
 }
 
 /* ============================================================
  * HandleAppendEntriesRequest (raft.go 원본, 로직 그대로 포팅)
- *
- * "R2 timer: span the whole handler body, including lock-wait and the
- *  synchronous doPBACopy() WritePBA round-trip to the storage node."
  * ============================================================ */
 void Server::handle_append_entries_request(const AppendEntriesRequest &req,
                                             AppendEntriesResponse &rsp) {
-    auto t0 = clock_type::now();
     mu.lock();
-    auto t_after_lock = clock_type::now();
-    int64_t handle_ae_lock_wait = elapsed_ns(t0);
-    int64_t handle_ae_pre = 0, handle_ae_lock_wait2 = 0, handle_ae_persist = 0, handle_ae_post = 0;
-    clock_type::time_point t_post{};
-    bool t_post_set = false;
 
-    /* Go의 defer: 함수 반환 직전 unlock + 타이밍 필드 채우기.
+    /* Go의 defer: 함수 반환 직전 unlock.
      * C++에선 명시적으로 각 return 경로 앞에서 호출 */
-    auto finalize = [&]() {
-        int64_t handler_duration = elapsed_ns(t0);   /* Unlock 전에 측정 (스케줄링 지연 제외) */
-        mu.unlock();
-        rsp.handler_duration_ns = handler_duration;
-        rsp.handle_ae_lock_wait_ns = handle_ae_lock_wait;
-        rsp.handle_ae_pre_ns = handle_ae_pre;
-        rsp.handle_ae_lock_wait2_ns = handle_ae_lock_wait2;
-        rsp.handle_ae_post_ns = handle_ae_post;
-        rsp.handle_ae_persist_ns = handle_ae_persist;
-    };
+    auto finalize = [&]() { mu.unlock(); };
 
     update_term(req.rpc.term);
 
@@ -198,10 +175,7 @@ void Server::handle_append_entries_request(const AppendEntriesRequest &req,
             if (req.leader_commit > raft.commit_index) {
                 raft.commit_index = std::min(req.leader_commit, ring.tail_log_index - 1);
             }
-            auto t_ps = clock_type::now();
             persist_circular(false, 0);   /* follower: persist header only */
-            handle_ae_persist = elapsed_ns(t_ps);
-            rsp.storage_copy_ns += handle_ae_persist;   /* persistCircular -> storageio */
             rsp.success = true;
             finalize();
             return;
@@ -218,14 +192,11 @@ void Server::handle_append_entries_request(const AppendEntriesRequest &req,
         }
         uint64_t old_tail_slot = ring.tail_slot;
 
-        handle_ae_pre = elapsed_ns(t_after_lock);
-
         /* Leader-Side(Server::ReplicationMode::LeaderSide)에서는
          * req.data_already_copied가 true -- leader의 storage node가
          * AppendEntries를 보내기 전에 이미 이 데이터를 우리 볼륨에
          * 직접 써놨으므로 do_pba_copy를 다시 돌릴 필요가 없다
          * (Destination-Side의 기본 동작만 아래 do_pba_copy 실행). */
-        DoPbaCopyResult copy_result{};
         bool copy_failed = false;
         if (!req.data_already_copied) {
             mu.unlock();
@@ -233,21 +204,15 @@ void Server::handle_append_entries_request(const AppendEntriesRequest &req,
             /* "PBA copy for durability -- data lands on device for crash
              *  recovery." */
             try {
-                copy_result = do_pba_copy(req.leader_pba_src, req.log_block_length,
-                                           old_tail_slot, req.leader_dev_index, raft.cluster_index);
+                do_pba_copy(req.leader_pba_src, req.log_block_length,
+                            old_tail_slot, req.leader_dev_index, raft.cluster_index);
             } catch (const std::exception &) {
                 copy_failed = true;
             }
 
-            auto t_lock2 = clock_type::now();
             mu.lock();
-            handle_ae_lock_wait2 = elapsed_ns(t_lock2);
         }
-        t_post = clock_type::now();
-        t_post_set = true;
 
-        rsp.write_pba_rt_ns = copy_result.write_pba_rt_ns;
-        rsp.storage_copy_ns = copy_result.storage_copy_ns;
         if (copy_failed) {
             finalize();
             return;
@@ -303,18 +268,11 @@ void Server::handle_append_entries_request(const AppendEntriesRequest &req,
         raft.commit_index = std::min(req.leader_commit, ring.tail_log_index - 1);
     }
 
-    if (t_post_set) {
-        handle_ae_post = elapsed_ns(t_post);
-    }
-
     /* "X -> writeHeader 조건 확인... 아무것도 안 씀" 은 term/vote가
      * 안 바뀌면 persist_circular가 헤더도 안 쓰고 조기 반환한다는
      * 원본 동작을 그대로 따름 (persist_circular 내부에서 이미 처리됨) */
-    auto t_pn = clock_type::now();
     persist_circular(false, 0);   /* follower: persist header only
                                       (entries already durable via doPBACopy) */
-    handle_ae_persist = elapsed_ns(t_pn);
-    rsp.storage_copy_ns += handle_ae_persist;
     rsp.success = true;
     finalize();
 }

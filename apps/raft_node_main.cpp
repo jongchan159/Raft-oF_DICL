@@ -129,7 +129,6 @@ int main(int argc, char **argv) {
     std::string transport = "rdma";
     std::string statemachine = "noop";
     uint64_t ring_pages = DEFAULT_NUM_PAGES;
-    bool profile = false;
     bool debug = false;
     int loop_sleep_us = 200;
     uint64_t log_trim = 8192;
@@ -154,8 +153,6 @@ int main(int argc, char **argv) {
             mode = next_arg_value(argc, argv, i, "-mode");
         } else if (arg == "-ring-pages") {
             ring_pages = std::strtoull(next_arg_value(argc, argv, i, "-ring-pages").c_str(), nullptr, 10);
-                } else if (arg == "-profile") {
-            profile = true;
         } else if (arg == "-debug") {
             debug = true;
         } else if (arg == "-loop-sleep-us") {
@@ -247,8 +244,6 @@ int main(int argc, char **argv) {
         std::fprintf(stderr, "-statemachine must be 'noop' or 'hash'\n");
         return 1;
     }
-    server->prof.enabled.store(profile ? 1 : 0);
-
     if (mode == "leader") {
         server->replication_mode = Server::ReplicationMode::LeaderSide;
     } else if (mode == "destination") {

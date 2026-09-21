@@ -12,9 +12,9 @@ namespace nvmeof_raft {
 /* ============================================================
  * commands 변환 템플릿
  *
- * ClientApplyRequest / ClientApplyTimedRequest / ClientEchoRequest는 셋 다
+ * ClientApplyRequest와 ClientEchoRequest는 둘 다
  * `repeated bytes commands = 1` 하나뿐인 동일한 형태다. 리팩토링 전에는
- * 이 왕복 변환이 **세 번 글자 그대로 복사**되어 있었다.
+ * 이 왕복 변환이 글자 그대로 복사되어 있었다.
  * ============================================================ */
 template <typename ProtoT>
 inline void commands_to_proto(const std::vector<std::vector<uint8_t>> &commands,
@@ -78,18 +78,12 @@ inline blockcopy::WritePBABatchReq write_pba_batch_request_from_proto(
 inline void write_pba_batch_response_to_proto(const blockcopy::WritePBABatchRsp &g,
                                                 rpcproto::WritePBABatchResponse *p) {
     p->set_err(g.error);
-    p->set_copy_nanos(g.copy_nanos);
-    p->set_read_nanos(g.read_nanos);
-    p->set_write_nanos(g.write_nanos);
 }
 
 inline blockcopy::WritePBABatchRsp write_pba_batch_response_from_proto(
         const rpcproto::WritePBABatchResponse &p) {
     blockcopy::WritePBABatchRsp g;
     g.error = p.err();
-    g.copy_nanos = p.copy_nanos();
-    g.read_nanos = p.read_nanos();
-    g.write_nanos = p.write_nanos();
     return g;
 }
 
@@ -178,16 +172,6 @@ inline void append_entries_response_to_proto(const AppendEntriesResponse &g,
     p->set_success(g.success);
     p->set_conflict_term(g.conflict_term);
     p->set_conflict_index(g.conflict_index);
-    p->set_handler_duration_nanos(g.handler_duration_ns);
-    p->set_write_pba_rt_nanos(g.write_pba_rt_ns);
-    p->set_storage_copy_nanos(g.storage_copy_ns);
-    /* 팔로워 서브스테이지: 팔로워가 이미 채워놓는데 와이어 필드가 없어서
-     * 리더의 ReplSample.handle_ae_*가 항상 0이던 것 */
-    p->set_handle_ae_lock_wait_nanos(g.handle_ae_lock_wait_ns);
-    p->set_handle_ae_pre_nanos(g.handle_ae_pre_ns);
-    p->set_handle_ae_lock_wait2_nanos(g.handle_ae_lock_wait2_ns);
-    p->set_handle_ae_post_nanos(g.handle_ae_post_ns);
-    p->set_handle_ae_persist_nanos(g.handle_ae_persist_ns);
 }
 
 inline void append_entries_response_from_proto(const rpcproto::AppendEntriesResponse &p,
@@ -196,18 +180,10 @@ inline void append_entries_response_from_proto(const rpcproto::AppendEntriesResp
     g.success = p.success();
     g.conflict_term = p.conflict_term();
     g.conflict_index = p.conflict_index();
-    g.handler_duration_ns = p.handler_duration_nanos();
-    g.write_pba_rt_ns = p.write_pba_rt_nanos();
-    g.storage_copy_ns = p.storage_copy_nanos();
-    g.handle_ae_lock_wait_ns = p.handle_ae_lock_wait_nanos();
-    g.handle_ae_pre_ns = p.handle_ae_pre_nanos();
-    g.handle_ae_lock_wait2_ns = p.handle_ae_lock_wait2_nanos();
-    g.handle_ae_post_ns = p.handle_ae_post_nanos();
-    g.handle_ae_persist_ns = p.handle_ae_persist_nanos();
 }
 
 /* ============================================================
- * Conversions: ClientApply / ClientApplyTimed / ClientEcho
+ * Conversions: ClientApply / ClientEcho
  * (proto_codec.go 원본 그대로. commands는 repeated bytes -> vector<vector<uint8_t>>)
  * ============================================================ */
 
@@ -233,58 +209,6 @@ inline void client_apply_response_from_proto(const rpcproto::ClientApplyResponse
     g.error = p.err();
     g.busy = p.busy();
     g.retry_after_ms = p.retry_after_ms();
-}
-
-inline void client_apply_timed_request_to_proto(const ClientApplyTimedRequest &g,
-                                                 rpcproto::ClientApplyTimedRequest *p) {
-    commands_to_proto(g.commands, p);
-}
-
-inline void client_apply_timed_request_from_proto(const rpcproto::ClientApplyTimedRequest &p,
-                                                   ClientApplyTimedRequest &g) {
-    commands_from_proto(p, g.commands);
-}
-
-inline void client_apply_timed_response_to_proto(const ClientApplyTimedResponse &g,
-                                                  rpcproto::ClientApplyTimedResponse *p) {
-    p->set_err(g.error);
-    p->set_l_handler_nanos(g.l_handler_ns);
-    p->set_l_persist_nanos(g.l_persist_ns);
-    p->set_ae_net_nanos(g.ae_net_ns);
-    p->set_f_handler_nanos(g.f_handler_ns);
-    p->set_repl_net_nanos(g.repl_net_ns);
-    /* proto 필드명은 원본 raft.go의 Replication을 따라 replication_nanos로
-     * 유지한다 (wire 호환 + Go 베이스라인과의 컬럼 대응). 담기는 값은
-     * StorageIO이며, C++ 쪽 필드명이 그쪽을 따른다. 이름이 어긋나는 곳은
-     * 이 변환 두 줄뿐이다. */
-    p->set_replication_nanos(g.storage_io_ns);
-    p->set_quorum_wait_nanos(g.quorum_wait_ns);
-    p->set_mutex_nanos(g.mutex_ns);
-    p->set_total_nanos(g.total_ns);
-    p->set_busy(g.busy);
-    p->set_retry_after_ms(g.retry_after_ms);
-    p->set_post_rpc_nanos(g.post_rpc_ns);
-    p->set_commit_wait_nanos(g.commit_wait_ns);
-    p->set_wg_scheduling_nanos(g.wg_scheduling_ns);
-}
-
-inline void client_apply_timed_response_from_proto(const rpcproto::ClientApplyTimedResponse &p,
-                                                    ClientApplyTimedResponse &g) {
-    g.error = p.err();
-    g.l_handler_ns = p.l_handler_nanos();
-    g.l_persist_ns = p.l_persist_nanos();
-    g.ae_net_ns = p.ae_net_nanos();
-    g.f_handler_ns = p.f_handler_nanos();
-    g.repl_net_ns = p.repl_net_nanos();
-    g.storage_io_ns = p.replication_nanos();   /* 위 to_proto 주석 참고 */
-    g.quorum_wait_ns = p.quorum_wait_nanos();
-    g.mutex_ns = p.mutex_nanos();
-    g.total_ns = p.total_nanos();
-    g.busy = p.busy();
-    g.retry_after_ms = p.retry_after_ms();
-    g.post_rpc_ns = p.post_rpc_nanos();
-    g.commit_wait_ns = p.commit_wait_nanos();
-    g.wg_scheduling_ns = p.wg_scheduling_nanos();
 }
 
 inline void client_echo_request_to_proto(const ClientEchoRequest &g,

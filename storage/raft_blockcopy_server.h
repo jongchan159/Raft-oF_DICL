@@ -21,7 +21,6 @@
 
 #include <fcntl.h>
 #include <unistd.h>
-#include <time.h>
 
 /* ============================================================
  * 스토리지(blockcopy) 노드의 서버 구현.
@@ -80,25 +79,19 @@ private:
 };
 
 struct WritePBAReq { uint64_t pba_src, pba_dst, nbytes; int src_dev, dst_dev; };
-struct WritePBARsp { std::string error; int64_t copy_nanos = 0; };
+struct WritePBARsp { std::string error; };
 
 struct WritePBABatchReq {
     std::vector<uint64_t> pba_srcs, pba_dsts, nbytes;
     uint64_t block_size = 0;
     int src_dev = 0, dst_dev = 0;
 };
-/* copy_nanos 는 read_nanos + write_nanos 다. 방향별로도 따로 돌려주는 이유:
- * 로컬 PCIe 복사와 NVMe-oF attach 볼륨 복사의 지연 차이가 pread 쪽인지
- * pwrite 쪽인지는 합계만으로는 알 수 없다 (blkcopy 벤치가 묻는 질문이 정확히
- * 그것이다). 서버는 이미 total_read_ns / total_write_ns 를 따로 들고 있었고,
- * 합치기 전 값을 그대로 실어 보내는 것뿐이라 측정 비용은 0이다. */
+/* 원본에는 copy_nanos / read_nanos / write_nanos 가 있었으나 (그리고
+ * 그 합계를 돌려주는 GetTime/ResetTime RPC도) 레이턴시 계측 제거와 함께
+ * 삭제했다. proto 쪽 필드 번호 2..4는 reserved로 남겼다. */
 struct WritePBABatchRsp {
     std::string error;
-    int64_t copy_nanos = 0;
-    int64_t read_nanos = 0, write_nanos = 0;
 };
-
-struct GetTimeRsp { uint64_t read_nanos = 0, write_nanos = 0, other_nanos = 0; };
 
 /* ============================================================
  * BlockCopyServer
@@ -115,10 +108,6 @@ public:
 
     WritePBABatchRsp handle_write_pba_batch(const WritePBABatchReq &req);
 
-    GetTimeRsp handle_get_time();
-
-    void handle_reset_time();
-
 private:
     bool get_fd(int dev_idx, int &out_fd) const;
 
@@ -127,9 +116,6 @@ private:
     int copy_workers_;
 
     AlignedBufPool buf_pool_;   /* WritePBABatch 워커 버퍼 재사용 풀 */
-
-    std::mutex mu_;
-    uint64_t read_ns_ = 0, write_ns_ = 0, other_ns_ = 0;
 };
 
 } /* namespace blockcopy */

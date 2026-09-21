@@ -2,7 +2,12 @@
   "permissions": {
     "allow": [
       "Bash(./build.sh check *)",
-      "Bash(g++ -std=c++17 -fsyntax-only -Icore/include -Iblockio -Itests -I. tests/test_apply_timings.cpp)"
+      "Bash(g++ -std=c++17 -fsyntax-only -Icore/include -Iblockio -Itests -I. tests/test_apply_timings.cpp)",
+      "Bash(python3 -)",
+      "Bash(sed -i '' 's/^                          int64_t \\\\*out_copy_ns,$//' net/include/raft_rpc_clients.h)",
+      "Bash(sed -i '' '/^$/{ /^$/!d; }' net/include/raft_rpc_clients.h)",
+      "Bash(g++ -std=c++17 -fsyntax-only -Istorage -Iblockio -I. storage/raft_blockcopy_server.cpp)",
+      "Bash(g++ -std=c++17 -fsyntax-only -DO_DIRECT=0 -Istorage -Iblockio -I. storage/raft_blockcopy_server.cpp)"
     ]
   }
 }

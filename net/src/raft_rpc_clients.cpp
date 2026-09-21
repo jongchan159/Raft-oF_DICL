@@ -169,9 +169,7 @@ bool RpcBlockCopyClient::write_pba_batch(const std::vector<uint64_t> &pba_srcs,
                                           const std::vector<uint64_t> &pba_dsts,
                                           const std::vector<uint64_t> &nbytes,
                                           int src_dev, int dst_dev,
-                                          int64_t *out_copy_ns,
                                           std::string *out_error) {
-    *out_copy_ns = 0;
     if (pba_srcs.empty()) {
         return true;   /* 복사할 것이 없다 */
     }
@@ -248,7 +246,6 @@ bool RpcBlockCopyClient::write_pba_batch(const std::vector<uint64_t> &pba_srcs,
         return false;
     }
 
-    *out_copy_ns = rsp.copy_nanos;
     return true;
 }
 

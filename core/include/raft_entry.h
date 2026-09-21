@@ -136,8 +136,10 @@ struct AppendEntriesRequest {
 };
 
 /* ============================================================
- * AppendEntriesResponse (raft.go 원본 필드 그대로 -- ApplyTimings의
- * WritePBARtNanos/StorageCopyNanos 등 서브스테이지 계측 필드 포함)
+ * AppendEntriesResponse (raft.go 원본 필드에서 계측 필드를 뺀 것.
+ * 원본에는 HandlerDuration/WritePBARtNanos/StorageCopyNanos와
+ * handle_ae_* 서브스테이지가 있었으나 레이턴시 계측 제거와 함께
+ * 삭제했다 -- proto 쪽 필드 번호 5..12는 reserved로 남겼다.)
  * ============================================================ */
 struct AppendEntriesResponse {
     RPCMessage rpc;
@@ -147,25 +149,6 @@ struct AppendEntriesResponse {
      * 알려줘서, leader가 nextIndex를 1씩 감소시키는 대신 바로 건너뜀 */
     uint64_t conflict_term = 0;
     uint64_t conflict_index = 0;
-
-    /* HandlerDuration: follower가 HandleAppendEntriesRequest 안에서 보낸
-     * 시간 (진입~반환), sanity check용 */
-    int64_t handler_duration_ns = 0;
-
-    /* WritePBARtNanos: follower가 측정한 WritePBA(Batch) RPC의 왕복 시간
-     * (스토리지 노드로의 동기 block copy).
-     * StorageCopyNanos: 스토리지 서버가 보고하는 내부 pread+pwrite 시간.
-     * 둘 다 heartbeat/실패 시 0. 리더는 이 값들로 AENet, WritePBANet,
-     * DoPBACopy를 역산 */
-    int64_t write_pba_rt_ns = 0;
-    int64_t storage_copy_ns = 0;
-
-    /* HandleAppendEntriesRequest follower 서브스테이지 계측 */
-    int64_t handle_ae_lock_wait_ns = 0;   /* entry -> mu.Lock() 획득 */
-    int64_t handle_ae_pre_ns = 0;         /* lock 이후 -> doPBACopy 전 unlock */
-    int64_t handle_ae_lock_wait2_ns = 0;  /* doPBACopy 반환 후 재lock 대기 */
-    int64_t handle_ae_post_ns = 0;        /* 재lock -> 반환, persistCircular 제외 */
-    int64_t handle_ae_persist_ns = 0;     /* persistCircular (header-only) 시간 */
 };
 
 /* ============================================================
@@ -183,32 +166,8 @@ struct ClientApplyResponse {
     int retry_after_ms = 0;
 };
 
-struct ClientApplyTimedRequest {
-    std::vector<std::vector<uint8_t>> commands;
-};
-
-/* ClientApplyTimedResponse: ApplyTimings의 클라이언트 응답 버전.
- * raft_timings.h의 ApplyTimings와 필드가 거의 겹치지만, RPC로 오가는
- * 것이라 별도 구조체(원본도 별도 타입) */
-struct ClientApplyTimedResponse {
-    std::string error;
-    int64_t l_handler_ns = 0;
-    int64_t l_persist_ns = 0;
-    int64_t ae_net_ns = 0;
-    int64_t f_handler_ns = 0;
-    int64_t repl_net_ns = 0;
-    /* proto 필드명은 replication_nanos지만 담기는 값은 StorageIO다
-     * (net/include/raft_proto_conv.h 주석 참고). 이름은 값을 따른다. */
-    int64_t storage_io_ns = 0;
-    int64_t quorum_wait_ns = 0;
-    int64_t mutex_ns = 0;
-    int64_t total_ns = 0;
-    bool busy = false;
-    int retry_after_ms = 0;
-    int64_t post_rpc_ns = 0;
-    int64_t commit_wait_ns = 0;
-    int64_t wg_scheduling_ns = 0;
-};
+/* ClientApplyTimed{Request,Response}는 레이턴시 브레이크다운 전용이었고
+ * 계측 제거와 함께 삭제했다. 평시 경로는 ClientApply{Request,Response}다. */
 
 struct ClientEchoRequest {
     std::vector<std::vector<uint8_t>> commands;

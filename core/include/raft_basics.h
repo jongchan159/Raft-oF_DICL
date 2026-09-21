@@ -71,16 +71,9 @@ static_assert(HEADER_SIZE == SECTOR_SIZE,
 } /* namespace file_hdr */
 
 /* ---- 시간 ---------------------------------------------------------------
- * 프로파일링과 타임아웃 모두 steady_clock을 쓴다. system_clock을 쓰면
- * NTP 조정에 구간 측정이 흔들린다. */
+ * 타임아웃은 steady_clock을 쓴다. system_clock을 쓰면 NTP 조정에
+ * 구간 측정이 흔들린다. */
 using clock_type = std::chrono::steady_clock;
-
-/* start 이후 지금까지 흐른 시간(나노초). ApplyTimings/ReplSample의 모든
- * 구간이 이 함수로 측정된다. */
-inline int64_t elapsed_ns(clock_type::time_point start) {
-    return std::chrono::duration_cast<std::chrono::nanoseconds>(
-        clock_type::now() - start).count();
-}
 
 /* ---- 리틀엔디언 64비트 직렬화 -------------------------------------------
  * 온-디스크 포맷(링 파일 헤더와 엔트리 메타)이 LE 고정이다. 와이어 포맷은

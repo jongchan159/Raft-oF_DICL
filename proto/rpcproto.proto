@@ -56,23 +56,11 @@ message AppendEntriesResponse {
   bool success = 2;
   uint64 conflict_term = 3;
   uint64 conflict_index = 4;
-  // HandlerDuration nanoseconds (Go time.Duration is int64 nanoseconds).
-  int64 handler_duration_nanos = 5;
-  // Follower-measured WritePBA(Batch) RPC wall (sync block-copy round trip).
-  int64 write_pba_rt_nanos = 6;
-  // Storage-reported pread + pwrite duration on the storage server.
-  int64 storage_copy_nanos = 7;
-  // HandleAppendEntriesRequest follower sub-stages. The follower already
-  // measures these into AppendEntriesResponse (see raft_entry.h), but they
-  // had no wire fields, so ReplSample.handle_ae_* on the leader was always
-  // zero — the follower-internal breakdown never reached the leader.
-  // Additive field numbers, so this stays wire-compatible with peers that
-  // predate them (they simply report 0).
-  int64 handle_ae_lock_wait_nanos = 8;   // entry -> mu.Lock() acquired
-  int64 handle_ae_pre_nanos = 9;         // after lock -> unlock before doPBACopy
-  int64 handle_ae_lock_wait2_nanos = 10; // doPBACopy returned -> re-lock acquired
-  int64 handle_ae_post_nanos = 11;       // re-lock -> return, excluding persist
-  int64 handle_ae_persist_nanos = 12;    // persistCircular (header-only)
+  // 5..12 were latency-instrumentation fields (handler_duration_nanos,
+  // write_pba_rt_nanos, storage_copy_nanos, handle_ae_*). The instrumentation
+  // was removed; the numbers stay reserved so they are never reused with a
+  // different meaning against a peer that predates the removal.
+  reserved 5, 6, 7, 8, 9, 10, 11, 12;
 }
 
 // ---- Blockcopy RPCs (rpc_rdma.go WritePBABatchRequest/Response 대응) ----
@@ -92,15 +80,10 @@ message WritePBABatchRequest {
 
 message WritePBABatchResponse {
   string err = 1;
-  // Sum of per-entry (read_ns + write_ns) across batch workers.
-  int64 copy_nanos = 2;
-  // The same sum split by direction: read_nanos + write_nanos == copy_nanos.
-  // CopyNanos alone cannot say whether a local-vs-NVMe-oF latency gap sits on
-  // the pread or the pwrite side, which is the whole question the blockcopy
-  // latency experiment asks. Additive field numbers, so this stays wire
-  // compatible with peers that predate them (they simply report 0).
-  int64 read_nanos = 3;
-  int64 write_nanos = 4;
+  // 2..4 were latency instrumentation (copy_nanos, read_nanos, write_nanos),
+  // removed along with the storage node's timing counters. Reserved so the
+  // numbers are never reused with a different meaning.
+  reserved 2, 3, 4;
 }
 
 // ---- Client-facing RPCs ----
@@ -116,27 +99,8 @@ message ClientApplyResponse {
   int32 retry_after_ms = 3;
 }
 
-message ClientApplyTimedRequest {
-  repeated bytes commands = 1;
-}
-
-message ClientApplyTimedResponse {
-  string err = 1;
-  int64 l_handler_nanos = 2;
-  int64 l_persist_nanos = 3;
-  int64 ae_net_nanos = 4;
-  int64 f_handler_nanos = 5;
-  int64 repl_net_nanos = 6;
-  int64 replication_nanos = 7;
-  int64 quorum_wait_nanos = 8;
-  int64 mutex_nanos = 9;
-  int64 total_nanos = 10;
-  bool busy = 11;
-  int32 retry_after_ms = 12;
-  int64 post_rpc_nanos = 13;
-  int64 commit_wait_nanos = 14;
-  int64 wg_scheduling_nanos = 15;
-}
+// ClientApplyTimed{Request,Response} 는 레이턴시 브레이크다운 전용이었고
+// 계측 제거와 함께 삭제됐다. 평시 경로는 ClientApply{Request,Response} 다.
 
 message ClientEchoRequest {
   repeated bytes commands = 1;

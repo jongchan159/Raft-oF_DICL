@@ -58,8 +58,6 @@ void usage(const char *prog) {
       "usage: %s -addrs host:port[,host:port...] -op OP [options]\n"
       "\n"
       "  -op apply         apply -n commands of -size bytes, -batch per RPC\n"
-      "  -op apply-timed   same, plus per-RPC ApplyTimings and a mean/p50/p99\n"
-      "                    summary per term at the end\n"
       "  -op echo          codec/network round-trip only (no log write)\n"
       "  -op commit-index  print each node's commitIndex\n"
       "  -op hash          print each node's state machine hash/count\n"
@@ -241,7 +239,7 @@ int main(int argc, char **argv) {
             return 0;
         }
 
-        /* ---- apply / apply-timed ---- */
+        /* ---- apply ---- */
         Leader leader = find_leader(addrs, timeout_s, dial);
         std::printf("leader: %s (probe applied %llu command)\n",
                     addrs[leader.index].c_str(),
@@ -252,79 +250,11 @@ int main(int argc, char **argv) {
         uint64_t busy_retries = 0;
         auto t0 = clock_type::now();
 
-        /* -op apply-timed 요약용 표본 (ns 원시값). 순서는 per-RPC 줄과 같고,
-         * 마지막 residual 은 항등식 검산이다:
-         *   Total ~= LHandler + LPersist + AENet + FHandler + ReplNet
-         *            + StorageIO + QuorumWait        (core/include/raft_timings.h)
-         * 항들이 전부 timings_clamp0 을 거치므로 0 이 아닐 수 있고, 음수도
-         * 나올 수 있다 -- 그 부호 자체가 정보다.
-         *
-         * busy 재시도는 아래에서 continue 로 빠지므로 표본이 안 쌓인다.
-         * 즉 표본 수 = **성공한 RPC 수**이고 n/batch 와 다를 수 있다. */
-        static const char *kTimedTerms[] = {
-            "Total", "LHandler", "LPersist", "AENet", "FHandler",
-            "ReplNet", "StorageIO", "QuorumWait", "Mutex", "CommitWait", "residual",
-        };
-        constexpr size_t kNTimedTerms = sizeof(kTimedTerms) / sizeof(kTimedTerms[0]);
-        std::vector<int64_t> timed[kNTimedTerms];
-
         int remaining = n;
         while (remaining > 0) {
             int this_batch = (remaining < batch) ? remaining : batch;
 
-            if (op == "apply-timed") {
-                rpcproto::ClientApplyTimedRequest req;
-                for (int k = 0; k < this_batch; k++) {
-                    req.add_commands(payload.data(), payload.size());
-                }
-                auto rsp = call<rpcproto::ClientApplyTimedRequest,
-                                rpcproto::ClientApplyTimedResponse>(
-                    leader.handle.get(), rpc_method::kClientApplyTimed, req);
-                if (rsp.busy()) {
-                    busy_retries++;
-                    std::this_thread::sleep_for(
-                        std::chrono::milliseconds(rsp.retry_after_ms() > 0
-                                                   ? rsp.retry_after_ms() : 5));
-                    continue;
-                }
-                if (!rsp.err().empty()) {
-                    throw std::runtime_error("apply-timed: " + rsp.err());
-                }
-
-                /* StorageIO 는 proto 필드명만 replication_nanos 다 (원본
-                 * raft.go의 Replication 이름을 유지). C++ 쪽은 서버·클라이언트
-                 * 모두 storage_io_ns 이고 라벨도 StorageIO 다 --
-                 * net/include/raft_proto_conv.h 주석 참고. */
-                const int64_t sum7 =
-                    rsp.l_handler_nanos() + rsp.l_persist_nanos() + rsp.ae_net_nanos() +
-                    rsp.f_handler_nanos() + rsp.repl_net_nanos() + rsp.replication_nanos() +
-                    rsp.quorum_wait_nanos();
-                const int64_t vals[kNTimedTerms] = {
-                    rsp.total_nanos(),      rsp.l_handler_nanos(), rsp.l_persist_nanos(),
-                    rsp.ae_net_nanos(),     rsp.f_handler_nanos(), rsp.repl_net_nanos(),
-                    rsp.replication_nanos(), rsp.quorum_wait_nanos(),
-                    rsp.mutex_nanos(),      rsp.commit_wait_nanos(),
-                    rsp.total_nanos() - sum7,
-                };
-                for (size_t k = 0; k < kNTimedTerms; k++) {
-                    timed[k].push_back(vals[k]);
-                }
-
-                std::printf("  batch=%d total=%.1fus LHandler=%.1f LPersist=%.1f "
-                            "AENet=%.1f FHandler=%.1f ReplNet=%.1f StorageIO=%.1f "
-                            "QuorumWait=%.1f Mutex=%.1f CommitWait=%.1f\n",
-                            this_batch,
-                            rsp.total_nanos() / 1000.0,
-                            rsp.l_handler_nanos() / 1000.0,
-                            rsp.l_persist_nanos() / 1000.0,
-                            rsp.ae_net_nanos() / 1000.0,
-                            rsp.f_handler_nanos() / 1000.0,
-                            rsp.repl_net_nanos() / 1000.0,
-                            rsp.replication_nanos() / 1000.0,
-                            rsp.quorum_wait_nanos() / 1000.0,
-                            rsp.mutex_nanos() / 1000.0,
-                            rsp.commit_wait_nanos() / 1000.0);
-            } else {
+            {
                 rpcproto::ClientApplyRequest req;
                 for (int k = 0; k < this_batch; k++) {
                     req.add_commands(payload.data(), payload.size());
@@ -345,15 +275,6 @@ int main(int argc, char **argv) {
             }
             applied += static_cast<uint64_t>(this_batch);
             remaining -= this_batch;
-        }
-
-        if (op == "apply-timed" && !timed[0].empty()) {
-            std::printf("\napply-timed summary (n=%zu samples, microseconds):\n",
-                        timed[0].size());
-            for (size_t k = 0; k < kNTimedTerms; k++) {
-                print_stats_brief(kTimedTerms[k], summarize(timed[k]));
-            }
-            std::printf("  (residual = Total - sum of the 7 identity terms)\n\n");
         }
 
         int64_t ns = std::chrono::duration_cast<std::chrono::nanoseconds>(

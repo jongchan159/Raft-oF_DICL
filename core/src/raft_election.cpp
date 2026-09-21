@@ -254,7 +254,7 @@ void Server::heartbeat() {
      * 리더는 timeout()을 아예 호출하지 않으므로 election_timeout이
      * 만료돼도 강등되지 않는다. */
     mu.unlock();
-    append_entries(nullptr);
+    append_entries();
 }
 
 /* ============================================================
