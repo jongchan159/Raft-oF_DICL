@@ -118,7 +118,7 @@ void derive_apply_timings(const ApplyWalls &w, ReplSink *sink,
                            const ProfilingSink &prof, ApplyTimings &t) {
     t.l_persist_ns = w.nvme_ns;
     t.l_handler_ns = timings_clamp0(w.a_held_ns - w.nvme_ns);   /* Lock A 보유시간 - 실제 NVMe I/O */
-    t.replicate_ns = w.replicate_ns;
+    t.replicate_commit_ns = w.replicate_commit_ns;
     t.mutex_ns = w.mutex_a_ns;
     t.commit_wait_ns = w.commit_wait_ns;
 
@@ -139,7 +139,7 @@ void derive_apply_timings(const ApplyWalls &w, ReplSink *sink,
     t.f_handler_ns = timings_clamp0(sample.r2_ns - sample.write_pba_rt_ns);
     t.repl_net_ns = timings_clamp0(sample.write_pba_rt_ns - sample.storage_copy_ns);
     t.storage_io_ns = sample.storage_copy_ns;
-    t.quorum_wait_ns = timings_clamp0(w.replicate_ns - sample.ae_rt_ns);
+    t.quorum_wait_ns = timings_clamp0(w.replicate_commit_ns - sample.ae_rt_ns);
     if (sample.mutex_ns != 0) {
         t.mutex_ns = sample.mutex_ns;
     }
@@ -147,8 +147,8 @@ void derive_apply_timings(const ApplyWalls &w, ReplSink *sink,
     t.wait_lock_b_ns = timings_clamp0(t.mutex_ns - t.mutex_c_ns);
     t.post_rpc_ns = sample.post_rpc_wall_ns;
     t.pure_commit_wait_ns = w.commit_wait_ns;
-    t.replicate_corrected_ns = timings_clamp0(w.replicate_ns - t.mutex_ns);
-    t.quorum_wait_corrected_ns = timings_clamp0(t.replicate_corrected_ns - sample.ae_rt_ns);
+    t.replicate_commit_corrected_ns = timings_clamp0(w.replicate_commit_ns - t.mutex_ns);
+    t.quorum_wait_corrected_ns = timings_clamp0(t.replicate_commit_corrected_ns - sample.ae_rt_ns);
 
     /* advanceCommitIndex 서브스테이지 (프로파일링이 켜져 있을 때만 채워짐) */
     t.aci_lock_wait_ns = prof.aci_lock_wait_ns.load();
