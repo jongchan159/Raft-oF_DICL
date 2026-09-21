@@ -1,4 +1,4 @@
-# `scripts/` — blockcopy 스케일링 실험
+# `scripts/` — 측정 스크립트
 
 3노드 e2e 스크립트(`smoke_test.sh` / `restart_test.sh`)는 **제거되었다.**
 둘 다 `-identity-pba`(논리 오프셋 == 물리 오프셋)로 링 파일 자체를 볼륨처럼
@@ -186,6 +186,98 @@ Ubuntu 24.04.4 / 6.8.0 / 40코어, IB `ibp59s0`, `nvmet-rdma`·`nvmet-tcp`·
 NVMe-oF 로 attach 중 하나가 필요하다. 970 EVO 는 컨슈머 SSD 라 MZQLB/PM9A3 와
 지속 쓰기 특성이 다른 것도 병기할 것. 스크립트가 호스트·경로를 환경변수로
 받으므로 **코드 변경은 필요 없다.**
+
+## `apply_latency_sweep.sh` — 페이로드 크기별 apply 지연 스윕
+
+`blkcopy_scaling.sh` 가 스토리지 노드만 재는 것과 달리, 이쪽은 **Raft 경로 전체**를
+잰다. 페이로드를 1KiB 부터 2배씩 키우며 `raft_client -op apply-timed` 를 돌리고,
+ApplyTimings 11항의 mean/p50/p99 를 CSV 한 장으로 모은다.
+
+```bash
+./scripts/apply_latency_sweep.sh [출력디렉터리]
+```
+
+**서버는 이미 떠 있어야 한다.** 이 스크립트는 노드를 띄우지도 죽이지도 않고 링
+파일도 건드리지 않는다 — 기동은 `E2E_EXPERIMENT.md` §5, 정리는 §8 그대로 수동이다.
+`raft_client` 를 돌려 stdout 을 파싱하는 것이 전부라 sudo 도 ssh 도 필요 없다.
+
+`-transport rdma` 가 IB 장치 없는 호스트를 거부하므로(`raft_client_main.cpp:175-179`)
+**컴퓨트 노드 중 한 대에서 로컬 실행**한다. 축·주소·반복은 전부 환경변수다
+(`ADDRS` / `SIZES` / `N` / `BATCH` / `REPS` / `TRANSPORT` / `RING_BYTES` …) —
+`blkcopy_scaling.sh` 와 같은 방침이고, 전체 목록은 스크립트 머리 주석에 있다.
+
+### 출력
+
+`$OUTDIR/latency.csv` 한 장(tidy/long, 행 = rep × 크기 × 11항)과 지점별 원본
+stdout `apply-timed-r<rep>-<size>.log`:
+
+```
+size_bytes,n_samples,term,mean_us,p50_us,p99_us,wall_ms,busy_retries
+1024,10000,Total,412.3,401.0,890.1,4123.40,0
+1024,10000,LHandler,20.1,19.0,44.2,4123.40,0
+```
+
+`mean_us` / `p50_us` / `p99_us` 는 **마이크로초**다 (`raft_stats.h:23` 의 "저장은
+ns, 출력은 µs" 규약). `residual` 은 음수가 나올 수 있고 **그 부호가 정보다.**
+
+뒤의 두 열은 항목별 값이 아니라 **지점당 하나짜리 실행 메타**라 그 지점의 11행에
+같은 값이 반복된다 (`apps/raft_client_main.cpp:360-365` 의 마지막 줄에서 온다):
+
+- `wall_ms` — apply 루프 전체의 벽시계 시간. `t0` 가 리더 탐색 **뒤에** 찍히므로
+  (`:253`) 탐색 시간은 빠져 있고, busy 재시도로 잔 시간은 **포함**된다
+- `busy_retries` — 리더가 `busy` 를 돌려준 횟수 = **링 백프레셔 카운터**. 한 번마다
+  `retry_after_ms`(서버 기본 5ms) 자고 같은 배치를 다시 보낸다 (`:283-289`)
+
+`us/command` 는 싣지 않는다 — `wall_ms × 1000 / n` 파생값이라 CSV 에서 언제든
+계산되고, 분모가 `applied` 가 아니라 `-n` 이라 리더 프로브 1건만큼 어긋난다
+(`:364`). **이 값은 요약 블록의 `Total` 과 다른 것을 잰다**: `Total` 은 서버가
+보고한 ApplyTimings 이고 busy 응답은 표본을 쌓지 않는 반면(`:262-263`), 벽시계는
+busy 대기까지 안는다. 둘이 크게 벌어지면 지연이 아니라 백프레셔를 보고 있는 것이다.
+
+실행 조건(transport / batch / 리더가 누구였는지)은 CSV 에 넣지 않는다 — 원본
+로그에 그대로 남는다. `E2E_EXPERIMENT.md` §7-5 는 **리더를 기록하라**고 하므로,
+여러 조건을 비교할 거라면 조건마다 `$OUTDIR` 를 따로 두고 로그를 함께 보관할 것.
+`REPS` 를 올리면 같은 크기의 11행 묶음이 반복해서 들어가고 CSV 만으로는 회차를
+구분할 수 없다 (회차별 원본은 `apply-timed-r<rep>-<size>.log` 에 남는다).
+
+지점 하나가 실패해도 스윕은 계속하고, 마지막에 실패 수를 보고하며 종료코드 1 을
+낸다. 128KiB 에서 RPC 타임아웃으로 끊기는 것이 실제로 있는 시나리오다.
+
+### 돌리기 전에 확인할 것
+
+- **노드에 `-profile` 이 켜져 있어야 한다.** 꺼져 있으면 서버가 채우는 항이 전부
+  0 이고 항등식이 성립하지 않는다. 첫 지점에서 스크립트가 경고한다.
+- **노드에 `-ae-batch` 상한을 줄 것** (`E2E_EXPERIMENT.md` §7-5). 기본값이 사실상
+  무제한이라 팔로워가 뒤처지면 백로그를 통째로 재전송한다. **노드 기동 플래그라
+  스크립트가 강제하지 못한다.**
+- **워밍업을 건너뛰지 말 것 (U11).** ZERO_RANGE 가 ext4 extent 를 written 으로
+  만들지 못해 첫 랩의 `LPersist` 가 부푼다. 링은 원형이라 **한 번만** 돌리면 이후
+  모든 크기가 혜택을 본다 — 기본값이 그렇게 되어 있다. 노드를 기본과 다른
+  `-ring-pages` 로 띄웠다면 `RING_BYTES` 를 맞춰줘야 워밍업 분량이 맞는다.
+
+### ⚠ 큰 페이로드에서 재는 것이 지연이 아닐 수 있다
+
+엔트리 하나가 먹는 링 슬롯은 `ceil((32 + size) / 512)` 다
+(`core/src/raft_ring_helpers.cpp:13`). 런북 기본인 `-ring-pages 4096`(16MiB,
+`ring_slots=32767`)에서:
+
+| size | slots/entry | 링 B/entry | 한 랩 엔트리 수 |
+|---|---|---|---|
+| 1KiB | 3 | 1,536 | 10,922 |
+| 16KiB | 33 | 16,896 | 993 |
+| 128KiB | **257** | 131,584 | **127** |
+
+즉 **128KiB × 10,000 은 16MiB 링을 78 바퀴 돈다.** 랩마다 슬롯 GC 와 팔로워 match
+진행을 기다리고, 못 따라가면 `busy` + 5ms 백오프다(`core/src/raft_apply.cpp:110-127`).
+`busy_retries` 가 크게 나온 지점은 **지연이 아니라 백프레셔를 잰 것**이므로
+스크립트가 경고한다. 128KiB 까지 제대로 보려면 노드를 더 큰 링으로 띄우고
+(예: `-ring-pages 65536` = 256MiB) `RING_BYTES` 도 같이 올린다.
+**`-ring-pages` 는 세 노드가 같아야 한다.**
+
+`BATCH` 를 올릴 때는 **RDMA 프레임 1 MiB 상한**에 걸린다
+(`net/include/raft_rdma_transport.h:54`) — ClientApply 가 `size × batch` 를 그대로
+싣기 때문이다(128KiB 는 batch 7 이 상한). preflight 가 걸리는 크기를 목록에서 빼고
+경고한다. AppendEntries 는 엔트리당 16B 메타만 보내므로 이 제약과 무관하다.
 
 ## 스크립트는 소스 경로를 참조하지 않는다
 
