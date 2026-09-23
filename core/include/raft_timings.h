@@ -148,9 +148,15 @@ struct ApplyTimings {
     int64_t pure_commit_wait_ns = 0;
 
     int64_t wait_lock_b_ns = 0;              /* Lock B wait alone (= Mutex - MutexC) */
-    int64_t replicate_ns = 0;                /* t2-t1: total leader->quorum wall (base for corrected values) */
-    int64_t replicate_corrected_ns = 0;      /* Replicate - Mutex (Lock B+C wait removed) */
-    int64_t quorum_wait_corrected_ns = 0;    /* QuorumWait with Lock B+C wait removed (= ReplicateCorrected - aeRT) */
+
+    /* ReplicateCommit = append_entries() 호출 직전 -> 마지막 엔트리의 커밋 신호.
+     * **복제와 커밋을 합친 값이다.** 과반 match_index가 채워지는 시점이 아니라,
+     * 메인 루프의 advance_commit_index가 그 과반을 보고 signal_committed()를
+     * 쏘는 시점에 끝난다 -- 그 사이 루프 한 바퀴만큼의 지연이 포함된다.
+     * 원본 raft.go의 Replicate에 대응. 파생값(QuorumWait, *Corrected)의 기준. */
+    int64_t replicate_commit_ns = 0;
+    int64_t replicate_commit_corrected_ns = 0;  /* ReplicateCommit - Mutex (Lock B+C wait removed) */
+    int64_t quorum_wait_corrected_ns = 0;    /* QuorumWait with Lock B+C wait removed (= ReplicateCommitCorrected - aeRT) */
 };
 
 /* ============================================================
@@ -221,7 +227,7 @@ inline int64_t timings_clamp0(int64_t v) { return v < 0 ? 0 : v; }
 struct ApplyWalls {
     int64_t nvme_ns = 0;         /* persist_circular가 O_DIRECT write+fdatasync에 쓴 시간 */
     int64_t a_held_ns = 0;       /* Lock A 보유 시간 (인메모리 부기 + persist 포함) */
-    int64_t replicate_ns = 0;    /* 리더 -> 쿼럼 전체 wall */
+    int64_t replicate_commit_ns = 0;  /* AE 발사 -> 마지막 엔트리 커밋 신호 (복제+커밋) */
     int64_t mutex_a_ns = 0;      /* Lock A 대기 시간 */
     int64_t commit_wait_ns = 0;  /* AE 완료 -> 마지막 엔트리 커밋 신호 */
 };

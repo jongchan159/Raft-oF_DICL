@@ -219,7 +219,7 @@ static ApplyResult apply_internal(Server *s,
         }
         commit_wait_ns = elapsed_ns(t_cw);
     }
-    int64_t replicate_ns = elapsed_ns(t_repl);
+    int64_t replicate_commit_ns = elapsed_ns(t_repl);
 
     /* apply_pending이 상태머신에 반영하고 result_sink를 호출한다.
      * committed 신호는 advance_commit_index가, apply는 apply 워커가
@@ -250,7 +250,7 @@ static ApplyResult apply_internal(Server *s,
     ApplyWalls walls;
     walls.nvme_ns = nvme_ns;
     walls.a_held_ns = a_held_ns;
-    walls.replicate_ns = replicate_ns;
+    walls.replicate_commit_ns = replicate_commit_ns;
     walls.mutex_a_ns = mutex_a;
     walls.commit_wait_ns = commit_wait_ns;
     derive_apply_timings(walls, sink.get(), s->prof, *timings);

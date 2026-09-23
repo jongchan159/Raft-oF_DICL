@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./build.sh check *)",
+      "Bash(g++ -std=c++17 -fsyntax-only -Icore/include -Iblockio -Itests -I. tests/test_apply_timings.cpp)"
+    ]
+  }
+}

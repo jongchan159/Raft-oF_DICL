@@ -291,9 +291,10 @@ int main(int argc, char **argv) {
                     throw std::runtime_error("apply-timed: " + rsp.err());
                 }
 
-                /* StorageIO 는 응답 필드명이 replication_nanos 다 -- 서버가
-                 * rsp.replication_ns = t.storage_io_ns 로 채운다
-                 * (net/src/raft_tcp_server.cpp). 라벨 쪽이 맞다. */
+                /* StorageIO 는 proto 필드명만 replication_nanos 다 (원본
+                 * raft.go의 Replication 이름을 유지). C++ 쪽은 서버·클라이언트
+                 * 모두 storage_io_ns 이고 라벨도 StorageIO 다 --
+                 * net/include/raft_proto_conv.h 주석 참고. */
                 const int64_t sum7 =
                     rsp.l_handler_nanos() + rsp.l_persist_nanos() + rsp.ae_net_nanos() +
                     rsp.f_handler_nanos() + rsp.repl_net_nanos() + rsp.replication_nanos() +
