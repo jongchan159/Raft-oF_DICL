@@ -1,0 +1,30 @@
+
+=== output -> /home/jongc/raftof_clean/csv/cstate_20260923-101007
+  addrs     : 10.0.0.4:6001,10.0.0.5:6001,10.0.0.6:6001
+  transport : rdma
+  n         : 10000   batch: 1   reps: 1
+  client    : /home/jongc/raftof_clean/build/raft_client
+
+=== preflight: commit-index
+       10.0.0.4:6001          commit_index=203
+       10.0.0.5:6001          commit_index=203
+       10.0.0.6:6001          commit_index=203
+  [ok]   3/3 nodes answered
+
+=== warmup: 4916 × 4064B (ring=16777216B, ~1.2 laps) -- discarded
+  [ok]   applied 4917 commands (incl. 1 leader probe), 878.33 ms total, 178.7 us/command, busy_retries=0
+
+=== sweep: sizes = 1K 2K 4K 8K 16K 32K 64K 128K
+  size=1K    rep=1    Total p50=717.9      p99=1069.4      busy=0      n=10000
+  size=2K    rep=1    Total p50=717.1      p99=1069.5      busy=0      n=10000
+  size=4K    rep=1    Total p50=720.9      p99=981.3       busy=0      n=10000
+  size=8K    rep=1    Total p50=732.8      p99=959.3       busy=0      n=10000
+  size=16K   rep=1    Total p50=752.7      p99=1139.2      busy=0      n=10000
+  size=32K   rep=1    Total p50=1067.7     p99=1642.7      busy=0      n=10000
+  size=64K   rep=1    Total p50=1478.7     p99=1845.0      busy=0      n=10000
+  size=128K  rep=1    Total p50=1980.6     p99=2435.4      busy=0      n=10000
+
+=== done
+  points   : 8 run, 0 failed
+  csv      : /home/jongc/raftof_clean/csv/cstate_20260923-101007/latency.csv (88 rows + header)
+  raw logs : /home/jongc/raftof_clean/csv/cstate_20260923-101007/apply-timed-*.log

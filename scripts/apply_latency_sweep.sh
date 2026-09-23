@@ -96,7 +96,7 @@ OUTDIR="${1:-$HOME/raftof_clean/csv/apply_latency_$(date +%Y%m%d-%H%M%S)}"
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 BIN="${BIN:-$REPO/build}"
 
-ADDRS="${ADDRS:-10.0.0.7:6001,10.0.0.5:6001,10.0.0.6:6001}"
+ADDRS="${ADDRS:-10.0.0.4:6001,10.0.0.5:6001,10.0.0.6:6001}"
 SIZES="${SIZES:-1024 2048 4096 8192 16384 32768 65536 131072}"
 N="${N:-10000}"
 BATCH="${BATCH:-1}"

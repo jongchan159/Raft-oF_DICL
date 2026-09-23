@@ -1,0 +1,46 @@
+
+=== output -> /home/jongc/raftof_clean/csv/cstate_reps3_20260923-102742
+  addrs     : 10.0.0.4:6001,10.0.0.5:6001,10.0.0.6:6001
+  transport : rdma
+  n         : 10000   batch: 1   reps: 3
+  client    : /home/jongc/raftof_clean/build/raft_client
+
+=== preflight: commit-index
+       10.0.0.4:6001          commit_index=170105
+       10.0.0.5:6001          commit_index=170105
+       10.0.0.6:6001          commit_index=170105
+  [ok]   3/3 nodes answered
+
+=== warmup: 4916 × 4064B (ring=16777216B, ~1.2 laps) -- discarded
+  [ok]   applied 4917 commands (incl. 1 leader probe), 675.45 ms total, 137.4 us/command, busy_retries=0
+
+=== sweep: sizes = 1K 2K 4K 8K 16K 32K 64K 128K
+  size=1K    rep=1    Total p50=712.8      p99=1072.3      busy=0      n=10000
+  size=2K    rep=1    Total p50=712.8      p99=1003.0      busy=0      n=10000
+  size=4K    rep=1    Total p50=722.2      p99=888.0       busy=0      n=10000
+  size=8K    rep=1    Total p50=722.9      p99=879.3       busy=0      n=10000
+  size=16K   rep=1    Total p50=760.5      p99=1227.2      busy=0      n=10000
+  size=32K   rep=1    Total p50=1078.6     p99=1664.5      busy=0      n=10000
+  size=64K   rep=1    Total p50=1504.1     p99=1921.8      busy=0      n=10000
+  size=128K  rep=1    Total p50=2043.7     p99=2452.7      busy=0      n=10000
+  size=1K    rep=2    Total p50=738.9      p99=1015.3      busy=0      n=10000
+  size=2K    rep=2    Total p50=739.7      p99=873.9       busy=0      n=10000
+  size=4K    rep=2    Total p50=727.1      p99=991.4       busy=0      n=10000
+  size=8K    rep=2    Total p50=743.7      p99=1147.2      busy=0      n=10000
+  size=16K   rep=2    Total p50=782.8      p99=1234.2      busy=0      n=10000
+  size=32K   rep=2    Total p50=1134.4     p99=1586.3      busy=0      n=10000
+  size=64K   rep=2    Total p50=1532.5     p99=1880.7      busy=0      n=10000
+  size=128K  rep=2    Total p50=2034.8     p99=2446.0      busy=0      n=10000
+  size=1K    rep=3    Total p50=718.9      p99=1002.2      busy=0      n=10000
+  size=2K    rep=3    Total p50=714.6      p99=1036.4      busy=0      n=10000
+  size=4K    rep=3    Total p50=722.5      p99=1035.5      busy=0      n=10000
+  size=8K    rep=3    Total p50=722.6      p99=912.9       busy=0      n=10000
+  size=16K   rep=3    Total p50=760.7      p99=1232.8      busy=0      n=10000
+  size=32K   rep=3    Total p50=1055.1     p99=1632.4      busy=0      n=10000
+  size=64K   rep=3    Total p50=1576.2     p99=1987.8      busy=0      n=10000
+  size=128K  rep=3    Total p50=1895.0     p99=2400.9      busy=0      n=10000
+
+=== done
+  points   : 24 run, 0 failed
+  csv      : /home/jongc/raftof_clean/csv/cstate_reps3_20260923-102742/latency.csv (264 rows + header)
+  raw logs : /home/jongc/raftof_clean/csv/cstate_reps3_20260923-102742/apply-timed-*.log

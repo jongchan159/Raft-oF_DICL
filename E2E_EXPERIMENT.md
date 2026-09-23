@@ -26,7 +26,7 @@
 
 | 멤버 | subsystem | 컴퓨트 노드에서의 경로 | **스토리지 노드에서의 경로** |
 |---|---|---|---|
-| id 7 (eternity7) | `node3` | `/dev/nvme1n1` | `/dev/nvme1n1` |
+| id 4 (eternity4) | `node4` | `/dev/nvme1n1` | **`/dev/nvme1n1`** |
 | id 5 (eternity5) | `node5` | `/dev/nvme2n1` | **`/dev/nvme3n1`** |
 | id 6 (eternity6) | `node6` | `/dev/nvme3n1` | **`/dev/nvme5n1`** |
 
@@ -188,7 +188,7 @@ sudo mount /dev/<위에서 나온 것> /mnt/raftvol
 한 문자열을 **세 컴퓨트 노드에 그대로** 넘긴다.
 
 ```bash
-CLUSTER="7@10.0.0.7:6001@/dev/nvme1n1@10.0.0.91:5050,\
+CLUSTER="4@10.0.0.4:6001@/dev/nvme1n1@10.0.0.91:5050,\
 5@10.0.0.5:6001@/dev/nvme2n1@10.0.0.91:5050,\
 6@10.0.0.6:6001@/dev/nvme3n1@10.0.0.91:5050"
 ```
@@ -227,19 +227,18 @@ raft_blockcopy_server` 로 확인하고, **`-devices` 가 위와 같은지 반�
 ### 5-2. 컴퓨트 노드 3개
 
 ```bash
-# eternity7
-sudo ./build/raft_node -id 7 -cluster "$CLUSTER" -metadata-dir /mnt/raftvol/node7 \
-    -ring-pages 4096 -heartbeat-ms 300 -profile > /tmp/node.log 2>&1 
+# eternity4
+sudo ./build/raft_node -id 4 -cluster "$CLUSTER" -metadata-dir /mnt/raftvol/node4 \
+    -ring-pages 4096 -heartbeat-ms 300 -profile
 # eternity5 는 -id 5, eternity6 은 -id 6 (나머지 동일)
-
 
 # eternity5
 sudo ./build/raft_node -id 5 -cluster "$CLUSTER" -metadata-dir /mnt/raftvol/node5 \
-    -ring-pages 4096 -heartbeat-ms 300 -profile > /tmp/node.log 2>&1 
+    -ring-pages 4096 -heartbeat-ms 100 -profile
 
 # eternity6
 sudo ./build/raft_node -id 6 -cluster "$CLUSTER" -metadata-dir /mnt/raftvol/node6 \
-    -ring-pages 4096 -heartbeat-ms 300 -profile > /tmp/node.log 2>&1 
+    -ring-pages 4096 -heartbeat-ms 300 -profile
 ```
 
 **측정용 링은 `-ring-pages 4096`(16 MiB)으로 잡는다.** 기본값 8Mi 페이지 =
@@ -248,7 +247,7 @@ sudo ./build/raft_node -id 6 -cluster "$CLUSTER" -metadata-dir /mnt/raftvol/node
 **세 노드의 `-ring-pages` 는 반드시 같아야 한다.** `-profile` 은 처음부터 켠다.
 
 ```bash
-ADDRS=10.0.0.7:6001,10.0.0.5:6001,10.0.0.6:6001
+ADDRS=10.0.0.4:6001,10.0.0.5:6001,10.0.0.6:6001
 ./build/raft_client -addrs $ADDRS -op commit-index    # 세 줄이 나와야 한다
 ```
 막히면 `-debug` 로 다시 띄우면 1초마다 상태 한 줄이 나온다.
@@ -293,7 +292,7 @@ ADDRS=10.0.0.7:6001,10.0.0.5:6001,10.0.0.6:6001
 
 ```
 eternity5 (리더)    0..322 written / 323..4095 unwritten   <- 자기가 쓴 만큼만 written
-eternity7 (팔로워)  0..0   written / 1..4095   unwritten
+eternity4 (팔로워)  0..0   written / 1..4095   unwritten
 eternity6 (팔로워)  0..0   written / 1..4095   unwritten
 ```
 
@@ -325,7 +324,7 @@ eternity6 (팔로워)  0..0   written / 1..4095   unwritten
 
 ```bash
 # 1) 각 링 파일의 시작 PBA -> 512B 섹터 오프셋 (+1 = 512B 헤더 건너뜀)
-for hi in eternity7:7 eternity5:5 eternity6:6; do
+for hi in eternity4:4 eternity5:5 eternity6:6; do
   h=${hi%%:*}; id=${hi##*:}
   blk=$(ssh $h "filefrag -v /mnt/raftvol/node$id/raft-$id.ring | awk 'NR==4{print \$4}'" | tr -d '.')
   echo "id=$id  skip=$((blk*8+1))"
@@ -399,6 +398,8 @@ ZERO_RANGE 를 걸어 되돌린다. 링이 원형이므로 **한 바퀴 돌려 �
 
 ### 7-2. ApplyTimings 7항 분해 (지연)
 
+ADDRS=10.0.0.4:6001,10.0.0.5:6001,10.0.0.6:6001
+
 ```bash
 ./build/raft_client -addrs $ADDRS -op apply-timed -n 10000 -size 4064 -batch 1
 ```
@@ -451,7 +452,7 @@ ssh eternitystorage 'sudo pkill -f raft_blockcopy_server'
 **재실행할 때는 링 파일을 지우고 깨끗하게 시작한다:**
 
 ```bash
-for hi in eternity5:5 eternity6:6 eternity7:7; do
+for hi in eternity5:5 eternity6:6 eternity4:4; do
   h=${hi%%:*}; id=${hi##*:}
   ssh $h "rm -f /mnt/raftvol/node$id/raft-$id.ring"
 done

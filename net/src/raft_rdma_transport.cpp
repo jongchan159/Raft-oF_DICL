@@ -24,6 +24,7 @@
 #include <unistd.h>
 
 #include <cerrno>
+#include <chrono>
 #include <cstring>
 #include <iostream>
 #include <memory>
@@ -46,6 +47,33 @@ constexpr int kPollSliceMs = 200;
 /* 클라이언트 RPC 의 기본 상한. 무한 대기하면 리더가 죽은 팔로워에
  * 영구히 매달린다 (TCP 쪽 SO_RCVTIMEO 와 같은 역할). */
 constexpr int kCallTimeoutMs = 5000;
+
+/* 완료 대기의 스핀 예산 (µs). 블로킹 poll() 로 내려가기 전에 ibv_poll_cq 를
+ * 도는 시간이다.
+ *
+ * ---- 왜 ----
+ * poll() 로 잠들면 그 코어가 유휴 상태로 내려가고, 유휴창이 C6 의 target
+ * residency(이 클러스터에서 600µs)를 넘으면 커널이 C6 를 고른다. 그러면 다음
+ * 완료가 exit latency(133µs)를 문다. AENet 이 페이로드에 따라 4.14배 커지던
+ * 원인이 정확히 이것이었다 -- 메시지는 엔트리당 16B 로 고정인데, 페이로드가
+ * 커지며 명령 간격이 길어져 C6 에 들어갈 확률이 1.7% -> 98.7% 로 바뀌었다.
+ * C6 만 비활성화하면 AENet 이 4.14배 -> 1.19배로 평평해지는 것을 실측했다.
+ *
+ * ---- 왜 서버는 무한이고 클라이언트는 유계인가 ----
+ * serve_rdma_connection 은 원래도 timeout_ms = -1 로 부르므로 무한 스핀이
+ * 타임아웃 의미를 바꾸지 않는다. 그리고 C6 임계를 넘는 긴 유휴창(명령 간격
+ * 800~2400µs)이 바로 거기다. 대신 살아있는 커넥션당 코어 하나를 상시 쓴다.
+ *
+ * rdma_invoke 는 유계여야 한다. 무한으로 두면 kCallTimeoutMs 가 무력화되는데,
+ * **에러 완료가 영영 안 오는 경로가 실재한다** -- rdma_connect 의
+ * rnr_retry_count = 7 은 IB 규약상 무한 재시도라서, 피어가 살아있으나 recv 를
+ * 안 깔아둔 상태면 RNR NAK 가 영원히 반복된다. 그러면 append_entries_worker 가
+ * 그 피어의 call_mu 를 영구히 쥐고, 하트비트마다 새 워커가 줄을 서며
+ * (reap_finished_threads 는 done 이 선 것만 회수한다) 결국 pthread_create 실패 ->
+ * std::terminate 로 리더가 죽는다. 2000µs 는 실측 AE_RT 최대(128KiB 에서
+ * 958µs)의 두 배이므로 정상 동작에서는 절대 블로킹으로 내려가지 않는다. */
+constexpr int kSpinServeUs  = -1;     /* serve_rdma_connection: 무한 */
+constexpr int kSpinClientUs = 2000;   /* rdma_invoke: 유계 */
 
 constexpr int kCqDepth = 8;
 constexpr int kMaxWr = 4;
@@ -169,32 +197,70 @@ void post_send(RdmaConn *c, size_t len) {
 }
 
 /* 완료 하나를 기다린다.
- * 반환 true = wc 채움, false = timeout_ms 안에 아무것도 안 옴.
- * 완료 상태가 IBV_WC_SUCCESS 가 아니면 예외 (커넥션이 끊긴 경우 포함). */
-bool wait_completion(RdmaConn *c, ibv_wc *wc, int timeout_ms, std::atomic<bool> *stop) {
-    int waited = 0;
-    for (;;) {
+ * 반환 true = wc 채움, false = timeout_ms 안에 아무것도 안 옴 / stop 신호.
+ * 완료 상태가 IBV_WC_SUCCESS 가 아니면 예외 (커넥션이 끊긴 경우 포함).
+ *
+ * spin_us: 블로킹 poll() 로 내려가기 전에 ibv_poll_cq 를 도는 예산 (kSpinServeUs /
+ * kSpinClientUs 주석 참고).  0 = 스핀 없음(예전 동작),  >0 = 유계,  <0 = 무한.
+ *
+ * **스핀 루프 안에서도 stop 과 timeout_ms 를 확인한다.** 이게 빠지면 무한 스핀에서
+ *   - 서버: run_rdma_listener 의 c->stop 이 무시되어 join() 이 영구 블록한다
+ *           (커넥션 종료 경로와 리스너 셧다운 경로 둘 다). SIGTERM 으로 못 죽는다.
+ *   - 클라이언트: kCallTimeoutMs 가 무력화되어 응답 없는 피어에 영구히 매달린다.
+ * 둘 다 조용히 깨지는 종류라 여기 명시해 둔다.
+ *
+ * 경과 시간은 실제 시계로 잰다. 예전에는 poll() 이 일찍 돌아와도 슬라이스 전체를
+ * 더했는데(waited += slice), 그러면 스핀 시간이 회계에서 빠지고 타임아웃이
+ * 실제보다 길어진다. */
+bool wait_completion(RdmaConn *c, ibv_wc *wc, int timeout_ms,
+                     std::atomic<bool> *stop, int spin_us) {
+    using spin_clock = std::chrono::steady_clock;
+    const auto t_start = spin_clock::now();
+
+    auto elapsed_ms = [&t_start]() -> int {
+        return static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    spin_clock::now() - t_start).count());
+    };
+
+    /* 완료 하나를 꺼낸다. 없으면 false, 에러 상태면 예외. */
+    auto take_completion = [&]() -> bool {
         int n = ibv_poll_cq(c->cq, 1, wc);
         if (n < 0) { fail("ibv_poll_cq"); }
-        if (n > 0) {
-            if (wc->status != IBV_WC_SUCCESS) {
-                throw std::runtime_error(std::string("rdma: completion failed: ") +
-                                          ibv_wc_status_str(wc->status));
-            }
-            return true;
+        if (n == 0) { return false; }
+        if (wc->status != IBV_WC_SUCCESS) {
+            throw std::runtime_error(std::string("rdma: completion failed: ") +
+                                      ibv_wc_status_str(wc->status));
+        }
+        return true;
+    };
+
+    for (;;) {
+        /* ---- 1) 스핀 ----
+         * spin_us == 0 이면 spin_end 가 지금이라 ibv_poll_cq 를 한 번만 돌고
+         * 빠져나간다 = 예전 동작 그대로. spin_us < 0 이면 아래 break 조건이
+         * 절대 참이 되지 않아 take/stop/timeout 으로만 나간다. */
+        const auto spin_end =
+            spin_clock::now() + std::chrono::microseconds(spin_us > 0 ? spin_us : 0);
+        for (;;) {
+            if (take_completion()) { return true; }
+            if (stop != nullptr && stop->load()) { return false; }
+            if (timeout_ms >= 0 && elapsed_ms() >= timeout_ms) { return false; }
+            if (spin_us >= 0 && spin_clock::now() >= spin_end) { break; }
+            __builtin_ia32_pause();   /* SMT 형제 스레드에 발행 슬롯을 양보 */
         }
 
-        if (stop != nullptr && stop->load()) { return false; }
-        if (timeout_ms >= 0 && waited >= timeout_ms) { return false; }
-
+        /* ---- 2) 블로킹 폴백 ---- */
         int slice = kPollSliceMs;
-        if (timeout_ms >= 0 && timeout_ms - waited < slice) { slice = timeout_ms - waited; }
+        if (timeout_ms >= 0) {
+            int left = timeout_ms - elapsed_ms();
+            if (left <= 0) { return false; }
+            if (left < slice) { slice = left; }
+        }
 
         pollfd pfd{};
         pfd.fd = c->chan->fd;
         pfd.events = POLLIN;
         int pr = ::poll(&pfd, 1, slice);
-        waited += slice;
         if (pr < 0) {
             if (errno == EINTR) { continue; }
             fail("poll(comp_channel)");
@@ -384,7 +450,7 @@ std::vector<uint8_t> rdma_invoke(RdmaClientHandle *h, const std::string &method,
     uint32_t received = 0;
     while (!got_send || !got_recv) {
         ibv_wc wc{};
-        if (!wait_completion(&h->conn, &wc, kCallTimeoutMs, nullptr)) {
+        if (!wait_completion(&h->conn, &wc, kCallTimeoutMs, nullptr, kSpinClientUs)) {
             throw std::runtime_error("rdma_invoke: timed out on " + method);
         }
         if (wc.opcode == IBV_WC_RECV) {
@@ -421,7 +487,7 @@ void serve_rdma_connection(RdmaConn *c, const char *tag,
     try {
         for (;;) {
             ibv_wc wc{};
-            if (!wait_completion(c, &wc, -1, &c->stop)) {
+            if (!wait_completion(c, &wc, -1, &c->stop, kSpinServeUs)) {
                 return;   /* stop 신호 */
             }
             if (wc.opcode != IBV_WC_RECV) {

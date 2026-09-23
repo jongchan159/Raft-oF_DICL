@@ -1,0 +1,30 @@
+# baseline run  2026-09-23T11:36:54+00:00
+leader: eternity5 / 10.0.0.5:6001
+ae-batch: 미지정 = 기본값 1,000,000 (2026-09-23 결정, 기록만)
+
+## eternity4
+sudo ./build/raft_node -id 4 -cluster 4@10.0.0.4:6001@/dev/nvme1n1@10.0.0.91:5050,5@10.0.0.5:6001@/dev/nvme2n1@10.0.0.91:5050,6@10.0.0.6:6001@/dev/nvme3n1@10.0.0.91:5050 -metadata-dir /mnt/raftvol/node4 -ring-pages 4096 -heartbeat-ms 300 -profile 
+sudo ./build/raft_node -id 4 -cluster 4@10.0.0.4:6001@/dev/nvme1n1@10.0.0.91:5050,5@10.0.0.5:6001@/dev/nvme2n1@10.0.0.91:5050,6@10.0.0.6:6001@/dev/nvme3n1@10.0.0.91:5050 -metadata-dir /mnt/raftvol/node4 -ring-pages 4096 -heartbeat-ms 300 -profile 
+## eternity5
+sudo ./build/raft_node -id 5 -cluster 4@10.0.0.4:6001@/dev/nvme1n1@10.0.0.91:5050,5@10.0.0.5:6001@/dev/nvme2n1@10.0.0.91:5050,6@10.0.0.6:6001@/dev/nvme3n1@10.0.0.91:5050 -metadata-dir /mnt/raftvol/node5 -ring-pages 4096 -heartbeat-ms 100 -profile 
+sudo ./build/raft_node -id 5 -cluster 4@10.0.0.4:6001@/dev/nvme1n1@10.0.0.91:5050,5@10.0.0.5:6001@/dev/nvme2n1@10.0.0.91:5050,6@10.0.0.6:6001@/dev/nvme3n1@10.0.0.91:5050 -metadata-dir /mnt/raftvol/node5 -ring-pages 4096 -heartbeat-ms 100 -profile 
+## eternity6
+sudo ./build/raft_node -id 6 -cluster 4@10.0.0.4:6001@/dev/nvme1n1@10.0.0.91:5050,5@10.0.0.5:6001@/dev/nvme2n1@10.0.0.91:5050,6@10.0.0.6:6001@/dev/nvme3n1@10.0.0.91:5050 -metadata-dir /mnt/raftvol/node6 -ring-pages 4096 -heartbeat-ms 300 -profile 
+sudo ./build/raft_node -id 6 -cluster 4@10.0.0.4:6001@/dev/nvme1n1@10.0.0.91:5050,5@10.0.0.5:6001@/dev/nvme2n1@10.0.0.91:5050,6@10.0.0.6:6001@/dev/nvme3n1@10.0.0.91:5050 -metadata-dir /mnt/raftvol/node6 -ring-pages 4096 -heartbeat-ms 300 -profile 
+## eternitystorage
+sudo ./build/raft_blockcopy_server -addr 0.0.0.0:5050 -devices /dev/nvme1n1,/dev/nvme3n1,/dev/nvme5n1 -copy-workers 8 
+sudo ./build/raft_blockcopy_server -addr 0.0.0.0:5050 -devices /dev/nvme1n1,/dev/nvme3n1,/dev/nvme5n1 -copy-workers 8 
+
+## cstate (eternity5)
+  state     name      exit_us residency_us  disabled
+  state0    POLL            0           0         0
+  state1    C1              2           2         0
+  state2    C1E            10          20         0
+  state3    C6            133         600         0
+  ncpu=40  avg_mhz=1481
+  -> 가장 깊은 상태: state3 (C6), exit 133us
+
+## ae-stats (런 종료 후)
+10.0.0.4:6001          ae_count=0 ae_entries=0
+10.0.0.5:6001          ae_count=481076 ae_entries=489946
+10.0.0.6:6001          ae_count=0 ae_entries=0
