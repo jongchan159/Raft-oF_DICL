@@ -6,7 +6,9 @@
 #include <mutex>
 #include <vector>
 #include <utility>
+#include <chrono>
 
+using clock_type = std::chrono::steady_clock;
 
 namespace nvmeof_raft {
 
@@ -63,6 +65,8 @@ struct ProfilingSink {
 
     /* --- apply_timed의 LHandler 구간 (현재 load가 없다: U4) --- */
     std::atomic<int64_t> ae_lock_a_held_ns{0};
+    
+    std::atomic<bool> sample_leader_side{false};
 };
 
 /* ============================================================
@@ -160,6 +164,9 @@ struct ApplyTimings {
  *  derived from these on the leader side."
  * ============================================================ */
 struct ReplSample {
+    // [Diag]
+    int peer_index = -1;
+    // [Diag]
     int64_t ae_rt_ns = 0;         /* leader rpcCall wall */
     int64_t r2_ns = 0;            /* follower handler wall (HandlerDuration) */
     int64_t write_pba_rt_ns = 0;  /* follower WritePBA wall (= R2 - FHandler) */
@@ -182,6 +189,7 @@ struct ReplSample {
     int64_t handle_ae_lock_wait2_ns = 0;
     int64_t handle_ae_post_ns = 0;
     int64_t handle_ae_persist_ns = 0;
+    bool leader_side = false;
 };
 
 /* ============================================================
@@ -209,6 +217,15 @@ private:
     std::mutex mu_;
     std::vector<ReplSample> samples_;
     int64_t mutex_a_ns_ = 0;
+
+    bool diag_first_worker_seen_ = false;
+    int diag_first_peer_ = -1;
+    clock_type::time_point diag_first_worker_start_;
+
+    int64_t diag_worker_start_gap_ns_ = 0;
+
+    int64_t diag_wake_sum_ns_ = 0;
+    uint64_t diag_wake_count_ = 0;
 };
 
 /* clamp0: 음수를 0으로. 파생값이 클럭 해상도 때문에 음수가 나올 수 있어

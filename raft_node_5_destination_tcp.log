@@ -1,0 +1,10 @@
+raft_node id=5 index=1 addr=115.145.173.124:6000
+  cluster      : 3 members
+  metadata     : /mnt/raftvol/node5/raft-5.ring (16777216 bytes, 4096 pages)
+  ring slots   : 32767
+  storage host : 115.145.173.243:5050
+  device       : /dev/nvme2n1
+  replication  : destination-side
+  transport    : tcp
+  heartbeat    : 300 ms
+  term/tail    : term=0 tail_log_index=1 tail_slot=0

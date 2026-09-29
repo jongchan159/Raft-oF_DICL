@@ -19,6 +19,9 @@
 #include "raft_constants.h"
 #include "raft_entry.h"
 
+using clock_type = std::chrono::steady_clock;
+
+
 /* ============================================================
  * Server 가 들고 있는 상태 그룹들.
  *
@@ -114,7 +117,7 @@ struct ClusterMember {
  * (raft_persist / raft_pba / raft_lifecycle / raft_handle_append_entries),
  * 그 넷만 cached_fd.h를 직접 include한다. */
 class CachedFD;
-
+struct ReplSink;
 /* ============================================================
  * slotMapTraceEvt (raft.go 원본)
  * "records a single mutation of logSlotMap for diagnostics"
@@ -334,6 +337,19 @@ struct ReplicationThreadSlot {
     std::shared_ptr<std::atomic<bool>> done;
 };
 
+struct AppendEntriesWorkerState {
+    std::thread th;
+    std::mutex mu;
+    std::condition_variable cv;
+
+    bool pending = false;
+    std::shared_ptr<ReplSink> sink;
+    
+    // [Diag]
+    clock_type::time_point trigger_time;
+    // [Diag]
+};
+
 struct WorkerPool {
     /* 상시 스레드 3개. start()가 띄우고 stop()이 join한다. */
     std::thread main_thread;      /* timeout / become_leader / heartbeat / advance_commit_index */
@@ -353,10 +369,13 @@ struct WorkerPool {
     bool slot_gc_notify_pending = false;
     uint64_t slot_gc_tick = 0;   /* advance_commit_index 호출마다 증가 (floor 트리거용) */
 
+    std::vector<std::unique_ptr<AppendEntriesWorkerState>> ae_workers;
+
     /* 진행 중인 복제 스레드 (팔로워별 AE 워커 / RequestVote 워커). */
     std::mutex inflight_mu;
     std::vector<ReplicationThreadSlot> inflight;
 };
+
 
 } /* namespace nvmeof_raft */
 

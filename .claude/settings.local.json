@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./build.sh regen-proto *)",
+      "Bash(timeout 900 ctest --output-on-failure)"
+    ]
+  }
+}

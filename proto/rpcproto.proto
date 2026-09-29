@@ -114,6 +114,8 @@ message ClientApplyResponse {
   // Backpressure: server asks client to retry after this many milliseconds.
   bool busy = 2;
   int32 retry_after_ms = 3;
+  // Plain apply only: server->apply() wall-clock latency.
+  int64 latency_nanos = 4;
 }
 
 message ClientApplyTimedRequest {

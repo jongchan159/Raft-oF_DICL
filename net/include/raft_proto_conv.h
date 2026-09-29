@@ -226,6 +226,7 @@ inline void client_apply_response_to_proto(const ClientApplyResponse &g,
     p->set_err(g.error);
     p->set_busy(g.busy);
     p->set_retry_after_ms(g.retry_after_ms);
+    p->set_latency_nanos(g.latency_ns);
 }
 
 inline void client_apply_response_from_proto(const rpcproto::ClientApplyResponse &p,
@@ -233,6 +234,7 @@ inline void client_apply_response_from_proto(const rpcproto::ClientApplyResponse
     g.error = p.err();
     g.busy = p.busy();
     g.retry_after_ms = p.retry_after_ms();
+    g.latency_ns = p.latency_nanos();
 }
 
 inline void client_apply_timed_request_to_proto(const ClientApplyTimedRequest &g,

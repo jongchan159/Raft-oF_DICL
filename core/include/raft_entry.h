@@ -181,6 +181,7 @@ struct ClientApplyResponse {
     std::string error;
     bool busy = false;
     int retry_after_ms = 0;
+    int64_t latency_ns = 0;
 };
 
 struct ClientApplyTimedRequest {

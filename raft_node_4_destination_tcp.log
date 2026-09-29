@@ -1,0 +1,28 @@
+raft_node id=4 index=0 addr=115.145.173.123:6000
+  cluster      : 3 members
+  metadata     : /mnt/raftvol/node4/raft-4.ring (16777216 bytes, 4096 pages)
+  ring slots   : 32767
+  storage host : 115.145.173.243:5050
+  device       : /dev/nvme1n1
+  replication  : destination-side
+  transport    : tcp
+  heartbeat    : 300 ms
+  term/tail    : term=0 tail_log_index=1 tail_slot=0
+[AE-STAGE-WINDOW] requests=1000 AENet=337.9us FHandler=6.5us ReplNet=372.1us StorageIO=591.0us
+[AE-STAGE-TOTAL] requests=1000 AENet=337.9us FHandler=6.5us ReplNet=372.1us StorageIO=591.0us
+[AE-STAGE-WINDOW] requests=1000 AENet=355.5us FHandler=7.5us ReplNet=377.6us StorageIO=585.9us
+[AE-STAGE-TOTAL] requests=2000 AENet=346.7us FHandler=7.0us ReplNet=374.8us StorageIO=588.5us
+[AE-STAGE-WINDOW] requests=1000 AENet=347.8us FHandler=7.1us ReplNet=342.9us StorageIO=595.2us
+[AE-STAGE-TOTAL] requests=3000 AENet=347.1us FHandler=7.0us ReplNet=364.2us StorageIO=590.7us
+[AE-STAGE-WINDOW] requests=1000 AENet=344.2us FHandler=7.7us ReplNet=347.1us StorageIO=613.5us
+[AE-STAGE-TOTAL] requests=4000 AENet=346.4us FHandler=7.2us ReplNet=359.9us StorageIO=596.4us
+[AE-STAGE-WINDOW] requests=1000 AENet=352.2us FHandler=6.7us ReplNet=360.8us StorageIO=619.8us
+[AE-STAGE-TOTAL] requests=5000 AENet=347.5us FHandler=7.1us ReplNet=360.1us StorageIO=601.1us
+[AE-STAGE-WINDOW] requests=1000 AENet=343.0us FHandler=6.9us ReplNet=365.4us StorageIO=599.9us
+[AE-STAGE-TOTAL] requests=6000 AENet=346.8us FHandler=7.1us ReplNet=361.0us StorageIO=600.9us
+[AE-STAGE-WINDOW] requests=1000 AENet=347.9us FHandler=6.8us ReplNet=352.7us StorageIO=598.2us
+[AE-STAGE-TOTAL] requests=7000 AENet=347.0us FHandler=7.0us ReplNet=359.8us StorageIO=600.5us
+[AE-STAGE-WINDOW] requests=1000 AENet=358.0us FHandler=8.1us ReplNet=348.9us StorageIO=591.8us
+[AE-STAGE-TOTAL] requests=8000 AENet=348.3us FHandler=7.2us ReplNet=358.4us StorageIO=599.4us
+[AE-STAGE-WINDOW] requests=1000 AENet=344.1us FHandler=6.8us ReplNet=347.6us StorageIO=587.2us
+[AE-STAGE-TOTAL] requests=9000 AENet=347.9us FHandler=7.1us ReplNet=357.2us StorageIO=598.1us

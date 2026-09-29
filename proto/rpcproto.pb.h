@@ -1904,6 +1904,7 @@ class ClientApplyResponse final :
     kErrFieldNumber = 1,
     kBusyFieldNumber = 2,
     kRetryAfterMsFieldNumber = 3,
+    kLatencyNanosFieldNumber = 4,
   };
   // string err = 1;
   void clear_err();
@@ -1937,6 +1938,15 @@ class ClientApplyResponse final :
   void _internal_set_retry_after_ms(int32_t value);
   public:
 
+  // int64 latency_nanos = 4;
+  void clear_latency_nanos();
+  int64_t latency_nanos() const;
+  void set_latency_nanos(int64_t value);
+  private:
+  int64_t _internal_latency_nanos() const;
+  void _internal_set_latency_nanos(int64_t value);
+  public:
+
   // @@protoc_insertion_point(class_scope:rpcproto.ClientApplyResponse)
  private:
   class _Internal;
@@ -1948,6 +1958,7 @@ class ClientApplyResponse final :
     ::PROTOBUF_NAMESPACE_ID::internal::ArenaStringPtr err_;
     bool busy_;
     int32_t retry_after_ms_;
+    int64_t latency_nanos_;
     mutable ::PROTOBUF_NAMESPACE_ID::internal::CachedSize _cached_size_;
   };
   union { Impl_ _impl_; };
@@ -4834,6 +4845,26 @@ inline void ClientApplyResponse::_internal_set_retry_after_ms(int32_t value) {
 inline void ClientApplyResponse::set_retry_after_ms(int32_t value) {
   _internal_set_retry_after_ms(value);
   // @@protoc_insertion_point(field_set:rpcproto.ClientApplyResponse.retry_after_ms)
+}
+
+// int64 latency_nanos = 4;
+inline void ClientApplyResponse::clear_latency_nanos() {
+  _impl_.latency_nanos_ = int64_t{0};
+}
+inline int64_t ClientApplyResponse::_internal_latency_nanos() const {
+  return _impl_.latency_nanos_;
+}
+inline int64_t ClientApplyResponse::latency_nanos() const {
+  // @@protoc_insertion_point(field_get:rpcproto.ClientApplyResponse.latency_nanos)
+  return _internal_latency_nanos();
+}
+inline void ClientApplyResponse::_internal_set_latency_nanos(int64_t value) {
+  
+  _impl_.latency_nanos_ = value;
+}
+inline void ClientApplyResponse::set_latency_nanos(int64_t value) {
+  _internal_set_latency_nanos(value);
+  // @@protoc_insertion_point(field_set:rpcproto.ClientApplyResponse.latency_nanos)
 }
 
 // -------------------------------------------------------------------

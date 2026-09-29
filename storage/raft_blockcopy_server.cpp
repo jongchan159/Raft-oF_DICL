@@ -244,6 +244,9 @@ WritePBABatchRsp BlockCopyServer::handle_write_pba_batch(const WritePBABatchReq 
         std::mutex err_mu;
         uint64_t total_read_ns = 0, total_write_ns = 0;
 
+        struct timespec batch_t0{}, batch_t1{};
+        clock_gettime(CLOCK_MONOTONIC_RAW, &batch_t0);
+
         std::vector<std::thread> workers;
         workers.reserve(static_cast<size_t>(w));
         for (int wid = 0; wid < w; wid++) {
@@ -277,18 +280,38 @@ WritePBABatchRsp BlockCopyServer::handle_write_pba_batch(const WritePBABatchReq 
         for (auto &t : workers) {
             t.join();
         }
-        for (int i = 0; i < w; i++) {
-            buf_pool_.release(bufs[static_cast<size_t>(i)], buf_caps[static_cast<size_t>(i)]);
-        }
 
         if (has_error.load()) {
+            for (int i = 0; i < w; i++) {
+                buf_pool_.release(
+                    bufs[static_cast<size_t>(i)],
+                    buf_caps[static_cast<size_t>(i)]);
+            }
             rsp.error = first_error;
             return rsp;
         }
 
+        if (::fdatasync(dst_fd) != 0) {
+            for (int i = 0; i < w; i++) {
+                buf_pool_.release(
+                    bufs[static_cast<size_t>(i)],
+                    buf_caps[static_cast<size_t>(i)]);
+            }
+            rsp.error = "fdatasync destination failed";
+            return rsp;
+        }
+
+        clock_gettime(CLOCK_MONOTONIC_RAW, &batch_t1);
+
+        for (int i = 0; i < w; i++) {
+            buf_pool_.release(
+                bufs[static_cast<size_t>(i)],
+                buf_caps[static_cast<size_t>(i)]);
+        }
+
         rsp.read_nanos = static_cast<int64_t>(total_read_ns);
         rsp.write_nanos = static_cast<int64_t>(total_write_ns);
-        rsp.copy_nanos = static_cast<int64_t>(total_read_ns + total_write_ns);
+        rsp.copy_nanos = static_cast<int64_t>(ns_diff(batch_t0, batch_t1));
         std::lock_guard<std::mutex> lk(mu_);
         read_ns_ += total_read_ns;
         write_ns_ += total_write_ns;

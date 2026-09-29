@@ -19,6 +19,8 @@ compile_commands.json
 selftest-workdir/
 e2e-*/
 
+results/
+
 # 주의: proto/rpcproto.pb.{h,cc}는 **의도적으로 커밋한다.**
 # protoc 없는 환경에서 빌드할 수 있게 하려는 것이므로 무시하지 말 것
 # (build.sh 머리말, README §1 참고).

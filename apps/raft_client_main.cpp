@@ -267,6 +267,7 @@ int main(int argc, char **argv) {
         };
         constexpr size_t kNTimedTerms = sizeof(kTimedTerms) / sizeof(kTimedTerms[0]);
         std::vector<int64_t> timed[kNTimedTerms];
+        std::vector<int64_t> apply_latencies;
 
         int remaining = n;
         while (remaining > 0) {
@@ -309,20 +310,20 @@ int main(int argc, char **argv) {
                     timed[k].push_back(vals[k]);
                 }
 
-                std::printf("  batch=%d total=%.1fus LHandler=%.1f LPersist=%.1f "
-                            "AENet=%.1f FHandler=%.1f ReplNet=%.1f StorageIO=%.1f "
-                            "QuorumWait=%.1f Mutex=%.1f CommitWait=%.1f\n",
-                            this_batch,
-                            rsp.total_nanos() / 1000.0,
-                            rsp.l_handler_nanos() / 1000.0,
-                            rsp.l_persist_nanos() / 1000.0,
-                            rsp.ae_net_nanos() / 1000.0,
-                            rsp.f_handler_nanos() / 1000.0,
-                            rsp.repl_net_nanos() / 1000.0,
-                            rsp.replication_nanos() / 1000.0,
-                            rsp.quorum_wait_nanos() / 1000.0,
-                            rsp.mutex_nanos() / 1000.0,
-                            rsp.commit_wait_nanos() / 1000.0);
+                // std::printf("  batch=%d total=%.1fus LHandler=%.1f LPersist=%.1f "
+                //             "AENet=%.1f FHandler=%.1f ReplNet=%.1f StorageIO=%.1f "
+                //             "QuorumWait=%.1f Mutex=%.1f CommitWait=%.1f\n",
+                //             this_batch,
+                //             rsp.total_nanos() / 1000.0,
+                //             rsp.l_handler_nanos() / 1000.0,
+                //             rsp.l_persist_nanos() / 1000.0,
+                //             rsp.ae_net_nanos() / 1000.0,
+                //             rsp.f_handler_nanos() / 1000.0,
+                //             rsp.repl_net_nanos() / 1000.0,
+                //             rsp.replication_nanos() / 1000.0,
+                //             rsp.quorum_wait_nanos() / 1000.0,
+                //             rsp.mutex_nanos() / 1000.0,
+                //             rsp.commit_wait_nanos() / 1000.0);
             } else {
                 rpcproto::ClientApplyRequest req;
                 for (int k = 0; k < this_batch; k++) {
@@ -341,6 +342,7 @@ int main(int argc, char **argv) {
                 if (!rsp.err().empty()) {
                     throw std::runtime_error("apply: " + rsp.err());
                 }
+                apply_latencies.push_back(rsp.latency_nanos());
             }
             applied += static_cast<uint64_t>(this_batch);
             remaining -= this_batch;
@@ -353,6 +355,21 @@ int main(int argc, char **argv) {
                 print_stats_brief(kTimedTerms[k], summarize(timed[k]));
             }
             std::printf("  (residual = Total - sum of the 7 identity terms)\n\n");
+        }
+
+        if (op == "apply" && !apply_latencies.empty()) {
+            Stats st = summarize(apply_latencies);
+            std::vector<int64_t> sorted = apply_latencies;
+            std::sort(sorted.begin(), sorted.end());
+            const int64_t p95 = pct(sorted, 95);
+            std::printf("\nplain apply internal latency summary "
+                        "(n=%zu samples, microseconds):\n",
+                        apply_latencies.size());
+            std::printf("  avg=%.1f  p50=%.1f  p95=%.1f  p99=%.1f\n\n",
+                        st.mean / 1000.0,
+                        static_cast<double>(st.p50) / 1000.0,
+                        static_cast<double>(p95) / 1000.0,
+                        static_cast<double>(st.p99) / 1000.0);
         }
 
         int64_t ns = std::chrono::duration_cast<std::chrono::nanoseconds>(

@@ -1,0 +1,5 @@
+  device[0]: /dev/nvme3n1 (fd=3)
+  device[1]: /dev/nvme5n1 (fd=4)
+  device[2]: /dev/nvme1n1 (fd=5)
+  copy-workers : 8 (per WritePBABatch)
+raft_blockcopy_server listening (tcp): 0.0.0.0:5050  (3 devices)

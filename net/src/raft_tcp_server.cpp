@@ -37,12 +37,17 @@ bool dispatch_client_method(const std::string &method,
         client_apply_request_from_proto(proto_req, req);
 
         bool busy = false;
+        const auto apply_t0 = std::chrono::steady_clock::now();
         ApplyResult res = server->apply(req.commands, &busy);
+        const int64_t apply_ns =
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - apply_t0).count();
 
         ClientApplyResponse rsp;
         rsp.error = res.error;
         rsp.busy = busy;
         rsp.retry_after_ms = busy ? apply_busy_retry_after_ms() : 0;
+        rsp.latency_ns = apply_ns;
 
         rpcproto::ClientApplyResponse proto_rsp;
         client_apply_response_to_proto(rsp, &proto_rsp);
