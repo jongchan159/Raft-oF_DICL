@@ -1,4 +1,4 @@
-#include "raft_blockcopy_tcp_server.h"
+#include "raft_blockcopy_net.h"
 #include "raft_rdma_transport.h"
 
 #include "raft_proto_conv.h"

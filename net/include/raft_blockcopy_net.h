@@ -1,5 +1,5 @@
-#ifndef RAFT_BLOCKCOPY_TCP_SERVER_HPP
-#define RAFT_BLOCKCOPY_TCP_SERVER_HPP
+#ifndef RAFT_BLOCKCOPY_NET_HPP
+#define RAFT_BLOCKCOPY_NET_HPP
 
 #include "raft_blockcopy_server.h"
 #include "raft_wire_codec.h"
@@ -50,4 +50,4 @@ void run_blockcopy_server(TransportKind kind, const std::string &bind_host, int 
 
 } /* namespace nvmeof_raft */
 
-#endif /* RAFT_BLOCKCOPY_TCP_SERVER_HPP */
+#endif /* RAFT_BLOCKCOPY_NET_HPP */

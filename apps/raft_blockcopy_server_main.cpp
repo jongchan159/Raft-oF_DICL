@@ -20,7 +20,7 @@
  *       -devices /dev/nvme0n1,/dev/nvme1n1 -copy-workers 8
  */
 #include "raft_blockcopy_server.h"
-#include "raft_blockcopy_tcp_server.h"
+#include "raft_blockcopy_net.h"
 #include "raft_rdma_transport.h"   /* rdma_devices_available */
 #include "raft_cli.h"
 
