@@ -73,6 +73,7 @@ constexpr int kCallTimeoutMs = 5000;
  * std::terminate 로 리더가 죽는다. 2000µs 는 실측 AE_RT 최대(128KiB 에서
  * 958µs)의 두 배이므로 정상 동작에서는 절대 블로킹으로 내려가지 않는다. */
 constexpr int kSpinServeUs  = -1;     /* serve_rdma_connection: 무한 */
+// constexpr int kSpinServeUs  = 0;     /* serve_rdma_connection: 무한 */
 constexpr int kSpinClientUs = 2000;   /* rdma_invoke: 유계 */
 
 constexpr int kCqDepth = 8;
