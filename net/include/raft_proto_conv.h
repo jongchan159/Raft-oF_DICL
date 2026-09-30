@@ -257,7 +257,7 @@ inline void client_apply_timed_response_to_proto(const ClientApplyTimedResponse 
      * 유지한다 (wire 호환 + Go 베이스라인과의 컬럼 대응). 담기는 값은
      * StorageIO이며, C++ 쪽 필드명이 그쪽을 따른다. 이름이 어긋나는 곳은
      * 이 변환 두 줄뿐이다. */
-    p->set_replication_nanos(g.storage_io_ns);
+    p->set_replication_nanos(g.replication_ns);
     p->set_quorum_wait_nanos(g.quorum_wait_ns);
     p->set_mutex_nanos(g.mutex_ns);
     p->set_total_nanos(g.total_ns);
@@ -276,7 +276,7 @@ inline void client_apply_timed_response_from_proto(const rpcproto::ClientApplyTi
     g.ae_net_ns = p.ae_net_nanos();
     g.f_handler_ns = p.f_handler_nanos();
     g.repl_net_ns = p.repl_net_nanos();
-    g.storage_io_ns = p.replication_nanos();   /* 위 to_proto 주석 참고 */
+    g.replication_ns = p.replication_nanos();   /* 위 to_proto 주석 참고 */
     g.quorum_wait_ns = p.quorum_wait_nanos();
     g.mutex_ns = p.mutex_nanos();
     g.total_ns = p.total_nanos();

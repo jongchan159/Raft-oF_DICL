@@ -181,6 +181,7 @@ struct ClientApplyResponse {
     std::string error;
     bool busy = false;
     int retry_after_ms = 0;
+    int64_t latency_ns = 0;
 };
 
 struct ClientApplyTimedRequest {
@@ -197,9 +198,7 @@ struct ClientApplyTimedResponse {
     int64_t ae_net_ns = 0;
     int64_t f_handler_ns = 0;
     int64_t repl_net_ns = 0;
-    /* proto 필드명은 replication_nanos지만 담기는 값은 StorageIO다
-     * (net/include/raft_proto_conv.h 주석 참고). 이름은 값을 따른다. */
-    int64_t storage_io_ns = 0;
+    int64_t replication_ns = 0;
     int64_t quorum_wait_ns = 0;
     int64_t mutex_ns = 0;
     int64_t total_ns = 0;

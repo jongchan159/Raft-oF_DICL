@@ -201,7 +201,7 @@ void Server::handle_append_entries_request(const AppendEntriesRequest &req,
             auto t_ps = clock_type::now();
             persist_circular(false, 0);   /* follower: persist header only */
             handle_ae_persist = elapsed_ns(t_ps);
-            rsp.storage_copy_ns += handle_ae_persist;   /* persistCircular -> storageio */
+            // rsp.storage_copy_ns  += handle_ae_persist;   /* persistCircular -> storageio */
             rsp.success = true;
             finalize();
             return;
@@ -314,7 +314,7 @@ void Server::handle_append_entries_request(const AppendEntriesRequest &req,
     persist_circular(false, 0);   /* follower: persist header only
                                       (entries already durable via doPBACopy) */
     handle_ae_persist = elapsed_ns(t_pn);
-    rsp.storage_copy_ns += handle_ae_persist;
+    // rsp.storage_copy_ns += handle_ae_persist;
     rsp.success = true;
     finalize();
 }

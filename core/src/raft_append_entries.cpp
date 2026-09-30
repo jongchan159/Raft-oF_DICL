@@ -32,9 +32,33 @@ void Server::append_entries(std::shared_ptr<ReplSink> sink) {
         }
         /* sink를 값으로 캡처해 워커가 살아 있는 동안 ReplSink도 살아
          * 있게 한다 (raft_server.h의 append_entries 주석 참고) */
-        spawn_replication_thread([this, fi, sink]() {
-            append_entries_worker(fi, sink.get());
-        });
+        
+
+        // Original Method - Create threads per follower for every AppendEntries Request
+        // spawn_replication_thread([this, fi, sink]() {
+        //     append_entries_worker(fi, sink.get());
+        // });
+
+        // New Method - Use persistent worker that is spawned in initial time
+        // [Persistent Worker]
+        auto &w = *workers.ae_workers[i];
+        
+        {
+            std::lock_guard<std::mutex> lk(w.mu);
+            w.pending = true;
+
+            // [Diag]
+            // w.trigger_time = clock_type::now();
+            // [Diag]
+
+            if(sink != nullptr) {
+                w.sink = sink;
+            }
+        }
+
+        w.cv.notify_one();
+        // [Persistent Worker]
+
     }
 }
 
@@ -324,7 +348,7 @@ void Server::append_entries_worker(int fi, ReplSink *sink) {
          * handle_append_entries_request가 update_term으로 강등시킨다.
          * 다만 그만큼 강등이 늦는다. 원본과 맞추려면 update_term(rsp.rpc.term)
          * 을 부르면 되지만, 그건 동작 변경이므로 이번 리팩토링 범위 밖이다. */
-        if (rsp.rpc.term > raft.current_term) {
+        if (update_term(rsp.rpc.term)) {
             mu.unlock();
             return;
         }
@@ -344,6 +368,10 @@ void Server::append_entries_worker(int fi, ReplSink *sink) {
          * (DECISIONS.md U4). 그래서 가드는 push에만 건다. */
         if (rsp.success && has_entries) {
             ReplSample sample;
+            // [Diag]
+            sample.peer_index = fi;
+            // [Diag]
+            sample.leader_side = (replication_mode == ReplicationMode::LeaderSide);
             sample.r2_ns = rsp.handler_duration_ns;
             /* Leader-Side: 팔로워는 do_pba_copy를 안 돌리므로
              * rsp.write_pba_rt_ns/storage_copy_ns는 0 -- 대신 leader가
@@ -404,6 +432,43 @@ void Server::append_entries_worker(int fi, ReplSink *sink) {
          * post_rpc_ns가 항상 0으로 남고 wg_scheduling_ns 역산이 부정확하다
          * -- DECISIONS.md U4 (계측 배선 미완, 리팩토링 범위 밖). */
         mu.unlock();
+    }
+}
+
+void Server::append_entries_loop(int fi, AppendEntriesWorkerState *w) {
+    while (!done.load()) {
+        std::shared_ptr<ReplSink> sink;
+        {
+            std::unique_lock<std::mutex> lk(w->mu);
+
+            w->cv.wait(lk, [&] {
+                return done.load() || w->pending;
+            });
+
+            if (done.load())
+                break;
+
+            w->pending = false;
+
+
+            // [Diag]
+            // trigger_time = w->trigger_time;
+            // [Diag]
+
+            sink = std::move(w->sink);
+        }
+
+        // const auto worker_start = clock_type::now();
+
+        // const int64_t wake_ns =
+        //     std::chrono::duration_cast<std::chrono::nanoseconds>(
+        //         worker_start - trigger_time).count();
+
+        // if (sink != nullptr) {
+        //     sink->note_worker_start(fi, worker_start, wake_ns);
+        // }
+
+        append_entries_worker(fi, sink.get());
     }
 }
 

@@ -160,6 +160,27 @@ void Server::start() {
     workers.main_thread = std::thread([this]() { main_loop(); });
     workers.apply_thread = std::thread([this]() { apply_worker_loop(); });
     workers.slot_gc_thread = std::thread([this]() { slot_gc_worker_loop(); });
+
+    // [Persistent Worker]
+    // Create Persistent Worker for other nodes per node
+    // It is expected to reduce the overhead of creating new thread on every AppendEntries Request
+
+    workers.ae_workers.resize(raft.cluster.size());
+
+    for (size_t i = 0; i < raft.cluster.size(); i++) {
+        if (static_cast<int>(i) == raft.cluster_index)
+            continue;
+            
+        auto w = std::make_unique<AppendEntriesWorkerState>();
+        auto *wp = w.get();   
+
+        wp->th = std::thread([this, fi = static_cast<int>(i), wp]() {
+            append_entries_loop(fi, wp);
+        });
+
+        workers.ae_workers[i] = std::move(w);
+    }
+    // [Persistent Worker]
 }
 
 void Server::stop() {
@@ -176,6 +197,15 @@ void Server::stop() {
         workers.slot_gc_notify_pending = true;
     }
     workers.slot_gc_notify_cv.notify_all();
+
+    // [Persistent Worker]
+    for (auto &w : workers.ae_workers) {
+        if (w) {
+            w->cv.notify_all();
+        }
+    }
+    // [Persistent Worker]
+
     {
         std::lock_guard<std::mutex> lk(mu);
         ring_not_full.notify_all();
@@ -190,6 +220,14 @@ void Server::stop() {
     if (workers.slot_gc_thread.joinable()) {
         workers.slot_gc_thread.join();
     }
+
+    // [Persistent Worker]
+    for (auto &w : workers.ae_workers) {
+        if (w && w->th.joinable()) {
+            w->th.join();
+        }
+    }
+    // [Persistent Worker]
 
     /* replication 스레드는 this를 계속 참조하므로 반드시 마지막에 */
     join_all_replication_threads();
@@ -295,45 +333,64 @@ void Server::slot_gc_worker_loop() {
  * std::thread 를 만들고 join 하므로 헤더에 있을 이유가 없다.
  * ============================================================ */
 Server::~Server(){
-        stop();   /* 워커 스레드까지 정리 (내부에서 join_all_replication_threads 호출) */
-    }
+    stop();   /* 워커 스레드까지 정리 (내부에서 join_all_replication_threads 호출) */
+}
 
 void Server::reap_finished_threads(){
-        std::lock_guard<std::mutex> lk(workers.inflight_mu);
-        auto it = std::remove_if(workers.inflight.begin(), workers.inflight.end(),
-            [](ReplicationThreadSlot &slot) {
-                if (slot.done->load(std::memory_order_acquire)) {
-                    if (slot.th.joinable()) {
-                        slot.th.join();   /* 실행은 끝났으니 join은 즉시 반환 */
-                    }
-                    return true;   /* 리스트에서 제거 */
+    std::lock_guard<std::mutex> lk(workers.inflight_mu);
+    auto it = std::remove_if(workers.inflight.begin(), workers.inflight.end(),
+        [](ReplicationThreadSlot &slot) {
+            if (slot.done->load(std::memory_order_acquire)) {
+                if (slot.th.joinable()) {
+                    slot.th.join();   /* 실행은 끝났으니 join은 즉시 반환 */
                 }
-                return false;   /* 아직 실행 중, 유지 */
-            });
-        workers.inflight.erase(it, workers.inflight.end());
-    }
+                return true;   /* 리스트에서 제거 */
+            }
+            return false;   /* 아직 실행 중, 유지 */
+        });
+    workers.inflight.erase(it, workers.inflight.end());
+}
 
 void Server::spawn_replication_thread(std::function<void()> work) {
-        reap_finished_threads();
+    auto t1 = clock_type::now();
+    reap_finished_threads();
+    auto reap_ns = elapsed_ns(t1);
 
-        auto done = std::make_shared<std::atomic<bool>>(false);
-        std::thread th([work = std::move(work), done]() mutable {
-            work();
-            done->store(true, std::memory_order_release);   /* 실행 완료 표시 */
-        });
+    auto done = std::make_shared<std::atomic<bool>>(false);
 
-        std::lock_guard<std::mutex> lk(workers.inflight_mu);
-        workers.inflight.push_back(ReplicationThreadSlot{std::move(th), done});
-    }
+    // auto t2 = clock_type::now();
+    std::thread th([work = std::move(work), done]() mutable {
+        work();
+        done->store(true, std::memory_order_release);   /* 실행 완료 표시 */
+    });
+    // auto thread_create_ns = elapsed_ns(t2);
+
+    // std::cout
+    // << "[diag] reap_ns="
+    // << reap_ns
+    // << " ("
+    // << reap_ns / 1000.0
+    // << " us)\n";
+
+    // std::cout
+    // << "[diag] thread_create_ns="
+    // << thread_create_ns
+    // << " ("
+    // << thread_create_ns / 1000.0
+    // << " us)\n";
+
+    std::lock_guard<std::mutex> lk(workers.inflight_mu);
+    workers.inflight.push_back(ReplicationThreadSlot{std::move(th), done});
+}
 
 void Server::join_all_replication_threads(){
-        std::lock_guard<std::mutex> lk(workers.inflight_mu);
-        for (auto &slot : workers.inflight) {
-            if (slot.th.joinable()) {
-                slot.th.join();
-            }
+    std::lock_guard<std::mutex> lk(workers.inflight_mu);
+    for (auto &slot : workers.inflight) {
+        if (slot.th.joinable()) {
+            slot.th.join();
         }
-        workers.inflight.clear();
     }
+    workers.inflight.clear();
+}
 
 } /* namespace nvmeof_raft */

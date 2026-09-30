@@ -256,6 +256,8 @@ public:
      * 때문에 스택 sink는 use-after-return이 된다 -- DECISIONS.md D7 */
     void append_entries(std::shared_ptr<ReplSink> sink);
 
+    void append_entries_loop(int fi, AppendEntriesWorkerState *w);
+
     /* append_entries의 팔로워 1명분 처리 로직. 병렬화를 위해 별도
      * 함수로 분리 -- append_entries가 팔로워마다 스레드를 띄워 이걸 호출 */
     void append_entries_worker(int fi, ReplSink *sink);
