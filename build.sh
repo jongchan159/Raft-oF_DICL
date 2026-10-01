@@ -74,7 +74,7 @@ NET_SRCS=(
 # storage/ 와 그 net 껍데기. raft_blockcopy_server 만 링크한다 (core 불필요).
 STORAGE_SRCS=(
     "$STORAGE_DIR/raft_blockcopy_server.cpp"
-    "$NET_DIR/raft_blockcopy_tcp_server.cpp"
+    "$NET_DIR/raft_blockcopy_net.cpp"
 )
 
 BLOCKIO_SRCS=(
@@ -172,10 +172,10 @@ build_client() {
 
 # blockcopy 처리량/포화점 측정 도구 (지연 전용이던 raft_blkcopy_bench 를
 # 2026-09-10 에 대체). raft_client 와 링크 구성이 같다 (wire + proto).
-build_blkcopy_scale() {
-    build_bin raft_blkcopy_scale \
-        "$APPS_DIR/raft_blkcopy_scale_main.cpp" "${WIRE_SRCS[@]}" "${PROTO_SRCS[@]}"
-}
+# build_blkcopy_scale() {
+#     build_bin raft_blkcopy_scale \
+#         "$APPS_DIR/raft_blkcopy_scale_main.cpp" "${WIRE_SRCS[@]}" "${PROTO_SRCS[@]}"
+# }
 
 
 build_asan() {

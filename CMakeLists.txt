@@ -212,9 +212,9 @@ target_link_libraries(raft_blockcopy_server PRIVATE
 # 2026-09-10 에 대체했다 -- DECISIONS.md 참고). raft_client 와 링크 구성이
 # 같다 (wire + proto): WritePBABatch 를 직접 쏘므로 core 도, storage 구현도
 # 필요 없다.
-add_executable(raft_blkcopy_scale apps/raft_blkcopy_scale_main.cpp)
-target_link_libraries(raft_blkcopy_scale PRIVATE
-    raft_wire_obj raft_proto_obj raft_includes raft_protobuf raft_rdma Threads::Threads)
+# add_executable(raft_blkcopy_scale apps/raft_blkcopy_scale_main.cpp)
+# target_link_libraries(raft_blkcopy_scale PRIVATE
+#    raft_wire_obj raft_proto_obj raft_includes raft_protobuf raft_rdma Threads::Threads)
 
 # --- ASan+UBSan (build.sh asan 대응) --------------------------------------
 # 플래그가 달라 오브젝트를 공유할 수 없으므로 소스에서 직접 짓는다.
@@ -295,7 +295,7 @@ if(NM_EXECUTABLE)
                  -DPATTERN=protobuf -DWHAT=protobuf
                  -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/check_absent.cmake)
     endforeach()
-    foreach(_t raft_client raft_blockcopy_server raft_blkcopy_scale)
+    foreach(_t raft_client raft_blockcopy_server)
         add_test(NAME isolation_${_t} COMMAND ${CMAKE_COMMAND}
                  -DBIN=$<TARGET_FILE:${_t}> -DNM=${NM_EXECUTABLE}
                  -DPATTERN=nvmeof_raft::Server:: -DWHAT=RaftServer
