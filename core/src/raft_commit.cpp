@@ -164,6 +164,7 @@ void Server::apply_pending() {
     auto t_apply = clock_type::now();
 
     int applied = 0;
+    uint64_t applied_total = 0;   /* applied 는 배치마다 0 으로 돌아간다 */
     uint64_t oldest = oldest_log_index();
 
     while (raft.last_applied >= oldest &&
@@ -184,6 +185,7 @@ void Server::apply_pending() {
         log_entry.ring_slot = 0;
         raft.last_applied++;
         applied++;
+        applied_total++;
 
         if (applied >= kApplyBatchLimit) {
             /* 배치 상한에 닿았다. 원본은 여기서 reset_election_timeout()을
@@ -202,6 +204,12 @@ void Server::apply_pending() {
             oldest = oldest_log_index();
             applied = 0;
         }
+    }
+
+    /* [수정-17] apply 진전을 기다리는 Server::read 가 있을 때만 깨운다
+     * (ReadIndex 4단계, raft_read.cpp). 대기자가 없으면 비용 0. */
+    if (applied_total > 0 && read_waiters > 0) {
+        read_cv.notify_all();
     }
 
     if (profiling) {

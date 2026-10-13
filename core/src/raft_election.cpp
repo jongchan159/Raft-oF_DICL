@@ -222,6 +222,11 @@ void Server::become_leader() {
         ring.tail_log_index++;
         persist_circular(true, 1);
 
+        /* [수정-17] ReadIndex 1단계: 이 no-op 이 커밋되기 전에는 이전 term
+         * 엔트리가 어디까지 커밋됐는지 리더가 모른다. Server::read 는
+         * read_index 를 최소 여기까지 끌어올린다 (raft_read.cpp). */
+        raft.term_start_index = ring.tail_log_index - 1;
+
         for (size_t i = 0; i < raft.cluster.size(); i++) {
             raft.cluster[i].next_index = ring.tail_log_index - 1;
             raft.cluster[i].match_index = 0;
@@ -275,6 +280,9 @@ bool Server::update_term(uint64_t msg_term) {
         set_voted_for(0);
         reset_election_timeout();
         persist_circular(false, 0);
+        /* 강등 -- 리더십 확인/apply 를 기다리던 Server::read 를 깨워
+         * "leadership lost" 로 빠져나가게 한다 (raft_read.cpp) */
+        read_cv.notify_all();
         return true;
     }
     return false;

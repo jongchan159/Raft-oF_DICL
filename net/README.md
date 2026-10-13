@@ -27,6 +27,11 @@
   `commands_from_proto`)는 헤더에 남는다. 프로젝트에서 헤더 템플릿은 이 둘뿐이다.
 - 전송 구현체(`TcpRaftTransport` / `TcpBlockCopyClient`)의 내부 락은
   **`Server::mu` 밖에서** 잡힌다 — DECISIONS.md D10.
+- `RpcRaftTransport` 는 피어당 커넥션이 **둘**이다 (AE·RequestVote 용 /
+  ReadIndex heartbeat 용). 한 커넥션 위의 호출은 `call_mu` 로 직렬화되므로
+  합치면 GET 의 리더십 확인이 데이터 AE 뒤에 줄을 선다 — `[수정-17]`.
+- `Server.ClientRead` 는 로그를 타지 않는다 (`Server::read`). 결과는
+  `queries` 와 같은 순서의 `results` 로 돌려준다.
 - accept된 fd에서 `SO_RCVTIMEO` 를 반드시 지운다. Linux가 리슨 소켓의
   타임아웃을 상속시켜서, 안 지우면 롱리브드 RPC가 200ms마다 끊기고
   선거가 끝나지 않는다 — `[수정-3]`, DECISIONS.md D3.

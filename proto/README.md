@@ -27,6 +27,18 @@
   런타임을 요구한다. Ubuntu 18.04 apt에는 3.0.0뿐이라 소스 빌드가
   필요하다 — 절차는 최상위 `README.md` §1.
 
+`.proto` 를 고치면 **protoc 3.21.12** 로 재생성할 것 —— 커밋된 파일을 만든
+버전이고, 같은 버전이면 출력이 바이트 단위로 같다. 리눅스 서버에 없으면
+공식 릴리스(`protoc-21.12-<os>-<arch>.zip`)를 받아
+`protoc --cpp_out=proto -I proto proto/rpcproto.proto` 로 돌려도 된다.
+
+## ReadIndexHeartbeat 는 AppendEntries 가 아니다
+
+`ReadIndexHeartbeatRequest/Response` 는 ReadIndex(§6.4)의 리더십 확인 전용
+heartbeat 다 (etcd 의 MsgHeartbeat 처럼 로그 복제와 분리). 엔트리도 로그
+일관성 검사도 없고, `round` 는 etcd 의 read ctx 에 해당한다.
+`ClientReadRequest/Response` 는 로그를 타지 않는 읽기다.
+
 ## AppendEntries에 명령 바이트가 없다는 점
 
 `AppendEntriesRequest` 는 `leader_pba_src`, `log_block_length`, `start_slot`,

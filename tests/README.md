@@ -27,6 +27,16 @@ extent 경계 로직(`persist_circular` 의 extent-skip, `append_entries` 의
 extent clamp)은 **단편화된 파일에서만** 도는 코드라, `ExtentCache::from_extents`
 로 가짜 다중 extent 맵을 만들어 `test_extent_map.cpp` 에서 덮는다.
 
+`test_read_index.cpp` 는 `Server::read` 를 끝까지 돌릴 때 `start()` 대신
+`start_read_hb_workers()` 로 heartbeat 워커만 띄운다 —— `main_loop` 를 돌리면
+heartbeat / slot GC 가 링 파일을 건드린다. 더 높은 term 을 보는 경로
+(`update_term` → `persist_circular`)는 링 파일이 필요해서 여기서 다루지 않는다
+(`test_election.cpp` 와 같은 제약).
+
+`fake_transport.h` 의 `read_index_heartbeat` 는 `append_entries` 와 **다른 락**
+(`read_mu`)을 쓴다. `append_entries` 는 `mu` 를 쥔 채 훅을 부르므로, 같은 락을
+쓰면 "AE 가 막혀도 read 가 끝난다" 는 테스트가 성립하지 않는다.
+
 ## 전체 검증
 
 ```bash

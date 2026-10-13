@@ -50,17 +50,30 @@ public:
                          AppendEntriesResponse &rsp) override;
     bool request_vote(int peer_index, const RequestVoteRequest &req,
                        RequestVoteResponse &rsp) override;
+    bool read_index_heartbeat(int peer_index, const ReadIndexHeartbeatRequest &req,
+                              ReadIndexHeartbeatResponse &rsp) override;
 
 private:
-    struct Peer {
-        uint64_t id = 0;
-        std::string address;
-        /* 아래 둘은 mu_ 로 보호된다. dial 자체는 락 밖에서 한다. */
+    /* 피어당 커넥션이 둘이다 [수정-17]. 한 커넥션 위의 호출은 rpc_invoke /
+     * rdma_invoke 의 call_mu 로 직렬화되므로, ReadIndex heartbeat 가 AE 와
+     * 같은 커넥션을 쓰면 진행 중인 데이터 AE(팔로워 blockcopy 포함) 뒤에
+     * 줄을 선다. 서버는 커넥션마다 스레드를 띄우므로 커넥션을 나누면 양쪽이
+     * 독립적으로 처리된다. */
+    enum Channel { kRaftChannel = 0, kReadHbChannel = 1, kNumChannels = 2 };
+
+    struct Slot {
         std::shared_ptr<RpcConn> conn;
         std::chrono::steady_clock::time_point next_dial_time{};
     };
 
-    bool call_peer(int peer_index, const std::string &method,
+    struct Peer {
+        uint64_t id = 0;
+        std::string address;
+        /* slots 는 mu_ 로 보호된다. dial 자체는 락 밖에서 한다. */
+        Slot slots[kNumChannels];
+    };
+
+    bool call_peer(int peer_index, Channel ch, const std::string &method,
                    const std::vector<uint8_t> &req_body,
                    std::vector<uint8_t> *out_rsp_body);
 

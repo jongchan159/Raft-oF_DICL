@@ -100,6 +100,10 @@ struct ClusterMember {
      * follower. (원본 주석 그대로) */
     bool inflight = false;
 
+    /* ReadIndexHeartbeat 로 이 팔로워가 (현재 term 의 리더에게) ack 한 최신
+     * 읽기 라운드. 리더 전용 (core/src/raft_read.cpp). */
+    uint64_t read_ack_round = 0;
+
     /* log_skip_pba_diag의 출력 스로틀용 (원본에는 없음 -- 원본은 매
      * 하트비트마다 무조건 찍어서 초당 10줄이 나온다). 같은 next에 대한
      * 경고는 1초에 한 번만 낸다. */
@@ -210,6 +214,19 @@ struct RaftState {
     uint64_t commit_index = 0;
     uint64_t last_applied = 0;
     ServerState state = ServerState::Follower;
+
+    /* ---- ReadIndex (Ongaro §6.4, core/src/raft_read.cpp) [수정-17] ----
+     * term_start_index: 이 term 에 리더가 되며 append 한 no-op 의 인덱스.
+     *   commit_index 가 이걸 넘기 전에는 "이전 term 엔트리가 커밋됐는지"
+     *   리더가 모르므로 read_index 를 여기까지 끌어올린다 (§6.4 1단계).
+     * read_round: Server::read 가 요청한 최신 heartbeat 라운드.
+     *   **term 이 바뀌어도 리셋하지 않는다** (단조 증가). 그래서 이전 term 에
+     *   받은 ack 의 라운드는 새 term 에 요청되는 어떤 라운드보다도 작고,
+     *   멤버별 ack 에 term 을 따로 붙이지 않아도 된다.
+     * read_confirmed_round: 과반(자신 포함)이 ack 한 최신 라운드. */
+    uint64_t term_start_index = 0;
+    uint64_t read_round = 0;
+    uint64_t read_confirmed_round = 0;
 
     /* ---- 클러스터 멤버십 ----
      * cluster[cluster_index]가 이 노드 자신이다. 멤버별 next_index /
@@ -350,6 +367,17 @@ struct AppendEntriesWorkerState {
     // [Diag]
 };
 
+/* ReadIndexHeartbeat 를 보내는 팔로워별 상시 워커 (core/src/raft_read.cpp).
+ * AE 워커와 **분리돼 있다** -- AE 워커는 데이터 AE(팔로워의 blockcopy 포함)를
+ * 기다리는 동안 다른 RPC 를 못 보내므로, 거기에 읽기 확인을 실으면 GET 이
+ * PUT 의 로그 비용을 간접적으로 지불한다. [수정-17] */
+struct ReadIndexHbWorkerState {
+    std::thread th;
+    std::mutex mu;
+    std::condition_variable cv;
+    bool pending = false;
+};
+
 struct WorkerPool {
     /* 상시 스레드 3개. start()가 띄우고 stop()이 join한다. */
     std::thread main_thread;      /* timeout / become_leader / heartbeat / advance_commit_index */
@@ -370,6 +398,7 @@ struct WorkerPool {
     uint64_t slot_gc_tick = 0;   /* advance_commit_index 호출마다 증가 (floor 트리거용) */
 
     std::vector<std::unique_ptr<AppendEntriesWorkerState>> ae_workers;
+    std::vector<std::unique_ptr<ReadIndexHbWorkerState>> read_hb_workers;
 
     /* 진행 중인 복제 스레드 (팔로워별 AE 워커 / RequestVote 워커). */
     std::mutex inflight_mu;

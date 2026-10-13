@@ -88,9 +88,21 @@ extern ClientGetHashRequestDefaultTypeInternal _ClientGetHashRequest_default_ins
 class ClientGetHashResponse;
 struct ClientGetHashResponseDefaultTypeInternal;
 extern ClientGetHashResponseDefaultTypeInternal _ClientGetHashResponse_default_instance_;
+class ClientReadRequest;
+struct ClientReadRequestDefaultTypeInternal;
+extern ClientReadRequestDefaultTypeInternal _ClientReadRequest_default_instance_;
+class ClientReadResponse;
+struct ClientReadResponseDefaultTypeInternal;
+extern ClientReadResponseDefaultTypeInternal _ClientReadResponse_default_instance_;
 class EntryMeta;
 struct EntryMetaDefaultTypeInternal;
 extern EntryMetaDefaultTypeInternal _EntryMeta_default_instance_;
+class ReadIndexHeartbeatRequest;
+struct ReadIndexHeartbeatRequestDefaultTypeInternal;
+extern ReadIndexHeartbeatRequestDefaultTypeInternal _ReadIndexHeartbeatRequest_default_instance_;
+class ReadIndexHeartbeatResponse;
+struct ReadIndexHeartbeatResponseDefaultTypeInternal;
+extern ReadIndexHeartbeatResponseDefaultTypeInternal _ReadIndexHeartbeatResponse_default_instance_;
 class RequestVoteRequest;
 struct RequestVoteRequestDefaultTypeInternal;
 extern RequestVoteRequestDefaultTypeInternal _RequestVoteRequest_default_instance_;
@@ -119,7 +131,11 @@ template<> ::rpcproto::ClientGetCommitIndexRequest* Arena::CreateMaybeMessage<::
 template<> ::rpcproto::ClientGetCommitIndexResponse* Arena::CreateMaybeMessage<::rpcproto::ClientGetCommitIndexResponse>(Arena*);
 template<> ::rpcproto::ClientGetHashRequest* Arena::CreateMaybeMessage<::rpcproto::ClientGetHashRequest>(Arena*);
 template<> ::rpcproto::ClientGetHashResponse* Arena::CreateMaybeMessage<::rpcproto::ClientGetHashResponse>(Arena*);
+template<> ::rpcproto::ClientReadRequest* Arena::CreateMaybeMessage<::rpcproto::ClientReadRequest>(Arena*);
+template<> ::rpcproto::ClientReadResponse* Arena::CreateMaybeMessage<::rpcproto::ClientReadResponse>(Arena*);
 template<> ::rpcproto::EntryMeta* Arena::CreateMaybeMessage<::rpcproto::EntryMeta>(Arena*);
+template<> ::rpcproto::ReadIndexHeartbeatRequest* Arena::CreateMaybeMessage<::rpcproto::ReadIndexHeartbeatRequest>(Arena*);
+template<> ::rpcproto::ReadIndexHeartbeatResponse* Arena::CreateMaybeMessage<::rpcproto::ReadIndexHeartbeatResponse>(Arena*);
 template<> ::rpcproto::RequestVoteRequest* Arena::CreateMaybeMessage<::rpcproto::RequestVoteRequest>(Arena*);
 template<> ::rpcproto::RequestVoteResponse* Arena::CreateMaybeMessage<::rpcproto::RequestVoteResponse>(Arena*);
 template<> ::rpcproto::WritePBABatchRequest* Arena::CreateMaybeMessage<::rpcproto::WritePBABatchRequest>(Arena*);
@@ -1186,6 +1202,346 @@ class AppendEntriesResponse final :
 };
 // -------------------------------------------------------------------
 
+class ReadIndexHeartbeatRequest final :
+    public ::PROTOBUF_NAMESPACE_ID::Message /* @@protoc_insertion_point(class_definition:rpcproto.ReadIndexHeartbeatRequest) */ {
+ public:
+  inline ReadIndexHeartbeatRequest() : ReadIndexHeartbeatRequest(nullptr) {}
+  ~ReadIndexHeartbeatRequest() override;
+  explicit PROTOBUF_CONSTEXPR ReadIndexHeartbeatRequest(::PROTOBUF_NAMESPACE_ID::internal::ConstantInitialized);
+
+  ReadIndexHeartbeatRequest(const ReadIndexHeartbeatRequest& from);
+  ReadIndexHeartbeatRequest(ReadIndexHeartbeatRequest&& from) noexcept
+    : ReadIndexHeartbeatRequest() {
+    *this = ::std::move(from);
+  }
+
+  inline ReadIndexHeartbeatRequest& operator=(const ReadIndexHeartbeatRequest& from) {
+    CopyFrom(from);
+    return *this;
+  }
+  inline ReadIndexHeartbeatRequest& operator=(ReadIndexHeartbeatRequest&& from) noexcept {
+    if (this == &from) return *this;
+    if (GetOwningArena() == from.GetOwningArena()
+  #ifdef PROTOBUF_FORCE_COPY_IN_MOVE
+        && GetOwningArena() != nullptr
+  #endif  // !PROTOBUF_FORCE_COPY_IN_MOVE
+    ) {
+      InternalSwap(&from);
+    } else {
+      CopyFrom(from);
+    }
+    return *this;
+  }
+
+  static const ::PROTOBUF_NAMESPACE_ID::Descriptor* descriptor() {
+    return GetDescriptor();
+  }
+  static const ::PROTOBUF_NAMESPACE_ID::Descriptor* GetDescriptor() {
+    return default_instance().GetMetadata().descriptor;
+  }
+  static const ::PROTOBUF_NAMESPACE_ID::Reflection* GetReflection() {
+    return default_instance().GetMetadata().reflection;
+  }
+  static const ReadIndexHeartbeatRequest& default_instance() {
+    return *internal_default_instance();
+  }
+  static inline const ReadIndexHeartbeatRequest* internal_default_instance() {
+    return reinterpret_cast<const ReadIndexHeartbeatRequest*>(
+               &_ReadIndexHeartbeatRequest_default_instance_);
+  }
+  static constexpr int kIndexInFileMessages =
+    5;
+
+  friend void swap(ReadIndexHeartbeatRequest& a, ReadIndexHeartbeatRequest& b) {
+    a.Swap(&b);
+  }
+  inline void Swap(ReadIndexHeartbeatRequest* other) {
+    if (other == this) return;
+  #ifdef PROTOBUF_FORCE_COPY_IN_SWAP
+    if (GetOwningArena() != nullptr &&
+        GetOwningArena() == other->GetOwningArena()) {
+   #else  // PROTOBUF_FORCE_COPY_IN_SWAP
+    if (GetOwningArena() == other->GetOwningArena()) {
+  #endif  // !PROTOBUF_FORCE_COPY_IN_SWAP
+      InternalSwap(other);
+    } else {
+      ::PROTOBUF_NAMESPACE_ID::internal::GenericSwap(this, other);
+    }
+  }
+  void UnsafeArenaSwap(ReadIndexHeartbeatRequest* other) {
+    if (other == this) return;
+    GOOGLE_DCHECK(GetOwningArena() == other->GetOwningArena());
+    InternalSwap(other);
+  }
+
+  // implements Message ----------------------------------------------
+
+  ReadIndexHeartbeatRequest* New(::PROTOBUF_NAMESPACE_ID::Arena* arena = nullptr) const final {
+    return CreateMaybeMessage<ReadIndexHeartbeatRequest>(arena);
+  }
+  using ::PROTOBUF_NAMESPACE_ID::Message::CopyFrom;
+  void CopyFrom(const ReadIndexHeartbeatRequest& from);
+  using ::PROTOBUF_NAMESPACE_ID::Message::MergeFrom;
+  void MergeFrom( const ReadIndexHeartbeatRequest& from) {
+    ReadIndexHeartbeatRequest::MergeImpl(*this, from);
+  }
+  private:
+  static void MergeImpl(::PROTOBUF_NAMESPACE_ID::Message& to_msg, const ::PROTOBUF_NAMESPACE_ID::Message& from_msg);
+  public:
+  PROTOBUF_ATTRIBUTE_REINITIALIZES void Clear() final;
+  bool IsInitialized() const final;
+
+  size_t ByteSizeLong() const final;
+  const char* _InternalParse(const char* ptr, ::PROTOBUF_NAMESPACE_ID::internal::ParseContext* ctx) final;
+  uint8_t* _InternalSerialize(
+      uint8_t* target, ::PROTOBUF_NAMESPACE_ID::io::EpsCopyOutputStream* stream) const final;
+  int GetCachedSize() const final { return _impl_._cached_size_.Get(); }
+
+  private:
+  void SharedCtor(::PROTOBUF_NAMESPACE_ID::Arena* arena, bool is_message_owned);
+  void SharedDtor();
+  void SetCachedSize(int size) const final;
+  void InternalSwap(ReadIndexHeartbeatRequest* other);
+
+  private:
+  friend class ::PROTOBUF_NAMESPACE_ID::internal::AnyMetadata;
+  static ::PROTOBUF_NAMESPACE_ID::StringPiece FullMessageName() {
+    return "rpcproto.ReadIndexHeartbeatRequest";
+  }
+  protected:
+  explicit ReadIndexHeartbeatRequest(::PROTOBUF_NAMESPACE_ID::Arena* arena,
+                       bool is_message_owned = false);
+  public:
+
+  static const ClassData _class_data_;
+  const ::PROTOBUF_NAMESPACE_ID::Message::ClassData*GetClassData() const final;
+
+  ::PROTOBUF_NAMESPACE_ID::Metadata GetMetadata() const final;
+
+  // nested types ----------------------------------------------------
+
+  // accessors -------------------------------------------------------
+
+  enum : int {
+    kTermFieldNumber = 1,
+    kLeaderIdFieldNumber = 2,
+    kRoundFieldNumber = 3,
+  };
+  // uint64 term = 1;
+  void clear_term();
+  uint64_t term() const;
+  void set_term(uint64_t value);
+  private:
+  uint64_t _internal_term() const;
+  void _internal_set_term(uint64_t value);
+  public:
+
+  // uint64 leader_id = 2;
+  void clear_leader_id();
+  uint64_t leader_id() const;
+  void set_leader_id(uint64_t value);
+  private:
+  uint64_t _internal_leader_id() const;
+  void _internal_set_leader_id(uint64_t value);
+  public:
+
+  // uint64 round = 3;
+  void clear_round();
+  uint64_t round() const;
+  void set_round(uint64_t value);
+  private:
+  uint64_t _internal_round() const;
+  void _internal_set_round(uint64_t value);
+  public:
+
+  // @@protoc_insertion_point(class_scope:rpcproto.ReadIndexHeartbeatRequest)
+ private:
+  class _Internal;
+
+  template <typename T> friend class ::PROTOBUF_NAMESPACE_ID::Arena::InternalHelper;
+  typedef void InternalArenaConstructable_;
+  typedef void DestructorSkippable_;
+  struct Impl_ {
+    uint64_t term_;
+    uint64_t leader_id_;
+    uint64_t round_;
+    mutable ::PROTOBUF_NAMESPACE_ID::internal::CachedSize _cached_size_;
+  };
+  union { Impl_ _impl_; };
+  friend struct ::TableStruct_rpcproto_2eproto;
+};
+// -------------------------------------------------------------------
+
+class ReadIndexHeartbeatResponse final :
+    public ::PROTOBUF_NAMESPACE_ID::Message /* @@protoc_insertion_point(class_definition:rpcproto.ReadIndexHeartbeatResponse) */ {
+ public:
+  inline ReadIndexHeartbeatResponse() : ReadIndexHeartbeatResponse(nullptr) {}
+  ~ReadIndexHeartbeatResponse() override;
+  explicit PROTOBUF_CONSTEXPR ReadIndexHeartbeatResponse(::PROTOBUF_NAMESPACE_ID::internal::ConstantInitialized);
+
+  ReadIndexHeartbeatResponse(const ReadIndexHeartbeatResponse& from);
+  ReadIndexHeartbeatResponse(ReadIndexHeartbeatResponse&& from) noexcept
+    : ReadIndexHeartbeatResponse() {
+    *this = ::std::move(from);
+  }
+
+  inline ReadIndexHeartbeatResponse& operator=(const ReadIndexHeartbeatResponse& from) {
+    CopyFrom(from);
+    return *this;
+  }
+  inline ReadIndexHeartbeatResponse& operator=(ReadIndexHeartbeatResponse&& from) noexcept {
+    if (this == &from) return *this;
+    if (GetOwningArena() == from.GetOwningArena()
+  #ifdef PROTOBUF_FORCE_COPY_IN_MOVE
+        && GetOwningArena() != nullptr
+  #endif  // !PROTOBUF_FORCE_COPY_IN_MOVE
+    ) {
+      InternalSwap(&from);
+    } else {
+      CopyFrom(from);
+    }
+    return *this;
+  }
+
+  static const ::PROTOBUF_NAMESPACE_ID::Descriptor* descriptor() {
+    return GetDescriptor();
+  }
+  static const ::PROTOBUF_NAMESPACE_ID::Descriptor* GetDescriptor() {
+    return default_instance().GetMetadata().descriptor;
+  }
+  static const ::PROTOBUF_NAMESPACE_ID::Reflection* GetReflection() {
+    return default_instance().GetMetadata().reflection;
+  }
+  static const ReadIndexHeartbeatResponse& default_instance() {
+    return *internal_default_instance();
+  }
+  static inline const ReadIndexHeartbeatResponse* internal_default_instance() {
+    return reinterpret_cast<const ReadIndexHeartbeatResponse*>(
+               &_ReadIndexHeartbeatResponse_default_instance_);
+  }
+  static constexpr int kIndexInFileMessages =
+    6;
+
+  friend void swap(ReadIndexHeartbeatResponse& a, ReadIndexHeartbeatResponse& b) {
+    a.Swap(&b);
+  }
+  inline void Swap(ReadIndexHeartbeatResponse* other) {
+    if (other == this) return;
+  #ifdef PROTOBUF_FORCE_COPY_IN_SWAP
+    if (GetOwningArena() != nullptr &&
+        GetOwningArena() == other->GetOwningArena()) {
+   #else  // PROTOBUF_FORCE_COPY_IN_SWAP
+    if (GetOwningArena() == other->GetOwningArena()) {
+  #endif  // !PROTOBUF_FORCE_COPY_IN_SWAP
+      InternalSwap(other);
+    } else {
+      ::PROTOBUF_NAMESPACE_ID::internal::GenericSwap(this, other);
+    }
+  }
+  void UnsafeArenaSwap(ReadIndexHeartbeatResponse* other) {
+    if (other == this) return;
+    GOOGLE_DCHECK(GetOwningArena() == other->GetOwningArena());
+    InternalSwap(other);
+  }
+
+  // implements Message ----------------------------------------------
+
+  ReadIndexHeartbeatResponse* New(::PROTOBUF_NAMESPACE_ID::Arena* arena = nullptr) const final {
+    return CreateMaybeMessage<ReadIndexHeartbeatResponse>(arena);
+  }
+  using ::PROTOBUF_NAMESPACE_ID::Message::CopyFrom;
+  void CopyFrom(const ReadIndexHeartbeatResponse& from);
+  using ::PROTOBUF_NAMESPACE_ID::Message::MergeFrom;
+  void MergeFrom( const ReadIndexHeartbeatResponse& from) {
+    ReadIndexHeartbeatResponse::MergeImpl(*this, from);
+  }
+  private:
+  static void MergeImpl(::PROTOBUF_NAMESPACE_ID::Message& to_msg, const ::PROTOBUF_NAMESPACE_ID::Message& from_msg);
+  public:
+  PROTOBUF_ATTRIBUTE_REINITIALIZES void Clear() final;
+  bool IsInitialized() const final;
+
+  size_t ByteSizeLong() const final;
+  const char* _InternalParse(const char* ptr, ::PROTOBUF_NAMESPACE_ID::internal::ParseContext* ctx) final;
+  uint8_t* _InternalSerialize(
+      uint8_t* target, ::PROTOBUF_NAMESPACE_ID::io::EpsCopyOutputStream* stream) const final;
+  int GetCachedSize() const final { return _impl_._cached_size_.Get(); }
+
+  private:
+  void SharedCtor(::PROTOBUF_NAMESPACE_ID::Arena* arena, bool is_message_owned);
+  void SharedDtor();
+  void SetCachedSize(int size) const final;
+  void InternalSwap(ReadIndexHeartbeatResponse* other);
+
+  private:
+  friend class ::PROTOBUF_NAMESPACE_ID::internal::AnyMetadata;
+  static ::PROTOBUF_NAMESPACE_ID::StringPiece FullMessageName() {
+    return "rpcproto.ReadIndexHeartbeatResponse";
+  }
+  protected:
+  explicit ReadIndexHeartbeatResponse(::PROTOBUF_NAMESPACE_ID::Arena* arena,
+                       bool is_message_owned = false);
+  public:
+
+  static const ClassData _class_data_;
+  const ::PROTOBUF_NAMESPACE_ID::Message::ClassData*GetClassData() const final;
+
+  ::PROTOBUF_NAMESPACE_ID::Metadata GetMetadata() const final;
+
+  // nested types ----------------------------------------------------
+
+  // accessors -------------------------------------------------------
+
+  enum : int {
+    kTermFieldNumber = 1,
+    kRoundFieldNumber = 3,
+    kOkFieldNumber = 2,
+  };
+  // uint64 term = 1;
+  void clear_term();
+  uint64_t term() const;
+  void set_term(uint64_t value);
+  private:
+  uint64_t _internal_term() const;
+  void _internal_set_term(uint64_t value);
+  public:
+
+  // uint64 round = 3;
+  void clear_round();
+  uint64_t round() const;
+  void set_round(uint64_t value);
+  private:
+  uint64_t _internal_round() const;
+  void _internal_set_round(uint64_t value);
+  public:
+
+  // bool ok = 2;
+  void clear_ok();
+  bool ok() const;
+  void set_ok(bool value);
+  private:
+  bool _internal_ok() const;
+  void _internal_set_ok(bool value);
+  public:
+
+  // @@protoc_insertion_point(class_scope:rpcproto.ReadIndexHeartbeatResponse)
+ private:
+  class _Internal;
+
+  template <typename T> friend class ::PROTOBUF_NAMESPACE_ID::Arena::InternalHelper;
+  typedef void InternalArenaConstructable_;
+  typedef void DestructorSkippable_;
+  struct Impl_ {
+    uint64_t term_;
+    uint64_t round_;
+    bool ok_;
+    mutable ::PROTOBUF_NAMESPACE_ID::internal::CachedSize _cached_size_;
+  };
+  union { Impl_ _impl_; };
+  friend struct ::TableStruct_rpcproto_2eproto;
+};
+// -------------------------------------------------------------------
+
 class WritePBABatchRequest final :
     public ::PROTOBUF_NAMESPACE_ID::Message /* @@protoc_insertion_point(class_definition:rpcproto.WritePBABatchRequest) */ {
  public:
@@ -1234,7 +1590,7 @@ class WritePBABatchRequest final :
                &_WritePBABatchRequest_default_instance_);
   }
   static constexpr int kIndexInFileMessages =
-    5;
+    7;
 
   friend void swap(WritePBABatchRequest& a, WritePBABatchRequest& b) {
     a.Swap(&b);
@@ -1479,7 +1835,7 @@ class WritePBABatchResponse final :
                &_WritePBABatchResponse_default_instance_);
   }
   static constexpr int kIndexInFileMessages =
-    6;
+    8;
 
   friend void swap(WritePBABatchResponse& a, WritePBABatchResponse& b) {
     a.Swap(&b);
@@ -1665,7 +2021,7 @@ class ClientApplyRequest final :
                &_ClientApplyRequest_default_instance_);
   }
   static constexpr int kIndexInFileMessages =
-    7;
+    9;
 
   friend void swap(ClientApplyRequest& a, ClientApplyRequest& b) {
     a.Swap(&b);
@@ -1828,7 +2184,7 @@ class ClientApplyResponse final :
                &_ClientApplyResponse_default_instance_);
   }
   static constexpr int kIndexInFileMessages =
-    8;
+    10;
 
   friend void swap(ClientApplyResponse& a, ClientApplyResponse& b) {
     a.Swap(&b);
@@ -2003,7 +2359,7 @@ class ClientApplyTimedRequest final :
                &_ClientApplyTimedRequest_default_instance_);
   }
   static constexpr int kIndexInFileMessages =
-    9;
+    11;
 
   friend void swap(ClientApplyTimedRequest& a, ClientApplyTimedRequest& b) {
     a.Swap(&b);
@@ -2166,7 +2522,7 @@ class ClientApplyTimedResponse final :
                &_ClientApplyTimedResponse_default_instance_);
   }
   static constexpr int kIndexInFileMessages =
-    10;
+    12;
 
   friend void swap(ClientApplyTimedResponse& a, ClientApplyTimedResponse& b) {
     a.Swap(&b);
@@ -2425,6 +2781,414 @@ class ClientApplyTimedResponse final :
 };
 // -------------------------------------------------------------------
 
+class ClientReadRequest final :
+    public ::PROTOBUF_NAMESPACE_ID::Message /* @@protoc_insertion_point(class_definition:rpcproto.ClientReadRequest) */ {
+ public:
+  inline ClientReadRequest() : ClientReadRequest(nullptr) {}
+  ~ClientReadRequest() override;
+  explicit PROTOBUF_CONSTEXPR ClientReadRequest(::PROTOBUF_NAMESPACE_ID::internal::ConstantInitialized);
+
+  ClientReadRequest(const ClientReadRequest& from);
+  ClientReadRequest(ClientReadRequest&& from) noexcept
+    : ClientReadRequest() {
+    *this = ::std::move(from);
+  }
+
+  inline ClientReadRequest& operator=(const ClientReadRequest& from) {
+    CopyFrom(from);
+    return *this;
+  }
+  inline ClientReadRequest& operator=(ClientReadRequest&& from) noexcept {
+    if (this == &from) return *this;
+    if (GetOwningArena() == from.GetOwningArena()
+  #ifdef PROTOBUF_FORCE_COPY_IN_MOVE
+        && GetOwningArena() != nullptr
+  #endif  // !PROTOBUF_FORCE_COPY_IN_MOVE
+    ) {
+      InternalSwap(&from);
+    } else {
+      CopyFrom(from);
+    }
+    return *this;
+  }
+
+  static const ::PROTOBUF_NAMESPACE_ID::Descriptor* descriptor() {
+    return GetDescriptor();
+  }
+  static const ::PROTOBUF_NAMESPACE_ID::Descriptor* GetDescriptor() {
+    return default_instance().GetMetadata().descriptor;
+  }
+  static const ::PROTOBUF_NAMESPACE_ID::Reflection* GetReflection() {
+    return default_instance().GetMetadata().reflection;
+  }
+  static const ClientReadRequest& default_instance() {
+    return *internal_default_instance();
+  }
+  static inline const ClientReadRequest* internal_default_instance() {
+    return reinterpret_cast<const ClientReadRequest*>(
+               &_ClientReadRequest_default_instance_);
+  }
+  static constexpr int kIndexInFileMessages =
+    13;
+
+  friend void swap(ClientReadRequest& a, ClientReadRequest& b) {
+    a.Swap(&b);
+  }
+  inline void Swap(ClientReadRequest* other) {
+    if (other == this) return;
+  #ifdef PROTOBUF_FORCE_COPY_IN_SWAP
+    if (GetOwningArena() != nullptr &&
+        GetOwningArena() == other->GetOwningArena()) {
+   #else  // PROTOBUF_FORCE_COPY_IN_SWAP
+    if (GetOwningArena() == other->GetOwningArena()) {
+  #endif  // !PROTOBUF_FORCE_COPY_IN_SWAP
+      InternalSwap(other);
+    } else {
+      ::PROTOBUF_NAMESPACE_ID::internal::GenericSwap(this, other);
+    }
+  }
+  void UnsafeArenaSwap(ClientReadRequest* other) {
+    if (other == this) return;
+    GOOGLE_DCHECK(GetOwningArena() == other->GetOwningArena());
+    InternalSwap(other);
+  }
+
+  // implements Message ----------------------------------------------
+
+  ClientReadRequest* New(::PROTOBUF_NAMESPACE_ID::Arena* arena = nullptr) const final {
+    return CreateMaybeMessage<ClientReadRequest>(arena);
+  }
+  using ::PROTOBUF_NAMESPACE_ID::Message::CopyFrom;
+  void CopyFrom(const ClientReadRequest& from);
+  using ::PROTOBUF_NAMESPACE_ID::Message::MergeFrom;
+  void MergeFrom( const ClientReadRequest& from) {
+    ClientReadRequest::MergeImpl(*this, from);
+  }
+  private:
+  static void MergeImpl(::PROTOBUF_NAMESPACE_ID::Message& to_msg, const ::PROTOBUF_NAMESPACE_ID::Message& from_msg);
+  public:
+  PROTOBUF_ATTRIBUTE_REINITIALIZES void Clear() final;
+  bool IsInitialized() const final;
+
+  size_t ByteSizeLong() const final;
+  const char* _InternalParse(const char* ptr, ::PROTOBUF_NAMESPACE_ID::internal::ParseContext* ctx) final;
+  uint8_t* _InternalSerialize(
+      uint8_t* target, ::PROTOBUF_NAMESPACE_ID::io::EpsCopyOutputStream* stream) const final;
+  int GetCachedSize() const final { return _impl_._cached_size_.Get(); }
+
+  private:
+  void SharedCtor(::PROTOBUF_NAMESPACE_ID::Arena* arena, bool is_message_owned);
+  void SharedDtor();
+  void SetCachedSize(int size) const final;
+  void InternalSwap(ClientReadRequest* other);
+
+  private:
+  friend class ::PROTOBUF_NAMESPACE_ID::internal::AnyMetadata;
+  static ::PROTOBUF_NAMESPACE_ID::StringPiece FullMessageName() {
+    return "rpcproto.ClientReadRequest";
+  }
+  protected:
+  explicit ClientReadRequest(::PROTOBUF_NAMESPACE_ID::Arena* arena,
+                       bool is_message_owned = false);
+  public:
+
+  static const ClassData _class_data_;
+  const ::PROTOBUF_NAMESPACE_ID::Message::ClassData*GetClassData() const final;
+
+  ::PROTOBUF_NAMESPACE_ID::Metadata GetMetadata() const final;
+
+  // nested types ----------------------------------------------------
+
+  // accessors -------------------------------------------------------
+
+  enum : int {
+    kQueriesFieldNumber = 1,
+  };
+  // repeated bytes queries = 1;
+  int queries_size() const;
+  private:
+  int _internal_queries_size() const;
+  public:
+  void clear_queries();
+  const std::string& queries(int index) const;
+  std::string* mutable_queries(int index);
+  void set_queries(int index, const std::string& value);
+  void set_queries(int index, std::string&& value);
+  void set_queries(int index, const char* value);
+  void set_queries(int index, const void* value, size_t size);
+  std::string* add_queries();
+  void add_queries(const std::string& value);
+  void add_queries(std::string&& value);
+  void add_queries(const char* value);
+  void add_queries(const void* value, size_t size);
+  const ::PROTOBUF_NAMESPACE_ID::RepeatedPtrField<std::string>& queries() const;
+  ::PROTOBUF_NAMESPACE_ID::RepeatedPtrField<std::string>* mutable_queries();
+  private:
+  const std::string& _internal_queries(int index) const;
+  std::string* _internal_add_queries();
+  public:
+
+  // @@protoc_insertion_point(class_scope:rpcproto.ClientReadRequest)
+ private:
+  class _Internal;
+
+  template <typename T> friend class ::PROTOBUF_NAMESPACE_ID::Arena::InternalHelper;
+  typedef void InternalArenaConstructable_;
+  typedef void DestructorSkippable_;
+  struct Impl_ {
+    ::PROTOBUF_NAMESPACE_ID::RepeatedPtrField<std::string> queries_;
+    mutable ::PROTOBUF_NAMESPACE_ID::internal::CachedSize _cached_size_;
+  };
+  union { Impl_ _impl_; };
+  friend struct ::TableStruct_rpcproto_2eproto;
+};
+// -------------------------------------------------------------------
+
+class ClientReadResponse final :
+    public ::PROTOBUF_NAMESPACE_ID::Message /* @@protoc_insertion_point(class_definition:rpcproto.ClientReadResponse) */ {
+ public:
+  inline ClientReadResponse() : ClientReadResponse(nullptr) {}
+  ~ClientReadResponse() override;
+  explicit PROTOBUF_CONSTEXPR ClientReadResponse(::PROTOBUF_NAMESPACE_ID::internal::ConstantInitialized);
+
+  ClientReadResponse(const ClientReadResponse& from);
+  ClientReadResponse(ClientReadResponse&& from) noexcept
+    : ClientReadResponse() {
+    *this = ::std::move(from);
+  }
+
+  inline ClientReadResponse& operator=(const ClientReadResponse& from) {
+    CopyFrom(from);
+    return *this;
+  }
+  inline ClientReadResponse& operator=(ClientReadResponse&& from) noexcept {
+    if (this == &from) return *this;
+    if (GetOwningArena() == from.GetOwningArena()
+  #ifdef PROTOBUF_FORCE_COPY_IN_MOVE
+        && GetOwningArena() != nullptr
+  #endif  // !PROTOBUF_FORCE_COPY_IN_MOVE
+    ) {
+      InternalSwap(&from);
+    } else {
+      CopyFrom(from);
+    }
+    return *this;
+  }
+
+  static const ::PROTOBUF_NAMESPACE_ID::Descriptor* descriptor() {
+    return GetDescriptor();
+  }
+  static const ::PROTOBUF_NAMESPACE_ID::Descriptor* GetDescriptor() {
+    return default_instance().GetMetadata().descriptor;
+  }
+  static const ::PROTOBUF_NAMESPACE_ID::Reflection* GetReflection() {
+    return default_instance().GetMetadata().reflection;
+  }
+  static const ClientReadResponse& default_instance() {
+    return *internal_default_instance();
+  }
+  static inline const ClientReadResponse* internal_default_instance() {
+    return reinterpret_cast<const ClientReadResponse*>(
+               &_ClientReadResponse_default_instance_);
+  }
+  static constexpr int kIndexInFileMessages =
+    14;
+
+  friend void swap(ClientReadResponse& a, ClientReadResponse& b) {
+    a.Swap(&b);
+  }
+  inline void Swap(ClientReadResponse* other) {
+    if (other == this) return;
+  #ifdef PROTOBUF_FORCE_COPY_IN_SWAP
+    if (GetOwningArena() != nullptr &&
+        GetOwningArena() == other->GetOwningArena()) {
+   #else  // PROTOBUF_FORCE_COPY_IN_SWAP
+    if (GetOwningArena() == other->GetOwningArena()) {
+  #endif  // !PROTOBUF_FORCE_COPY_IN_SWAP
+      InternalSwap(other);
+    } else {
+      ::PROTOBUF_NAMESPACE_ID::internal::GenericSwap(this, other);
+    }
+  }
+  void UnsafeArenaSwap(ClientReadResponse* other) {
+    if (other == this) return;
+    GOOGLE_DCHECK(GetOwningArena() == other->GetOwningArena());
+    InternalSwap(other);
+  }
+
+  // implements Message ----------------------------------------------
+
+  ClientReadResponse* New(::PROTOBUF_NAMESPACE_ID::Arena* arena = nullptr) const final {
+    return CreateMaybeMessage<ClientReadResponse>(arena);
+  }
+  using ::PROTOBUF_NAMESPACE_ID::Message::CopyFrom;
+  void CopyFrom(const ClientReadResponse& from);
+  using ::PROTOBUF_NAMESPACE_ID::Message::MergeFrom;
+  void MergeFrom( const ClientReadResponse& from) {
+    ClientReadResponse::MergeImpl(*this, from);
+  }
+  private:
+  static void MergeImpl(::PROTOBUF_NAMESPACE_ID::Message& to_msg, const ::PROTOBUF_NAMESPACE_ID::Message& from_msg);
+  public:
+  PROTOBUF_ATTRIBUTE_REINITIALIZES void Clear() final;
+  bool IsInitialized() const final;
+
+  size_t ByteSizeLong() const final;
+  const char* _InternalParse(const char* ptr, ::PROTOBUF_NAMESPACE_ID::internal::ParseContext* ctx) final;
+  uint8_t* _InternalSerialize(
+      uint8_t* target, ::PROTOBUF_NAMESPACE_ID::io::EpsCopyOutputStream* stream) const final;
+  int GetCachedSize() const final { return _impl_._cached_size_.Get(); }
+
+  private:
+  void SharedCtor(::PROTOBUF_NAMESPACE_ID::Arena* arena, bool is_message_owned);
+  void SharedDtor();
+  void SetCachedSize(int size) const final;
+  void InternalSwap(ClientReadResponse* other);
+
+  private:
+  friend class ::PROTOBUF_NAMESPACE_ID::internal::AnyMetadata;
+  static ::PROTOBUF_NAMESPACE_ID::StringPiece FullMessageName() {
+    return "rpcproto.ClientReadResponse";
+  }
+  protected:
+  explicit ClientReadResponse(::PROTOBUF_NAMESPACE_ID::Arena* arena,
+                       bool is_message_owned = false);
+  public:
+
+  static const ClassData _class_data_;
+  const ::PROTOBUF_NAMESPACE_ID::Message::ClassData*GetClassData() const final;
+
+  ::PROTOBUF_NAMESPACE_ID::Metadata GetMetadata() const final;
+
+  // nested types ----------------------------------------------------
+
+  // accessors -------------------------------------------------------
+
+  enum : int {
+    kResultsFieldNumber = 4,
+    kErrFieldNumber = 1,
+    kBusyFieldNumber = 2,
+    kRetryAfterMsFieldNumber = 3,
+    kLatencyNanosFieldNumber = 5,
+    kConfirmNanosFieldNumber = 6,
+    kApplyWaitNanosFieldNumber = 7,
+    kSmNanosFieldNumber = 8,
+  };
+  // repeated bytes results = 4;
+  int results_size() const;
+  private:
+  int _internal_results_size() const;
+  public:
+  void clear_results();
+  const std::string& results(int index) const;
+  std::string* mutable_results(int index);
+  void set_results(int index, const std::string& value);
+  void set_results(int index, std::string&& value);
+  void set_results(int index, const char* value);
+  void set_results(int index, const void* value, size_t size);
+  std::string* add_results();
+  void add_results(const std::string& value);
+  void add_results(std::string&& value);
+  void add_results(const char* value);
+  void add_results(const void* value, size_t size);
+  const ::PROTOBUF_NAMESPACE_ID::RepeatedPtrField<std::string>& results() const;
+  ::PROTOBUF_NAMESPACE_ID::RepeatedPtrField<std::string>* mutable_results();
+  private:
+  const std::string& _internal_results(int index) const;
+  std::string* _internal_add_results();
+  public:
+
+  // string err = 1;
+  void clear_err();
+  const std::string& err() const;
+  template <typename ArgT0 = const std::string&, typename... ArgT>
+  void set_err(ArgT0&& arg0, ArgT... args);
+  std::string* mutable_err();
+  PROTOBUF_NODISCARD std::string* release_err();
+  void set_allocated_err(std::string* err);
+  private:
+  const std::string& _internal_err() const;
+  inline PROTOBUF_ALWAYS_INLINE void _internal_set_err(const std::string& value);
+  std::string* _internal_mutable_err();
+  public:
+
+  // bool busy = 2;
+  void clear_busy();
+  bool busy() const;
+  void set_busy(bool value);
+  private:
+  bool _internal_busy() const;
+  void _internal_set_busy(bool value);
+  public:
+
+  // int32 retry_after_ms = 3;
+  void clear_retry_after_ms();
+  int32_t retry_after_ms() const;
+  void set_retry_after_ms(int32_t value);
+  private:
+  int32_t _internal_retry_after_ms() const;
+  void _internal_set_retry_after_ms(int32_t value);
+  public:
+
+  // int64 latency_nanos = 5;
+  void clear_latency_nanos();
+  int64_t latency_nanos() const;
+  void set_latency_nanos(int64_t value);
+  private:
+  int64_t _internal_latency_nanos() const;
+  void _internal_set_latency_nanos(int64_t value);
+  public:
+
+  // int64 confirm_nanos = 6;
+  void clear_confirm_nanos();
+  int64_t confirm_nanos() const;
+  void set_confirm_nanos(int64_t value);
+  private:
+  int64_t _internal_confirm_nanos() const;
+  void _internal_set_confirm_nanos(int64_t value);
+  public:
+
+  // int64 apply_wait_nanos = 7;
+  void clear_apply_wait_nanos();
+  int64_t apply_wait_nanos() const;
+  void set_apply_wait_nanos(int64_t value);
+  private:
+  int64_t _internal_apply_wait_nanos() const;
+  void _internal_set_apply_wait_nanos(int64_t value);
+  public:
+
+  // int64 sm_nanos = 8;
+  void clear_sm_nanos();
+  int64_t sm_nanos() const;
+  void set_sm_nanos(int64_t value);
+  private:
+  int64_t _internal_sm_nanos() const;
+  void _internal_set_sm_nanos(int64_t value);
+  public:
+
+  // @@protoc_insertion_point(class_scope:rpcproto.ClientReadResponse)
+ private:
+  class _Internal;
+
+  template <typename T> friend class ::PROTOBUF_NAMESPACE_ID::Arena::InternalHelper;
+  typedef void InternalArenaConstructable_;
+  typedef void DestructorSkippable_;
+  struct Impl_ {
+    ::PROTOBUF_NAMESPACE_ID::RepeatedPtrField<std::string> results_;
+    ::PROTOBUF_NAMESPACE_ID::internal::ArenaStringPtr err_;
+    bool busy_;
+    int32_t retry_after_ms_;
+    int64_t latency_nanos_;
+    int64_t confirm_nanos_;
+    int64_t apply_wait_nanos_;
+    int64_t sm_nanos_;
+    mutable ::PROTOBUF_NAMESPACE_ID::internal::CachedSize _cached_size_;
+  };
+  union { Impl_ _impl_; };
+  friend struct ::TableStruct_rpcproto_2eproto;
+};
+// -------------------------------------------------------------------
+
 class ClientEchoRequest final :
     public ::PROTOBUF_NAMESPACE_ID::Message /* @@protoc_insertion_point(class_definition:rpcproto.ClientEchoRequest) */ {
  public:
@@ -2473,7 +3237,7 @@ class ClientEchoRequest final :
                &_ClientEchoRequest_default_instance_);
   }
   static constexpr int kIndexInFileMessages =
-    11;
+    15;
 
   friend void swap(ClientEchoRequest& a, ClientEchoRequest& b) {
     a.Swap(&b);
@@ -2636,7 +3400,7 @@ class ClientEchoResponse final :
                &_ClientEchoResponse_default_instance_);
   }
   static constexpr int kIndexInFileMessages =
-    12;
+    16;
 
   friend void swap(ClientEchoResponse& a, ClientEchoResponse& b) {
     a.Swap(&b);
@@ -2783,7 +3547,7 @@ class ClientGetCommitIndexRequest final :
                &_ClientGetCommitIndexRequest_default_instance_);
   }
   static constexpr int kIndexInFileMessages =
-    13;
+    17;
 
   friend void swap(ClientGetCommitIndexRequest& a, ClientGetCommitIndexRequest& b) {
     a.Swap(&b);
@@ -2902,7 +3666,7 @@ class ClientGetCommitIndexResponse final :
                &_ClientGetCommitIndexResponse_default_instance_);
   }
   static constexpr int kIndexInFileMessages =
-    14;
+    18;
 
   friend void swap(ClientGetCommitIndexResponse& a, ClientGetCommitIndexResponse& b) {
     a.Swap(&b);
@@ -3066,7 +3830,7 @@ class ClientGetHashRequest final :
                &_ClientGetHashRequest_default_instance_);
   }
   static constexpr int kIndexInFileMessages =
-    15;
+    19;
 
   friend void swap(ClientGetHashRequest& a, ClientGetHashRequest& b) {
     a.Swap(&b);
@@ -3214,7 +3978,7 @@ class ClientGetHashResponse final :
                &_ClientGetHashResponse_default_instance_);
   }
   static constexpr int kIndexInFileMessages =
-    16;
+    20;
 
   friend void swap(ClientGetHashResponse& a, ClientGetHashResponse& b) {
     a.Swap(&b);
@@ -3393,7 +4157,7 @@ class ClientGetAEBatchStatsRequest final :
                &_ClientGetAEBatchStatsRequest_default_instance_);
   }
   static constexpr int kIndexInFileMessages =
-    17;
+    21;
 
   friend void swap(ClientGetAEBatchStatsRequest& a, ClientGetAEBatchStatsRequest& b) {
     a.Swap(&b);
@@ -3512,7 +4276,7 @@ class ClientGetAEBatchStatsResponse final :
                &_ClientGetAEBatchStatsResponse_default_instance_);
   }
   static constexpr int kIndexInFileMessages =
-    18;
+    22;
 
   friend void swap(ClientGetAEBatchStatsResponse& a, ClientGetAEBatchStatsResponse& b) {
     a.Swap(&b);
@@ -4342,6 +5106,134 @@ inline void AppendEntriesResponse::_internal_set_handle_ae_persist_nanos(int64_t
 inline void AppendEntriesResponse::set_handle_ae_persist_nanos(int64_t value) {
   _internal_set_handle_ae_persist_nanos(value);
   // @@protoc_insertion_point(field_set:rpcproto.AppendEntriesResponse.handle_ae_persist_nanos)
+}
+
+// -------------------------------------------------------------------
+
+// ReadIndexHeartbeatRequest
+
+// uint64 term = 1;
+inline void ReadIndexHeartbeatRequest::clear_term() {
+  _impl_.term_ = uint64_t{0u};
+}
+inline uint64_t ReadIndexHeartbeatRequest::_internal_term() const {
+  return _impl_.term_;
+}
+inline uint64_t ReadIndexHeartbeatRequest::term() const {
+  // @@protoc_insertion_point(field_get:rpcproto.ReadIndexHeartbeatRequest.term)
+  return _internal_term();
+}
+inline void ReadIndexHeartbeatRequest::_internal_set_term(uint64_t value) {
+  
+  _impl_.term_ = value;
+}
+inline void ReadIndexHeartbeatRequest::set_term(uint64_t value) {
+  _internal_set_term(value);
+  // @@protoc_insertion_point(field_set:rpcproto.ReadIndexHeartbeatRequest.term)
+}
+
+// uint64 leader_id = 2;
+inline void ReadIndexHeartbeatRequest::clear_leader_id() {
+  _impl_.leader_id_ = uint64_t{0u};
+}
+inline uint64_t ReadIndexHeartbeatRequest::_internal_leader_id() const {
+  return _impl_.leader_id_;
+}
+inline uint64_t ReadIndexHeartbeatRequest::leader_id() const {
+  // @@protoc_insertion_point(field_get:rpcproto.ReadIndexHeartbeatRequest.leader_id)
+  return _internal_leader_id();
+}
+inline void ReadIndexHeartbeatRequest::_internal_set_leader_id(uint64_t value) {
+  
+  _impl_.leader_id_ = value;
+}
+inline void ReadIndexHeartbeatRequest::set_leader_id(uint64_t value) {
+  _internal_set_leader_id(value);
+  // @@protoc_insertion_point(field_set:rpcproto.ReadIndexHeartbeatRequest.leader_id)
+}
+
+// uint64 round = 3;
+inline void ReadIndexHeartbeatRequest::clear_round() {
+  _impl_.round_ = uint64_t{0u};
+}
+inline uint64_t ReadIndexHeartbeatRequest::_internal_round() const {
+  return _impl_.round_;
+}
+inline uint64_t ReadIndexHeartbeatRequest::round() const {
+  // @@protoc_insertion_point(field_get:rpcproto.ReadIndexHeartbeatRequest.round)
+  return _internal_round();
+}
+inline void ReadIndexHeartbeatRequest::_internal_set_round(uint64_t value) {
+  
+  _impl_.round_ = value;
+}
+inline void ReadIndexHeartbeatRequest::set_round(uint64_t value) {
+  _internal_set_round(value);
+  // @@protoc_insertion_point(field_set:rpcproto.ReadIndexHeartbeatRequest.round)
+}
+
+// -------------------------------------------------------------------
+
+// ReadIndexHeartbeatResponse
+
+// uint64 term = 1;
+inline void ReadIndexHeartbeatResponse::clear_term() {
+  _impl_.term_ = uint64_t{0u};
+}
+inline uint64_t ReadIndexHeartbeatResponse::_internal_term() const {
+  return _impl_.term_;
+}
+inline uint64_t ReadIndexHeartbeatResponse::term() const {
+  // @@protoc_insertion_point(field_get:rpcproto.ReadIndexHeartbeatResponse.term)
+  return _internal_term();
+}
+inline void ReadIndexHeartbeatResponse::_internal_set_term(uint64_t value) {
+  
+  _impl_.term_ = value;
+}
+inline void ReadIndexHeartbeatResponse::set_term(uint64_t value) {
+  _internal_set_term(value);
+  // @@protoc_insertion_point(field_set:rpcproto.ReadIndexHeartbeatResponse.term)
+}
+
+// bool ok = 2;
+inline void ReadIndexHeartbeatResponse::clear_ok() {
+  _impl_.ok_ = false;
+}
+inline bool ReadIndexHeartbeatResponse::_internal_ok() const {
+  return _impl_.ok_;
+}
+inline bool ReadIndexHeartbeatResponse::ok() const {
+  // @@protoc_insertion_point(field_get:rpcproto.ReadIndexHeartbeatResponse.ok)
+  return _internal_ok();
+}
+inline void ReadIndexHeartbeatResponse::_internal_set_ok(bool value) {
+  
+  _impl_.ok_ = value;
+}
+inline void ReadIndexHeartbeatResponse::set_ok(bool value) {
+  _internal_set_ok(value);
+  // @@protoc_insertion_point(field_set:rpcproto.ReadIndexHeartbeatResponse.ok)
+}
+
+// uint64 round = 3;
+inline void ReadIndexHeartbeatResponse::clear_round() {
+  _impl_.round_ = uint64_t{0u};
+}
+inline uint64_t ReadIndexHeartbeatResponse::_internal_round() const {
+  return _impl_.round_;
+}
+inline uint64_t ReadIndexHeartbeatResponse::round() const {
+  // @@protoc_insertion_point(field_get:rpcproto.ReadIndexHeartbeatResponse.round)
+  return _internal_round();
+}
+inline void ReadIndexHeartbeatResponse::_internal_set_round(uint64_t value) {
+  
+  _impl_.round_ = value;
+}
+inline void ReadIndexHeartbeatResponse::set_round(uint64_t value) {
+  _internal_set_round(value);
+  // @@protoc_insertion_point(field_set:rpcproto.ReadIndexHeartbeatResponse.round)
 }
 
 // -------------------------------------------------------------------
@@ -5251,6 +6143,334 @@ inline void ClientApplyTimedResponse::set_wg_scheduling_nanos(int64_t value) {
 
 // -------------------------------------------------------------------
 
+// ClientReadRequest
+
+// repeated bytes queries = 1;
+inline int ClientReadRequest::_internal_queries_size() const {
+  return _impl_.queries_.size();
+}
+inline int ClientReadRequest::queries_size() const {
+  return _internal_queries_size();
+}
+inline void ClientReadRequest::clear_queries() {
+  _impl_.queries_.Clear();
+}
+inline std::string* ClientReadRequest::add_queries() {
+  std::string* _s = _internal_add_queries();
+  // @@protoc_insertion_point(field_add_mutable:rpcproto.ClientReadRequest.queries)
+  return _s;
+}
+inline const std::string& ClientReadRequest::_internal_queries(int index) const {
+  return _impl_.queries_.Get(index);
+}
+inline const std::string& ClientReadRequest::queries(int index) const {
+  // @@protoc_insertion_point(field_get:rpcproto.ClientReadRequest.queries)
+  return _internal_queries(index);
+}
+inline std::string* ClientReadRequest::mutable_queries(int index) {
+  // @@protoc_insertion_point(field_mutable:rpcproto.ClientReadRequest.queries)
+  return _impl_.queries_.Mutable(index);
+}
+inline void ClientReadRequest::set_queries(int index, const std::string& value) {
+  _impl_.queries_.Mutable(index)->assign(value);
+  // @@protoc_insertion_point(field_set:rpcproto.ClientReadRequest.queries)
+}
+inline void ClientReadRequest::set_queries(int index, std::string&& value) {
+  _impl_.queries_.Mutable(index)->assign(std::move(value));
+  // @@protoc_insertion_point(field_set:rpcproto.ClientReadRequest.queries)
+}
+inline void ClientReadRequest::set_queries(int index, const char* value) {
+  GOOGLE_DCHECK(value != nullptr);
+  _impl_.queries_.Mutable(index)->assign(value);
+  // @@protoc_insertion_point(field_set_char:rpcproto.ClientReadRequest.queries)
+}
+inline void ClientReadRequest::set_queries(int index, const void* value, size_t size) {
+  _impl_.queries_.Mutable(index)->assign(
+    reinterpret_cast<const char*>(value), size);
+  // @@protoc_insertion_point(field_set_pointer:rpcproto.ClientReadRequest.queries)
+}
+inline std::string* ClientReadRequest::_internal_add_queries() {
+  return _impl_.queries_.Add();
+}
+inline void ClientReadRequest::add_queries(const std::string& value) {
+  _impl_.queries_.Add()->assign(value);
+  // @@protoc_insertion_point(field_add:rpcproto.ClientReadRequest.queries)
+}
+inline void ClientReadRequest::add_queries(std::string&& value) {
+  _impl_.queries_.Add(std::move(value));
+  // @@protoc_insertion_point(field_add:rpcproto.ClientReadRequest.queries)
+}
+inline void ClientReadRequest::add_queries(const char* value) {
+  GOOGLE_DCHECK(value != nullptr);
+  _impl_.queries_.Add()->assign(value);
+  // @@protoc_insertion_point(field_add_char:rpcproto.ClientReadRequest.queries)
+}
+inline void ClientReadRequest::add_queries(const void* value, size_t size) {
+  _impl_.queries_.Add()->assign(reinterpret_cast<const char*>(value), size);
+  // @@protoc_insertion_point(field_add_pointer:rpcproto.ClientReadRequest.queries)
+}
+inline const ::PROTOBUF_NAMESPACE_ID::RepeatedPtrField<std::string>&
+ClientReadRequest::queries() const {
+  // @@protoc_insertion_point(field_list:rpcproto.ClientReadRequest.queries)
+  return _impl_.queries_;
+}
+inline ::PROTOBUF_NAMESPACE_ID::RepeatedPtrField<std::string>*
+ClientReadRequest::mutable_queries() {
+  // @@protoc_insertion_point(field_mutable_list:rpcproto.ClientReadRequest.queries)
+  return &_impl_.queries_;
+}
+
+// -------------------------------------------------------------------
+
+// ClientReadResponse
+
+// string err = 1;
+inline void ClientReadResponse::clear_err() {
+  _impl_.err_.ClearToEmpty();
+}
+inline const std::string& ClientReadResponse::err() const {
+  // @@protoc_insertion_point(field_get:rpcproto.ClientReadResponse.err)
+  return _internal_err();
+}
+template <typename ArgT0, typename... ArgT>
+inline PROTOBUF_ALWAYS_INLINE
+void ClientReadResponse::set_err(ArgT0&& arg0, ArgT... args) {
+ 
+ _impl_.err_.Set(static_cast<ArgT0 &&>(arg0), args..., GetArenaForAllocation());
+  // @@protoc_insertion_point(field_set:rpcproto.ClientReadResponse.err)
+}
+inline std::string* ClientReadResponse::mutable_err() {
+  std::string* _s = _internal_mutable_err();
+  // @@protoc_insertion_point(field_mutable:rpcproto.ClientReadResponse.err)
+  return _s;
+}
+inline const std::string& ClientReadResponse::_internal_err() const {
+  return _impl_.err_.Get();
+}
+inline void ClientReadResponse::_internal_set_err(const std::string& value) {
+  
+  _impl_.err_.Set(value, GetArenaForAllocation());
+}
+inline std::string* ClientReadResponse::_internal_mutable_err() {
+  
+  return _impl_.err_.Mutable(GetArenaForAllocation());
+}
+inline std::string* ClientReadResponse::release_err() {
+  // @@protoc_insertion_point(field_release:rpcproto.ClientReadResponse.err)
+  return _impl_.err_.Release();
+}
+inline void ClientReadResponse::set_allocated_err(std::string* err) {
+  if (err != nullptr) {
+    
+  } else {
+    
+  }
+  _impl_.err_.SetAllocated(err, GetArenaForAllocation());
+#ifdef PROTOBUF_FORCE_COPY_DEFAULT_STRING
+  if (_impl_.err_.IsDefault()) {
+    _impl_.err_.Set("", GetArenaForAllocation());
+  }
+#endif // PROTOBUF_FORCE_COPY_DEFAULT_STRING
+  // @@protoc_insertion_point(field_set_allocated:rpcproto.ClientReadResponse.err)
+}
+
+// bool busy = 2;
+inline void ClientReadResponse::clear_busy() {
+  _impl_.busy_ = false;
+}
+inline bool ClientReadResponse::_internal_busy() const {
+  return _impl_.busy_;
+}
+inline bool ClientReadResponse::busy() const {
+  // @@protoc_insertion_point(field_get:rpcproto.ClientReadResponse.busy)
+  return _internal_busy();
+}
+inline void ClientReadResponse::_internal_set_busy(bool value) {
+  
+  _impl_.busy_ = value;
+}
+inline void ClientReadResponse::set_busy(bool value) {
+  _internal_set_busy(value);
+  // @@protoc_insertion_point(field_set:rpcproto.ClientReadResponse.busy)
+}
+
+// int32 retry_after_ms = 3;
+inline void ClientReadResponse::clear_retry_after_ms() {
+  _impl_.retry_after_ms_ = 0;
+}
+inline int32_t ClientReadResponse::_internal_retry_after_ms() const {
+  return _impl_.retry_after_ms_;
+}
+inline int32_t ClientReadResponse::retry_after_ms() const {
+  // @@protoc_insertion_point(field_get:rpcproto.ClientReadResponse.retry_after_ms)
+  return _internal_retry_after_ms();
+}
+inline void ClientReadResponse::_internal_set_retry_after_ms(int32_t value) {
+  
+  _impl_.retry_after_ms_ = value;
+}
+inline void ClientReadResponse::set_retry_after_ms(int32_t value) {
+  _internal_set_retry_after_ms(value);
+  // @@protoc_insertion_point(field_set:rpcproto.ClientReadResponse.retry_after_ms)
+}
+
+// repeated bytes results = 4;
+inline int ClientReadResponse::_internal_results_size() const {
+  return _impl_.results_.size();
+}
+inline int ClientReadResponse::results_size() const {
+  return _internal_results_size();
+}
+inline void ClientReadResponse::clear_results() {
+  _impl_.results_.Clear();
+}
+inline std::string* ClientReadResponse::add_results() {
+  std::string* _s = _internal_add_results();
+  // @@protoc_insertion_point(field_add_mutable:rpcproto.ClientReadResponse.results)
+  return _s;
+}
+inline const std::string& ClientReadResponse::_internal_results(int index) const {
+  return _impl_.results_.Get(index);
+}
+inline const std::string& ClientReadResponse::results(int index) const {
+  // @@protoc_insertion_point(field_get:rpcproto.ClientReadResponse.results)
+  return _internal_results(index);
+}
+inline std::string* ClientReadResponse::mutable_results(int index) {
+  // @@protoc_insertion_point(field_mutable:rpcproto.ClientReadResponse.results)
+  return _impl_.results_.Mutable(index);
+}
+inline void ClientReadResponse::set_results(int index, const std::string& value) {
+  _impl_.results_.Mutable(index)->assign(value);
+  // @@protoc_insertion_point(field_set:rpcproto.ClientReadResponse.results)
+}
+inline void ClientReadResponse::set_results(int index, std::string&& value) {
+  _impl_.results_.Mutable(index)->assign(std::move(value));
+  // @@protoc_insertion_point(field_set:rpcproto.ClientReadResponse.results)
+}
+inline void ClientReadResponse::set_results(int index, const char* value) {
+  GOOGLE_DCHECK(value != nullptr);
+  _impl_.results_.Mutable(index)->assign(value);
+  // @@protoc_insertion_point(field_set_char:rpcproto.ClientReadResponse.results)
+}
+inline void ClientReadResponse::set_results(int index, const void* value, size_t size) {
+  _impl_.results_.Mutable(index)->assign(
+    reinterpret_cast<const char*>(value), size);
+  // @@protoc_insertion_point(field_set_pointer:rpcproto.ClientReadResponse.results)
+}
+inline std::string* ClientReadResponse::_internal_add_results() {
+  return _impl_.results_.Add();
+}
+inline void ClientReadResponse::add_results(const std::string& value) {
+  _impl_.results_.Add()->assign(value);
+  // @@protoc_insertion_point(field_add:rpcproto.ClientReadResponse.results)
+}
+inline void ClientReadResponse::add_results(std::string&& value) {
+  _impl_.results_.Add(std::move(value));
+  // @@protoc_insertion_point(field_add:rpcproto.ClientReadResponse.results)
+}
+inline void ClientReadResponse::add_results(const char* value) {
+  GOOGLE_DCHECK(value != nullptr);
+  _impl_.results_.Add()->assign(value);
+  // @@protoc_insertion_point(field_add_char:rpcproto.ClientReadResponse.results)
+}
+inline void ClientReadResponse::add_results(const void* value, size_t size) {
+  _impl_.results_.Add()->assign(reinterpret_cast<const char*>(value), size);
+  // @@protoc_insertion_point(field_add_pointer:rpcproto.ClientReadResponse.results)
+}
+inline const ::PROTOBUF_NAMESPACE_ID::RepeatedPtrField<std::string>&
+ClientReadResponse::results() const {
+  // @@protoc_insertion_point(field_list:rpcproto.ClientReadResponse.results)
+  return _impl_.results_;
+}
+inline ::PROTOBUF_NAMESPACE_ID::RepeatedPtrField<std::string>*
+ClientReadResponse::mutable_results() {
+  // @@protoc_insertion_point(field_mutable_list:rpcproto.ClientReadResponse.results)
+  return &_impl_.results_;
+}
+
+// int64 latency_nanos = 5;
+inline void ClientReadResponse::clear_latency_nanos() {
+  _impl_.latency_nanos_ = int64_t{0};
+}
+inline int64_t ClientReadResponse::_internal_latency_nanos() const {
+  return _impl_.latency_nanos_;
+}
+inline int64_t ClientReadResponse::latency_nanos() const {
+  // @@protoc_insertion_point(field_get:rpcproto.ClientReadResponse.latency_nanos)
+  return _internal_latency_nanos();
+}
+inline void ClientReadResponse::_internal_set_latency_nanos(int64_t value) {
+  
+  _impl_.latency_nanos_ = value;
+}
+inline void ClientReadResponse::set_latency_nanos(int64_t value) {
+  _internal_set_latency_nanos(value);
+  // @@protoc_insertion_point(field_set:rpcproto.ClientReadResponse.latency_nanos)
+}
+
+// int64 confirm_nanos = 6;
+inline void ClientReadResponse::clear_confirm_nanos() {
+  _impl_.confirm_nanos_ = int64_t{0};
+}
+inline int64_t ClientReadResponse::_internal_confirm_nanos() const {
+  return _impl_.confirm_nanos_;
+}
+inline int64_t ClientReadResponse::confirm_nanos() const {
+  // @@protoc_insertion_point(field_get:rpcproto.ClientReadResponse.confirm_nanos)
+  return _internal_confirm_nanos();
+}
+inline void ClientReadResponse::_internal_set_confirm_nanos(int64_t value) {
+  
+  _impl_.confirm_nanos_ = value;
+}
+inline void ClientReadResponse::set_confirm_nanos(int64_t value) {
+  _internal_set_confirm_nanos(value);
+  // @@protoc_insertion_point(field_set:rpcproto.ClientReadResponse.confirm_nanos)
+}
+
+// int64 apply_wait_nanos = 7;
+inline void ClientReadResponse::clear_apply_wait_nanos() {
+  _impl_.apply_wait_nanos_ = int64_t{0};
+}
+inline int64_t ClientReadResponse::_internal_apply_wait_nanos() const {
+  return _impl_.apply_wait_nanos_;
+}
+inline int64_t ClientReadResponse::apply_wait_nanos() const {
+  // @@protoc_insertion_point(field_get:rpcproto.ClientReadResponse.apply_wait_nanos)
+  return _internal_apply_wait_nanos();
+}
+inline void ClientReadResponse::_internal_set_apply_wait_nanos(int64_t value) {
+  
+  _impl_.apply_wait_nanos_ = value;
+}
+inline void ClientReadResponse::set_apply_wait_nanos(int64_t value) {
+  _internal_set_apply_wait_nanos(value);
+  // @@protoc_insertion_point(field_set:rpcproto.ClientReadResponse.apply_wait_nanos)
+}
+
+// int64 sm_nanos = 8;
+inline void ClientReadResponse::clear_sm_nanos() {
+  _impl_.sm_nanos_ = int64_t{0};
+}
+inline int64_t ClientReadResponse::_internal_sm_nanos() const {
+  return _impl_.sm_nanos_;
+}
+inline int64_t ClientReadResponse::sm_nanos() const {
+  // @@protoc_insertion_point(field_get:rpcproto.ClientReadResponse.sm_nanos)
+  return _internal_sm_nanos();
+}
+inline void ClientReadResponse::_internal_set_sm_nanos(int64_t value) {
+  
+  _impl_.sm_nanos_ = value;
+}
+inline void ClientReadResponse::set_sm_nanos(int64_t value) {
+  _internal_set_sm_nanos(value);
+  // @@protoc_insertion_point(field_set:rpcproto.ClientReadResponse.sm_nanos)
+}
+
+// -------------------------------------------------------------------
+
 // ClientEchoRequest
 
 // repeated bytes commands = 1;
@@ -5679,6 +6899,14 @@ inline void ClientGetAEBatchStatsResponse::set_allocated_err(std::string* err) {
 #ifdef __GNUC__
   #pragma GCC diagnostic pop
 #endif  // __GNUC__
+// -------------------------------------------------------------------
+
+// -------------------------------------------------------------------
+
+// -------------------------------------------------------------------
+
+// -------------------------------------------------------------------
+
 // -------------------------------------------------------------------
 
 // -------------------------------------------------------------------

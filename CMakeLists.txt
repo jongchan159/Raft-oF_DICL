@@ -118,6 +118,7 @@ set(CORE_SRCS
     core/src/raft_apply.cpp
     core/src/raft_lifecycle.cpp
     core/src/raft_types.cpp
+    core/src/raft_read.cpp
 )
 
 # net/의 이 두 파일만 RDMA 버전으로 교체하면 core/는 안 건드려도 된다
@@ -150,7 +151,7 @@ set(WIRE_SRCS net/src/raft_cli.cpp net/src/raft_wire_codec.cpp
 
 set(PROTO_SRCS proto/rpcproto.pb.cc)
 
-# 아래 다섯 디렉터리를 모든 타깃에 -I 로 준다 (build.sh 의 INCLUDES 와 동일).
+# 아래 여섯 디렉터리를 모든 타깃에 -I 로 준다 (build.sh 의 INCLUDES 와 동일).
 # apps/ 는 없다 -- 진입점은 아무 곳에서도 include 되지 않는다.
 add_library(raft_includes INTERFACE)
 target_include_directories(raft_includes INTERFACE
@@ -159,6 +160,7 @@ target_include_directories(raft_includes INTERFACE
     ${CMAKE_CURRENT_SOURCE_DIR}/storage
     ${CMAKE_CURRENT_SOURCE_DIR}/blockio
     ${CMAKE_CURRENT_SOURCE_DIR}/proto
+    ${CMAKE_CURRENT_SOURCE_DIR}/kvs   # 헤더 온리 (KvsStateMachine + 와이어 포맷)
 )
 
 # ---------------------------------------------------------------------------
@@ -272,6 +274,8 @@ add_executable(raft_unit_tests
     tests/test_ae_bookkeeping.cpp
     tests/test_apply_timings.cpp
     tests/test_election.cpp
+    tests/test_kvs_sm.cpp
+    tests/test_read_index.cpp
 )
 target_include_directories(raft_unit_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 target_link_libraries(raft_unit_tests PRIVATE

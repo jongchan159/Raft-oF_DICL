@@ -44,6 +44,7 @@ NET_INC=net/include
 STORAGE_DIR=storage
 BLOCKIO_DIR=blockio
 TESTS_DIR=tests
+KVS_DIR=kvs
 
 # core/의 .cpp 전부 (Raft 로직: 자료구조, 로컬 로그, replication,
 # election, commit 판단 -- 네트워크 계층에 의존하지 않음)
@@ -59,6 +60,7 @@ CORE_SRCS=(
     "$CORE_DIR/raft_apply.cpp"
     "$CORE_DIR/raft_lifecycle.cpp"
     "$CORE_DIR/raft_types.cpp"
+    "$CORE_DIR/raft_read.cpp"
 )
 
 # net/ 중 core 인터페이스(RaftTransport / BlockCopyClient)를 구현하는 것.
@@ -97,7 +99,8 @@ PROTO_SRCS=(
     "$PROTO_DIR/rpcproto.pb.cc"
 )
 
-INCLUDES=(-I "$CORE_INC" -I "$NET_INC" -I "$STORAGE_DIR" -I "$BLOCKIO_DIR" -I "$PROTO_DIR")
+# kvs/ 는 헤더 온리 (KvsStateMachine + 와이어 포맷) -- 컴파일 대상이 없다.
+INCLUDES=(-I "$CORE_INC" -I "$NET_INC" -I "$STORAGE_DIR" -I "$BLOCKIO_DIR" -I "$PROTO_DIR" -I "$KVS_DIR")
 
 # --- protobuf 플래그 결정 -------------------------------------------------
 # 1) PROTOBUF_CFLAGS/PROTOBUF_LIBS가 있으면 그대로 사용

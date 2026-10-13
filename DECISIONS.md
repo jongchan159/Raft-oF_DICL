@@ -313,6 +313,62 @@ p50/p99 를 보고한다.
   없으므로, 드라이버가 서버 기동 로그의 `copy-workers : N` 과 대조한다
   (불일치면 그 지점을 실패시킨다)
 
+## D16. DARE KVS 는 C 코드가 아니라 semantics 를 옮겼다 (2026-10-13)
+
+`kvs/raft_statemachine_kvs.h` · `kvs/raft_kvs_wire.h` (원본: `kvs/dare_kvs_sm.{c,h}`, 빌드 제외)
+
+DARE 의 C 파일을 그대로 링크하지 않았다. `dare.h` 가 `#define PAGE_SIZE 4096` 을
+해서 `core/include/raft_constants.h` 의 `constexpr PAGE_SIZE` 와 충돌하고,
+`kvs_cmd_t` 의 `data[0]` 과 `##__VA_ARGS__` 매크로를 C++ 에 들여야 하며, 빌드에 C
+언어 지원과 `$CC` 분기가 필요해진다. PUT/GET/RM 의미와 와이어 레이아웃만 C++
+헤더 온리로 옮겼다 (`[수정-16]`).
+
+DARE 와 일부러 다르게 한 것:
+- **len uint16 → uint32**, 커맨드 상한 128 KiB. 레이아웃은 `len@68`, `data@72`.
+- **형식이 틀린 명령은 에러 없이 무시한다.** 그 명령은 이미 로그에 커밋됐으므로,
+  에러를 내면 `apply_internal` 이 클라이언트에 실패로 돌려준다. 리더 탐색 probe
+  (`"\x00"`)와 `-op apply` 페이로드가 `-statemachine kvs` 에서 여기로 떨어진다.
+- 값은 불변 버퍼(`shared_ptr<const>`). read 경로가 `Server::mu` 밖에서 상태머신을
+  부르므로(D17) GET 이 내부 락을 O(1) 만 잡게 하려는 것이다.
+- DARE 의 snapshot 함수(`create/apply_kvs_snapshot`)는 옮기지 않았다. raft-of 에
+  스냅샷 경로가 없고, 원본은 포인터 산술이 틀렸다 (`kvs_snapshot += sizeof(...)`).
+
+## D17. GET 은 ReadIndex 로, 리더십 확인은 AE 와 분리된 heartbeat 로 (2026-10-13)
+
+`core/src/raft_read.cpp` · `RaftTransport::read_index_heartbeat` · `Server.ClientRead`
+
+GET 은 로그를 타지 않는다 — Ongaro 학위논문 §6.4 ReadIndex 그대로다:
+read_index = max(commit_index, term_start_index) → heartbeat 1라운드 과반 ack →
+last_applied > read_index 대기 → 상태머신에서 읽기. `term_start_index` 는
+`become_leader` 의 no-op 인덱스다 (§6.4 1단계, `[수정-17]`).
+
+**heartbeat 를 AppendEntries 에 싣지 않은 이유:** 팔로워당 AE 워커가 하나이고
+(persistent worker) 피어 커넥션도 하나를 `call_mu` 로 직렬화한다. 빈 AE 로 확인하면
+진행 중인 데이터 AE — 팔로워의 blockcopy 왕복을 포함한다 — 가 끝날 때까지 줄을
+서므로, mixed workload 에서 GET 이 PUT 의 로그 비용을 간접적으로 지불한다. 그래서
+etcd/raft 의 `MsgHeartbeat`(≠ `MsgApp`) 처럼 별도 메시지(`ReadIndexHeartbeat`)를
+**별도 워커(`read_hb_workers`)와 별도 커넥션(`RpcRaftTransport` 의
+`kReadHbChannel`)**으로 보낸다. 팔로워 처리는 AE 핸들러의 term 처리와 같고
+election timer 도 리셋한다 — 로그 일관성 검사가 없는 진짜 heartbeat 다.
+
+배치: 라운드가 진행 중일 때 들어온 읽기는 워커의 pending 으로 합쳐지고, 다음
+heartbeat 가 그 시점의 최신 `read_round` 를 실어 한꺼번에 확인한다 (DARE 의 "배치당
+한 번의 리더십 확인"). `read_round` 는 term 이 바뀌어도 리셋하지 않는다 — 그래야
+멤버별 `read_ack_round` 에 term 을 붙이지 않아도 이전 term 의 ack 가 새 term 읽기를
+확인해 주지 않는다.
+
+**상태머신을 `mu` 밖에서 부른다.** read 경로의 마지막 단계(상태머신 호출과 결과
+복사)를 `mu` 아래 두면 128 KiB GET 이 PUT 의 commit/apply 경로를 막는다. 그래서
+`Server::read` 가 `mu` 를 잡는 구간은 전부 O(1) 이고, 락 규약(`raft_server.h`)을
+"read 경로의 상태머신 호출은 mu 밖 → 상태머신은 스스로 thread-safe" 로 바꿨다.
+읽은 상태가 read_index 보다 새로울 수 있지만 그것도 커밋된 엔트리라 linearizable 하다.
+read 경로로 들어오는 명령은 상태를 바꾸지 않아야 한다 (core 는 검사할 수 없다).
+
+함께 고친 것: `Server::start()` 가 `main_thread` 를 팔로워별 워커 생성 **전에**
+띄우고 있었다 (리더로 시작하는 하네스에서 빈 `ae_workers` 를 인덱싱한다). 순서를
+바꾸고 `append_entries()` 에 가드를 넣었다. `stop()` 은 워커 `mu` 를 잡은 뒤
+notify 한다 (predicate 확인과 wait 사이로 notify 가 지나가는 lost wakeup 방지).
+
 ## U. 미해결 — 리팩토링 중 마주치면 여기를 볼 것
 
 | # | 항목 | 위치 | 상태 |
@@ -328,6 +384,9 @@ p50/p99 를 보고한다.
 | U9 | **`WritePBABatchResponse` 에 `read_nanos`/`write_nanos` 추가 (2026-09-07, additive).** `copy_nanos` 합계만으로는 로컬 PCIe 복사와 NVMe-oF attach 볼륨 복사의 지연 차이가 pread 쪽인지 pwrite 쪽인지 알 수 없다. 서버는 이미 `total_read_ns`/`total_write_ns` 를 따로 들고 있어 합치기 전 값을 실어 보내는 것뿐이고, 측정 비용은 0이다. proto3 additive 필드(3, 4번)라 이 필드를 모르는 피어는 0으로 읽는다 — `AppendEntriesResponse` 8~12번과 같은 선례 | `proto/rpcproto.proto` · `storage/raft_blockcopy_server.{h,cpp}` · `net/include/raft_proto_conv.h` | 재생성은 `protoc 3.21.12` (커밋된 `.pb.cc` 와 같은 버전, eternity5 의 `/usr/bin/protoc`). CTest 11개 전부 통과 확인 |
 | U10 | **blockcopy 에 노드↔노드 데이터 경로가 없다** (`storage/raft_blockcopy_server.cpp:16-18` 의 `TODO: inter-node storage copy`). `WritePBABatchRequest.src_dev`/`dst_dev` 는 **한 프로세스**가 `-devices` 로 연 fd 배열의 인덱스이고, 복사는 그 두 fd 사이의 pread+pwrite 다. 설계가 말하는 "원격 노드" 는 NVMe-oF 로 attach 되어 로컬 경로처럼 보이는 볼륨이다 (`apps/raft_blockcopy_server_main.cpp` 머리 주석) | `storage/raft_blockcopy_server.cpp` | 미구현 상태 그대로 둔다. 측정 실험(`scripts/blkcopy_scaling.sh`, 2026-09-10 이전에는 `blkcopy_latency.sh`)은 이 정의를 따라 "로컬 PCIe 두 네임스페이스" vs "같은 SSD 의 NVMe-oF attach 뷰 두 개" 로 arm 을 나눈다. **주의: 이 클러스터의 NVMe-oF/TCP 는 1 GbE(eno, MTU 1500) 위에서 돈다** — 상한 ~118 MB/s 라, 이 경로로만 재면 blockcopy 가 아니라 링크 대역폭을 재게 된다. 전송별 arm(`fabric-tcp`/`fabric-ipoib`/`fabric-rdma`) 설정과 RDMA 준비 상태는 `scripts/README.md` 참고. 실측 RTT 는 IPoIB 0.197ms vs 1GbE 0.214ms 로 **사실상 같다**(IPoIB 도 커널 IP 스택을 탄다) — 지연을 줄이려면 IB 로 옮기는 것으로는 부족하고 `trtype=rdma` 여야 한다 |
 | U11 | **`FALLOC_FL_ZERO_RANGE` 가 ext4 에서 extent 를 "written" 으로 만들지 않는다 — D9 의 전제가 성립하지 않는다.** `create_ring_file` 은 매 기동마다 링 파일 전체에 ZERO_RANGE 를 걸고, D9 와 `blockio/cached_fd.h:29-35` 는 그것이 extent 를 전부 written 으로 뒤집어 "이후 첫 쓰기가 파일시스템 저널을 통한 extent 상태 변환으로 직렬화" 되는 것을 막는다고 서술한다. **실측 결과 ZERO_RANGE 후에도 extent 는 unwritten 으로 남는다** — ext4 에서는 범위를 unwritten 으로 두는 것이 가장 싼 zeroing 구현이기 때문으로 보인다. 커널 4.15(eternitymaster)와 6.8(eternitystorage) 양쪽에서 동일했다: `fallocate -l` → unwritten, `fallocate -l` + `fallocate -z` → **여전히 unwritten**, `dd oflag=direct`(실제 쓰기) → written. 라이브 링 파일 `/mnt/raftvol/node5/raft_meta.bin`(32GiB, 3시간 가동)도 **257 extent 중 257 개가 unwritten** 이고 블록 0(헤더 쓰기가 닿은 곳)만 written 이었다 | `blockio/cached_fd.cpp` `create_ring_file` · `DECISIONS.md D9` | **미해결. 이번에는 고치지 않았다** (blockcopy 벤치 교체 작업 범위 밖이고, `blockio`/`storage` 변경은 U7 대조군에 영향을 준다). 확인된 것은 **전제가 틀렸다는 사실**까지다 — 그 결과로 실제 지연이 얼마나 늘어나는지는 측정하지 않았다. U7(StorageIO 격차)과 관련이 있을 수 있으므로 그 조사에서 같이 볼 것. 고치려면 extent 를 실제로 written 으로 만들어야 하는데, 링 파일 전체를 한 번 쓰는 비용(기본 32GiB/노드)이 기동 시간에 그대로 붙는다 — 비용/이득을 따져 결정할 일이다. 새 벤치(`scripts/blkcopy_scaling.sh`)는 이 문제를 피하려고 백킹 파일을 `dd oflag=direct` 로 준비하고 preflight 에서 unwritten extent 를 검사해 거부한다 |
+
+| U12 | **`-statemachine kvs` 에서 failover 직후 새 리더의 KVS 가 불완전할 수 있다.** 팔로워는 apply 하지 않고(리더만 `apply_pending`), 승격 시 `become_leader` 가 링에서 명령을 읽어 replay 한다. `read_entry_direct` 실패는 조용히 건너뛰고(`raft_election.cpp`), 링이 한 바퀴 돌았으면 덮어쓴 데이터를 읽을 수도 있다. 그 상태에서 GET(ReadIndex)은 빠진 PUT 을 못 본다 | `core/src/raft_election.cpp` `become_leader` · `core/src/raft_commit.cpp` `apply_pending` | 2026-10-13 결정으로 팔로워 apply 는 현행 유지. **벤치마크에 failover 를 넣지 말 것.** 고치려면 팔로워도 커밋 시 링에서 읽어 apply 해야 한다 |
+| U13 | **`tests/test_apply_timings.cpp` 가 HEAD 에서 컴파일되지 않는다.** `ApplyWalls::replicate_commit_ns` / `ApplyTimings::replicate_commit_corrected_ns` 를 참조하는데 `core/include/raft_timings.h` 에 그 필드가 없다 (persistent worker 계측 변경 이후로 보인다). `raft_unit_tests` 전체가 빌드되지 않는다 | `tests/test_apply_timings.cpp` | 2026-10-13 발견, 미수정 (KVS/ReadIndex 작업 범위 밖). 이 파일을 빼면 나머지 58개 케이스 통과 (macOS, TSan/ASan 포함) |
 
 그 외 남은 작업 목록은 HANDOFF.md §7에 있다.
 
@@ -418,7 +477,7 @@ workers  WorkerPool     상시 스레드 3개 + CV + 복제 스레드 수명 관
 ### 헤더에 구현을 남기는 유일한 이유들 (R0)
 
 선언/정의 분리를 하면서 **일부 헤더는 의도적으로 구현을 그대로 뒀다.**
-예외는 이 여섯 가지뿐이고, 새 예외를 만들려면 여기에 이유를 적어야 한다:
+예외는 이 일곱 가지뿐이고, 새 예외를 만들려면 여기에 이유를 적어야 한다:
 
 | 대상 | 이유 |
 |---|---|
@@ -427,6 +486,7 @@ workers  WorkerPool     상시 스레드 3개 + CV + 복제 스레드 수명 관
 | `net/include/raft_proto_conv.h` 의 template 2개 | 템플릿은 헤더에 있어야 한다. **나머지 34개 변환 함수는 일부러 헤더에 남겼다** — 헤더가 여전히 `rpcproto.pb.h` 를 include해야 해서 컴파일 이득이 없고, 시그니처 68줄이 중복되며 proto 필드 추가 시 고칠 곳이 2배가 된다 |
 | `net/include/raft_statemachine_hash.h` 전부 | `.cpp` 를 만들면 이 헤더를 쓰는 TU 가 `net/` 링크를 요구하게 되고, "유닛 테스트는 core 만 링크한다(protobuf 0)" 가 깨진다. (예전 근거였던 "`tests/` 가 이 헤더를 include 한다" 는 **더 이상 사실이 아니다** — 그러던 `raft_selftest` 하네스가 2026-09-14 에 제거됐다. 결론만 유효하다) |
 | `core/include/raft_statemachine_noop.h` 전부 (2026-09-17 추가) | **기본 상태머신.** 의존성이 `raft_server.h` + 표준 헤더 셋뿐이고 본문이 10줄이다. `.cpp` 를 만들면 core TU 전부가 링크 의존을 얻는다. `net/` 이 아니라 `core/` 에 둔 이유는 유닛 테스트가 이걸로 `apply_pending` 을 protobuf 없이 덮을 수 있게 하기 위함이다 |
+| `kvs/raft_kvs_wire.h` · `kvs/raft_statemachine_kvs.h` 전부 (2026-10-13 추가, D16) | `raft_client` 가 와이어 인코더를 쓰지만 kvs 를 링크하지 않는다 — `.cpp` 를 만들면 그 바이너리에 링크 의존이 생긴다. 상태머신 쪽은 `raft_statemachine_hash.h` 와 같은 이유 |
 | 한두 줄짜리 접근자 (`Server::get_voted_for`, `AlignedBuffer::data()`, `ProfilingSink::on()`, `timings_clamp0` 등) | 내려서 얻는 것이 없다 |
 
 이 규약이 지켜지는지는 `ctest -R isolation` 4개가 감시한다.

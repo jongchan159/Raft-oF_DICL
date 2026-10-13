@@ -48,5 +48,9 @@ RDMA로 바꿀 때 손댈 곳이 이 두 줄이고, `core/` 는 건드리지 않
 - **`apps/` 는 `-I` 경로에 없다.** 진입점은 아무 곳에서도 include되지
   않으므로 넣을 이유가 없다. 여기에 다른 곳에서 쓸 헤더를 만들지 말 것 —
   그건 `net/` 이나 `core/` 로 가야 한다.
+- `raft_client` 의 kvs op(`kvs-lat` / `kvs-loop`)는 `kvs/raft_kvs_wire.h`
+  (헤더 온리)만 쓴다 — kvs 도 core 도 링크하지 않는다. PUT 은
+  `ClientApply`, GET 은 `ClientRead`, 리더 탐색은 빈 `ClientRead` 라서 로그에
+  아무것도 남기지 않는다. 노드는 `-statemachine kvs` 로 띄워야 한다.
 - 파일을 추가하면 `CMakeLists.txt` 의 `add_executable` 과 `build.sh` 의
   `build_*` 함수 **양쪽**을 고쳐야 한다. 두 빌드 시스템은 병행 유지된다.

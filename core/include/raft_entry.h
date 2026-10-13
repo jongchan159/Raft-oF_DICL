@@ -169,6 +169,42 @@ struct AppendEntriesResponse {
 };
 
 /* ============================================================
+ * ReadIndexHeartbeat -- ReadIndex (Ongaro §6.4) 의 "heartbeat 1라운드"
+ * 전용 메시지. **로그 복제(AppendEntries)와 분리된 heartbeat** 다
+ * (etcd/raft 의 MsgHeartbeat 이 MsgApp 과 별개인 것과 같다). 로그 일관성
+ * 검사도 엔트리도 없고, 팔로워는 term 만 보고 응답한다.
+ * round 는 etcd 의 read ctx 에 해당한다 -- 리더가 "어느 읽기 라운드까지
+ * 확인됐는가" 를 이 값으로 센다. [수정-17]
+ * ============================================================ */
+struct ReadIndexHeartbeatRequest {
+    RPCMessage rpc;
+    uint64_t leader_id = 0;
+    uint64_t round = 0;
+};
+
+struct ReadIndexHeartbeatResponse {
+    RPCMessage rpc;
+    bool ok = false;      /* 이 term 의 리더로 인정한다 */
+    uint64_t round = 0;   /* 요청의 round 를 그대로 돌려준다 */
+};
+
+/* Server::read 의 결과 / 구간 분해.
+ * results[i] 가 queries[i] 의 답이다. error 가 비어 있으면 성공.
+ * busy: 리더십 확인이 read_timeout_ms 안에 끝나지 않았다 (재시도 가능). */
+struct ReadTimings {
+    int64_t confirm_ns = 0;      /* heartbeat 라운드 과반 ack 까지 */
+    int64_t apply_wait_ns = 0;   /* last_applied 가 read_index 를 넘을 때까지 */
+    int64_t sm_ns = 0;           /* 상태머신 호출 (mu 밖) */
+    int64_t total_ns = 0;
+};
+
+struct ReadResult {
+    std::vector<ApplyResult> results;
+    std::string error;
+    bool busy = false;
+};
+
+/* ============================================================
  * Client-facing RPC 구조체 (rpcproto.proto의 Client* 메시지 대응,
  * proto_codec.go의 Client*Request/Response 구조체 그대로 포팅)
  * ============================================================ */
@@ -207,6 +243,21 @@ struct ClientApplyTimedResponse {
     int64_t post_rpc_ns = 0;
     int64_t commit_wait_ns = 0;
     int64_t wg_scheduling_ns = 0;
+};
+
+struct ClientReadRequest {
+    std::vector<std::vector<uint8_t>> queries;
+};
+
+struct ClientReadResponse {
+    std::string error;
+    bool busy = false;
+    int retry_after_ms = 0;
+    std::vector<std::vector<uint8_t>> results;
+    int64_t latency_ns = 0;      /* Server::read 전체 */
+    int64_t confirm_ns = 0;
+    int64_t apply_wait_ns = 0;
+    int64_t sm_ns = 0;
 };
 
 struct ClientEchoRequest {

@@ -157,9 +157,10 @@ void Server::start() {
     workers.started = true;
     done.store(false);
 
-    workers.main_thread = std::thread([this]() { main_loop(); });
-    workers.apply_thread = std::thread([this]() { apply_worker_loop(); });
-    workers.slot_gc_thread = std::thread([this]() { slot_gc_worker_loop(); });
+    /* 팔로워별 워커(AE / ReadIndex heartbeat)를 **main_thread 보다 먼저**
+     * 만든다. main_loop 의 heartbeat() -> append_entries() 가 ae_workers[i]
+     * 를 바로 인덱싱하므로, 리더 상태로 시작하는 하네스에서 순서가 뒤집히면
+     * 빈 벡터를 읽는다. */
 
     // [Persistent Worker]
     // Create Persistent Worker for other nodes per node
@@ -181,6 +182,12 @@ void Server::start() {
         workers.ae_workers[i] = std::move(w);
     }
     // [Persistent Worker]
+
+    start_read_hb_workers();   /* ReadIndex heartbeat 워커 (raft_read.cpp) [수정-17] */
+
+    workers.main_thread = std::thread([this]() { main_loop(); });
+    workers.apply_thread = std::thread([this]() { apply_worker_loop(); });
+    workers.slot_gc_thread = std::thread([this]() { slot_gc_worker_loop(); });
 }
 
 void Server::stop() {
@@ -198,17 +205,28 @@ void Server::stop() {
     }
     workers.slot_gc_notify_cv.notify_all();
 
+    /* 워커의 mu 를 잡고 깨운다 -- 워커가 predicate(done) 를 확인한 뒤
+     * wait 에 들어가기 직전에 notify 가 지나가면 깨움을 잃고 join 이
+     * 영원히 기다린다. */
     // [Persistent Worker]
     for (auto &w : workers.ae_workers) {
         if (w) {
+            { std::lock_guard<std::mutex> wl(w->mu); }
             w->cv.notify_all();
         }
     }
     // [Persistent Worker]
+    for (auto &w : workers.read_hb_workers) {
+        if (w) {
+            { std::lock_guard<std::mutex> wl(w->mu); }
+            w->cv.notify_all();
+        }
+    }
 
     {
         std::lock_guard<std::mutex> lk(mu);
         ring_not_full.notify_all();
+        read_cv.notify_all();
     }
 
     if (workers.main_thread.joinable()) {
@@ -228,6 +246,11 @@ void Server::stop() {
         }
     }
     // [Persistent Worker]
+    for (auto &w : workers.read_hb_workers) {
+        if (w && w->th.joinable()) {
+            w->th.join();
+        }
+    }
 
     /* replication 스레드는 this를 계속 참조하므로 반드시 마지막에 */
     join_all_replication_threads();

@@ -68,6 +68,18 @@ public:
 
     virtual bool request_vote(int peer_index, const RequestVoteRequest &req,
                               RequestVoteResponse &rsp) = 0;
+
+    /* ReadIndex 의 리더십 확인 heartbeat (core/src/raft_read.cpp).
+     * **AppendEntries 와 다른 커넥션으로 보내야 한다** -- 같은 커넥션이면
+     * 진행 중인 데이터 AE 뒤에 줄을 서서, GET 이 PUT 의 로그 비용을
+     * 간접적으로 지불한다. 기본 구현은 "전송 실패" 다 (기존 fake 가 그대로
+     * 컴파일되도록; 그 경우 Server::read 는 타임아웃으로 busy 를 돌려준다).
+     * [수정-17] */
+    virtual bool read_index_heartbeat(int peer_index, const ReadIndexHeartbeatRequest &req,
+                                      ReadIndexHeartbeatResponse &rsp) {
+        (void)peer_index; (void)req; (void)rsp;
+        return false;
+    }
 };
 
 /* ============================================================

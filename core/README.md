@@ -14,6 +14,8 @@ DECISIONS.md §X "헤더에 구현을 남기는 유일한 이유들 (R0)" 에 �
 | `Server::apply` / `apply_timed` | 리더가 클라이언트 명령을 받는 경로 |
 | `Server::handle_append_entries_request` | 팔로워가 복제를 받는 경로 |
 | `Server::advance_commit_index` | 커밋 판정 (리더의 `main_loop`가 매 바퀴 호출) |
+| `Server::read` | 읽기 전용 명령을 **로그 없이** 처리 (ReadIndex, `raft_read.cpp`) |
+| `Server::handle_read_index_heartbeat` | 팔로워가 ReadIndex 리더십 확인 heartbeat 를 받는 경로 |
 
 ## 불변식
 
@@ -32,6 +34,15 @@ DECISIONS.md §X "헤더에 구현을 남기는 유일한 이유들 (R0)" 에 �
   수십 번, `put_u64_le` 는 엔트리당 4번 불리는 핫패스다.
 - 락은 `Server::mu` 하나가 `raft`·`ring` 상태 전부를 보호한다. 전송 구현체
   내부 락과 `workers.inflight_mu` 는 **항상 `mu` 밖에서** 잡는다.
+- 상태머신은 apply 경로(`apply_pending`, `become_leader` replay)에서는 `mu` 아래,
+  **read 경로(`Server::read`)에서는 `mu` 밖**에서 불린다. 그래서 상태머신은
+  스스로 thread-safe 해야 한다. read 경로로 들어오는 명령은 **상태를 바꾸지
+  않아야 한다** — core 는 그걸 검사할 수 없다.
+- ReadIndex 의 리더십 확인은 **AE 와 분리된 워커·커넥션**으로 간다
+  (`read_hb_workers`, `RaftTransport::read_index_heartbeat`). AE 워커에 실으면
+  GET 이 진행 중인 PUT 의 AE(팔로워 blockcopy 포함)를 기다린다.
+- `raft.read_round` 는 term 이 바뀌어도 리셋하지 않는다. 그래야 이전 term 의
+  ack(`read_ack_round`)가 새 term 의 읽기를 확인해 주는 일이 없다.
 
 ## 여기 두지 않는 것
 
@@ -41,4 +52,4 @@ DECISIONS.md §X "헤더에 구현을 남기는 유일한 이유들 (R0)" 에 �
 ## 왜 이렇게 됐는지
 
 원본 Go(`raft.go`)와 다르게 만든 지점은 코드에 `[수정-N]` 으로 표시되어 있고
-근거는 DECISIONS.md 의 D1~D14 에 있다. 미해결 항목은 §U.
+근거는 DECISIONS.md 의 D1~D17 에 있다. 미해결 항목은 §U.

@@ -59,8 +59,13 @@ public:
  * 그 밖의 최상위 필드는 락(mu), 주입받는 것(statemachine, transport,
  * blockcopy), 그리고 런타임 튜닝 플래그다.
  *
- * **락 규약**: raft / ring 그룹과 statemachine 호출은 전부 mu 하나로
- * 보호된다 (원본 raft.go의 s.mu 그대로 -- 락을 쪼개지 않았다).
+ * **락 규약**: raft / ring 그룹과 apply 경로의 statemachine 호출
+ * (apply_pending, become_leader replay)은 전부 mu 하나로 보호된다
+ * (원본 raft.go의 s.mu 그대로 -- 락을 쪼개지 않았다).
+ * **예외: read 경로(Server::read)는 statemachine 을 mu 밖에서 부른다**
+ * -- GET 이 PUT 의 commit/apply 경로와 mu 를 다투지 않게 하기 위해서다
+ * [수정-17]. 그래서 statemachine 구현은 스스로 thread-safe 해야 한다
+ * (Noop / Hash / Kvs 전부 내부 락을 갖는다).
  * mu 안에서 잡아도 되는 것: workers.apply_notify_mu,
  * workers.slot_gc_notify_mu, Entry::committed->mu, statemachine의 내부 락,
  * ApplyCollector::mu.
@@ -160,6 +165,16 @@ public:
      * s.mu를 그대로 재사용 (std::condition_variable은 unique_lock과 씀) */
     std::condition_variable ring_not_full;
 
+    /* --- ReadIndex (core/src/raft_read.cpp) [수정-17] ---
+     * read_cv: Server::read 의 대기 (리더십 확인 / apply 진전). mu 와 쓴다.
+     *   불필요한 깨움을 줄이려고 "확인 라운드 전진" 과 "대기자가 있을 때의
+     *   apply 진전" 에서만 notify 한다.
+     * read_waiters: apply 진전을 기다리는 Server::read 수 (mu 보호).
+     * read_timeout_ms: 리더십 확인 + apply 대기의 상한. 넘기면 busy. */
+    std::condition_variable read_cv;
+    uint32_t read_waiters = 0;
+    int read_timeout_ms = 200;
+
     /* apply 워커와 slot GC 워커의 깨우기 신호는 workers(WorkerPool)에 있다.
      * advance_commit_index가 commit_index를 전진시킨 뒤 non-blocking으로
      * 신호하고, 각 워커가 별도 스레드에서 pending을 drain한다. */
@@ -229,6 +244,43 @@ public:
                        bool *out_busy = nullptr);
     ApplyResult apply_timed(const std::vector<std::vector<uint8_t>> &commands,
                              ApplyTimings *out_timings, bool *out_busy = nullptr);
+
+    /* ============================================================
+     * ReadIndex 읽기 (Ongaro §6.4, raft_read.cpp에서 정의) [수정-17]
+     *
+     * queries 를 **로그에 넣지 않고** 리더 상태머신에서 실행한다:
+     *   1) read_index = max(commit_index, term_start_index)
+     *   2) ReadIndexHeartbeat 1라운드 -> 과반 ack 로 리더십 확인
+     *   3) last_applied 가 read_index 를 넘을 때까지 대기
+     *   4) mu 밖에서 statemachine->apply(q)
+     * **계약: queries 는 상태를 바꾸지 않는 명령이어야 한다** (KVS 의 GET).
+     * core 는 명령 내용을 모르므로 이를 검사할 수 없다 -- 상태를 바꾸는
+     * 명령을 넣으면 리더 상태머신만 바뀌고 로그에는 남지 않는다.
+     * queries 가 비면 리더 여부만 확인한다 (로그에 남지 않는 리더 탐색).
+     * ============================================================ */
+    ReadResult read(const std::vector<std::vector<uint8_t>> &queries,
+                    ReadTimings *out_timings = nullptr);
+
+    /* 팔로워 측 ReadIndexHeartbeat 처리. AE 핸들러의 term 처리와 같다 --
+     * 같은 term 이면 election timer 를 리셋하고 ok. 로그·링·blockcopy 를
+     * 건드리지 않는다. */
+    void handle_read_index_heartbeat(const ReadIndexHeartbeatRequest &req,
+                                     ReadIndexHeartbeatResponse &rsp);
+
+    /* 리더 측 팔로워별 heartbeat 워커. start()가 띄우고 stop()이 join한다.
+     * start_read_hb_workers 는 유닛 테스트가 start() 없이(= main_loop 없이)
+     * 워커만 띄울 때도 쓴다. */
+    void start_read_hb_workers();
+    void read_hb_loop(int fi, ReadIndexHbWorkerState *w);
+    /* 모든 read heartbeat 워커를 깨운다. mu 를 잡지 않은 채로 부른다. */
+    void kick_read_hb_workers();
+    /* read heartbeat 응답 1개 반영. 호출자가 mu 를 보유해야 한다.
+     * 순수 부기라 단위 테스트가 붙는다 (tests/test_read_index.cpp). */
+    void apply_read_hb_response(int fi, const ReadIndexHeartbeatRequest &req,
+                                const ReadIndexHeartbeatResponse &rsp);
+    /* 과반이 도달한 최대 라운드로 read_confirmed_round 를 전진시킨다.
+     * 전진했을 때만 read_cv 를 깨운다. 호출자가 mu 를 보유해야 한다. */
+    void try_advance_read_confirmed_locked();
 
     /* ============================================================
      * 생명주기 (raft_lifecycle.cpp에서 정의)

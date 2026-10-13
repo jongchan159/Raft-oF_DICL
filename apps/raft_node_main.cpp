@@ -28,6 +28,7 @@
 #include "raft_server.h"
 #include "raft_constants.h"
 #include "raft_statemachine_hash.h"
+#include "raft_statemachine_kvs.h"
 #include "raft_statemachine_noop.h"
 #include "raft_tcp_server.h"
 #include "raft_rpc_clients.h"
@@ -100,11 +101,14 @@ void usage(const char *prog) {
       "  -mode MODE         destination (default) | leader\n"
       "                     replication policy; 'leader' is the DARE-style\n"
       "                     policy for comparison (hpdc15dare 3.1.2)\n"
-      "  -statemachine KIND noop (default) | hash. noop costs nothing, so the\n"
+      "  -statemachine KIND noop (default) | hash | kvs. noop costs nothing, so the\n"
       "                     numbers assume a zero-cost application. Use hash\n"
       "                     when you need -op hash to verify that every node\n"
       "                     applied the same commands in the same order --\n"
       "                     it costs ~2ms per 1 MiB command.\n"
+      "                     kvs = DARE KVS semantics (PUT/GET/RM, see\n"
+      "                     kvs/README.md); GETs go through ClientRead\n"
+      "                     (ReadIndex) and never touch the log.\n"
       "  -ring-pages N      ring size in 4KiB pages (default %llu = 32GiB).\n"
       "                     Ring file is N*4096 bytes and is fallocate'd.\n"
       "  -loop-sleep-us N   main loop pause per iteration (default 200, 0=spin)\n"
@@ -243,8 +247,10 @@ int main(int argc, char **argv) {
         server->statemachine = std::make_shared<NoopStateMachine>();
     } else if (statemachine == "hash") {
         server->statemachine = std::make_shared<HashStateMachine>();
+    } else if (statemachine == "kvs") {
+        server->statemachine = std::make_shared<KvsStateMachine>();
     } else {
-        std::fprintf(stderr, "-statemachine must be 'noop' or 'hash'\n");
+        std::fprintf(stderr, "-statemachine must be 'noop', 'hash' or 'kvs'\n");
         return 1;
     }
     server->prof.enabled.store(profile ? 1 : 0);

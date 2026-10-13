@@ -44,13 +44,14 @@ RpcRaftTransport::RpcRaftTransport(std::vector<PeerEndpoint> peers, RpcDial dial
     }
 }
 
-bool RpcRaftTransport::call_peer(int peer_index, const std::string &method,
+bool RpcRaftTransport::call_peer(int peer_index, Channel ch, const std::string &method,
                                   const std::vector<uint8_t> &req_body,
                                   std::vector<uint8_t> *out_rsp_body) {
     if (peer_index < 0 || static_cast<size_t>(peer_index) >= peers_.size()) {
         return false;
     }
     Peer &peer = peers_[static_cast<size_t>(peer_index)];
+    Slot &slot = peer.slots[ch];
 
     /* "Read cached state without holding the lock during the dial." */
     std::shared_ptr<RpcConn> conn;
@@ -59,10 +60,10 @@ bool RpcRaftTransport::call_peer(int peer_index, const std::string &method,
     clock_type::time_point next_dial;
     {
         std::lock_guard<std::mutex> lk(mu_);
-        conn = peer.conn;
+        conn = slot.conn;
         addr = peer.address;
         id = peer.id;
-        next_dial = peer.next_dial_time;
+        next_dial = slot.next_dial_time;
     }
 
     bool dial_failed = false;
@@ -74,17 +75,17 @@ bool RpcRaftTransport::call_peer(int peer_index, const std::string &method,
             std::shared_ptr<RpcConn> fresh = dial_(addr);
 
             std::lock_guard<std::mutex> lk(mu_);
-            if (!peer.conn) {
-                peer.conn = fresh;
-                peer.next_dial_time = clock_type::time_point{};
+            if (!slot.conn) {
+                slot.conn = fresh;
+                slot.next_dial_time = clock_type::time_point{};
             }
             /* else: 다른 스레드가 먼저 연결했다 -- fresh 가 스코프를 벗어나며
              * 자동으로 닫힌다 (원본의 newClient.Close() 에 대응) */
-            conn = peer.conn;
+            conn = slot.conn;
         } catch (const std::exception &e) {
             std::cerr << "[warn] Dial failed to " << id << ": " << e.what() << std::endl;
             std::lock_guard<std::mutex> lk(mu_);
-            peer.next_dial_time =
+            slot.next_dial_time =
                 clock_type::now() + std::chrono::seconds(kDialBackoffSeconds);
             dial_failed = true;
         }
@@ -103,8 +104,8 @@ bool RpcRaftTransport::call_peer(int peer_index, const std::string &method,
          * 있던 것과 같은 핸들일 때만 지운다 (그 사이 다른 스레드가 새로
          * 연결했을 수 있다). */
         std::lock_guard<std::mutex> lk(mu_);
-        if (peer.conn == conn) {
-            peer.conn = nullptr;
+        if (slot.conn == conn) {
+            slot.conn = nullptr;
         }
         return false;
     }
@@ -118,7 +119,7 @@ bool RpcRaftTransport::append_entries(int peer_index, const AppendEntriesRequest
     proto_req.SerializeToArray(req_body.data(), static_cast<int>(req_body.size()));
 
     std::vector<uint8_t> rsp_body;
-    if (!call_peer(peer_index, rpc_method::kAppendEntries, req_body, &rsp_body)) {
+    if (!call_peer(peer_index, kRaftChannel, rpc_method::kAppendEntries, req_body, &rsp_body)) {
         return false;
     }
 
@@ -140,7 +141,7 @@ bool RpcRaftTransport::request_vote(int peer_index, const RequestVoteRequest &re
     proto_req.SerializeToArray(req_body.data(), static_cast<int>(req_body.size()));
 
     std::vector<uint8_t> rsp_body;
-    if (!call_peer(peer_index, rpc_method::kRequestVote, req_body, &rsp_body)) {
+    if (!call_peer(peer_index, kRaftChannel, rpc_method::kRequestVote, req_body, &rsp_body)) {
         return false;
     }
 
@@ -151,6 +152,30 @@ bool RpcRaftTransport::request_vote(int peer_index, const RequestVoteRequest &re
         return false;
     }
     request_vote_response_from_proto(proto_rsp, rsp);
+    return true;
+}
+
+bool RpcRaftTransport::read_index_heartbeat(int peer_index, const ReadIndexHeartbeatRequest &req,
+                                             ReadIndexHeartbeatResponse &rsp) {
+    rpcproto::ReadIndexHeartbeatRequest proto_req;
+    read_index_heartbeat_request_to_proto(req, &proto_req);
+    std::vector<uint8_t> req_body(static_cast<size_t>(proto_req.ByteSizeLong()));
+    proto_req.SerializeToArray(req_body.data(), static_cast<int>(req_body.size()));
+
+    std::vector<uint8_t> rsp_body;
+    /* AE 와 다른 커넥션 -- 헤더의 Channel 주석 참고 */
+    if (!call_peer(peer_index, kReadHbChannel, rpc_method::kReadIndexHeartbeat, req_body,
+                   &rsp_body)) {
+        return false;
+    }
+
+    rpcproto::ReadIndexHeartbeatResponse proto_rsp;
+    if (!proto_rsp.ParseFromArray(rsp_body.data(), static_cast<int>(rsp_body.size()))) {
+        std::cerr << "[warn] " << rpc_method::kReadIndexHeartbeat
+                  << ": failed to parse response" << std::endl;
+        return false;
+    }
+    read_index_heartbeat_response_from_proto(proto_rsp, rsp);
     return true;
 }
 

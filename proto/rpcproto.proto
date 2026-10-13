@@ -81,6 +81,22 @@ message AppendEntriesResponse {
 // per-entry transfer size (one element per entry, populated by
 // do_pba_copy's extent/wrap-split Pass 1). BlockSize (legacy uniform-size
 // path) is kept for wire forward-compat but unused by any in-tree caller.
+// ReadIndex (Ongaro §6.4) leadership-confirmation heartbeat. Separate from
+// AppendEntries on purpose (like etcd's MsgHeartbeat vs MsgApp): it carries no
+// log consistency check and is sent on its own connection, so a GET never
+// queues behind an in-flight data AppendEntries.
+message ReadIndexHeartbeatRequest {
+  uint64 term = 1;
+  uint64 leader_id = 2;
+  uint64 round = 3;
+}
+
+message ReadIndexHeartbeatResponse {
+  uint64 term = 1;
+  bool ok = 2;
+  uint64 round = 3;
+}
+
 message WritePBABatchRequest {
   repeated uint64 pba_srcs = 1;
   repeated uint64 pba_dsts = 2;
@@ -136,6 +152,23 @@ message ClientApplyTimedResponse {
   int64 post_rpc_nanos = 13;
   int64 commit_wait_nanos = 14;
   int64 wg_scheduling_nanos = 15;
+}
+
+// Read-only queries served by ReadIndex: never written to the log.
+// results[i] answers queries[i].
+message ClientReadRequest {
+  repeated bytes queries = 1;
+}
+
+message ClientReadResponse {
+  string err = 1;
+  bool busy = 2;
+  int32 retry_after_ms = 3;
+  repeated bytes results = 4;
+  int64 latency_nanos = 5;      // Server::read wall time
+  int64 confirm_nanos = 6;      // heartbeat round until quorum ack
+  int64 apply_wait_nanos = 7;   // until last_applied passed read_index
+  int64 sm_nanos = 8;           // state machine calls
 }
 
 message ClientEchoRequest {

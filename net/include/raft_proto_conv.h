@@ -126,6 +126,38 @@ inline void request_vote_response_from_proto(const rpcproto::RequestVoteResponse
 }
 
 /* ============================================================
+ * Conversions: ReadIndexHeartbeat [수정-17]
+ * ============================================================ */
+
+inline void read_index_heartbeat_request_to_proto(const ReadIndexHeartbeatRequest &g,
+                                                  rpcproto::ReadIndexHeartbeatRequest *p) {
+    p->set_term(g.rpc.term);
+    p->set_leader_id(g.leader_id);
+    p->set_round(g.round);
+}
+
+inline void read_index_heartbeat_request_from_proto(const rpcproto::ReadIndexHeartbeatRequest &p,
+                                                    ReadIndexHeartbeatRequest &g) {
+    g.rpc.term = p.term();
+    g.leader_id = p.leader_id();
+    g.round = p.round();
+}
+
+inline void read_index_heartbeat_response_to_proto(const ReadIndexHeartbeatResponse &g,
+                                                   rpcproto::ReadIndexHeartbeatResponse *p) {
+    p->set_term(g.rpc.term);
+    p->set_ok(g.ok);
+    p->set_round(g.round);
+}
+
+inline void read_index_heartbeat_response_from_proto(const rpcproto::ReadIndexHeartbeatResponse &p,
+                                                     ReadIndexHeartbeatResponse &g) {
+    g.rpc.term = p.term();
+    g.ok = p.ok();
+    g.round = p.round();
+}
+
+/* ============================================================
  * Conversions: AppendEntries (hot path, 원본 그대로)
  * ============================================================ */
 
@@ -285,6 +317,55 @@ inline void client_apply_timed_response_from_proto(const rpcproto::ClientApplyTi
     g.post_rpc_ns = p.post_rpc_nanos();
     g.commit_wait_ns = p.commit_wait_nanos();
     g.wg_scheduling_ns = p.wg_scheduling_nanos();
+}
+
+/* ClientRead: 필드 이름이 queries / results 라 commands_* 템플릿을 못 쓴다 */
+inline void client_read_request_to_proto(const ClientReadRequest &g,
+                                         rpcproto::ClientReadRequest *p) {
+    p->clear_queries();
+    for (const auto &q : g.queries) {
+        p->add_queries(reinterpret_cast<const char *>(q.data()), q.size());
+    }
+}
+
+inline void client_read_request_from_proto(const rpcproto::ClientReadRequest &p,
+                                           ClientReadRequest &g) {
+    g.queries.clear();
+    g.queries.reserve(static_cast<size_t>(p.queries_size()));
+    for (const auto &q : p.queries()) {
+        g.queries.emplace_back(q.begin(), q.end());
+    }
+}
+
+inline void client_read_response_to_proto(const ClientReadResponse &g,
+                                          rpcproto::ClientReadResponse *p) {
+    p->set_err(g.error);
+    p->set_busy(g.busy);
+    p->set_retry_after_ms(g.retry_after_ms);
+    p->clear_results();
+    for (const auto &r : g.results) {
+        p->add_results(reinterpret_cast<const char *>(r.data()), r.size());
+    }
+    p->set_latency_nanos(g.latency_ns);
+    p->set_confirm_nanos(g.confirm_ns);
+    p->set_apply_wait_nanos(g.apply_wait_ns);
+    p->set_sm_nanos(g.sm_ns);
+}
+
+inline void client_read_response_from_proto(const rpcproto::ClientReadResponse &p,
+                                            ClientReadResponse &g) {
+    g.error = p.err();
+    g.busy = p.busy();
+    g.retry_after_ms = p.retry_after_ms();
+    g.results.clear();
+    g.results.reserve(static_cast<size_t>(p.results_size()));
+    for (const auto &r : p.results()) {
+        g.results.emplace_back(r.begin(), r.end());
+    }
+    g.latency_ns = p.latency_nanos();
+    g.confirm_ns = p.confirm_nanos();
+    g.apply_wait_ns = p.apply_wait_nanos();
+    g.sm_ns = p.sm_nanos();
 }
 
 inline void client_echo_request_to_proto(const ClientEchoRequest &g,

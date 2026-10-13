@@ -33,6 +33,8 @@ public:
                        AppendEntriesResponse &)> on_append_entries;
     std::function<bool(int peer_index, const RequestVoteRequest &,
                        RequestVoteResponse &)> on_request_vote;
+    std::function<bool(int peer_index, const ReadIndexHeartbeatRequest &,
+                       ReadIndexHeartbeatResponse &)> on_read_index_heartbeat;
 
     bool append_entries(int peer_index, const AppendEntriesRequest &req,
                          AppendEntriesResponse &rsp) override {
@@ -58,10 +60,31 @@ public:
         return on_request_vote(peer_index, req, rsp);
     }
 
+    /* ReadIndex heartbeat 는 mu 를 **전혀 잡지 않는다** -- append_entries 가
+     * mu 를 쥔 채 훅을 부르므로, 같은 락을 쓰면 AE 훅이 블록된 동안
+     * heartbeat 도 막힌다. AE 와 독립인지 확인하는 테스트가 있다
+     * (tests/test_read_index.cpp). 카운터와 훅은 read_mu 로 보호한다. */
+    bool read_index_heartbeat(int peer_index, const ReadIndexHeartbeatRequest &req,
+                              ReadIndexHeartbeatResponse &rsp) override {
+        std::function<bool(int, const ReadIndexHeartbeatRequest &,
+                           ReadIndexHeartbeatResponse &)> hook;
+        {
+            std::lock_guard<std::mutex> lk(read_mu);
+            read_hb_calls++;
+            hook = on_read_index_heartbeat;
+        }
+        if (!hook) {
+            return false;
+        }
+        return hook(peer_index, req, rsp);
+    }
+
     /* 관측값 (여러 스레드가 호출할 수 있으므로 mu로 보호한다) */
     std::mutex mu;
     int ae_calls = 0;
     int vote_calls = 0;
+    std::mutex read_mu;
+    int read_hb_calls = 0;   /* read_mu 로 보호 */
     int last_ae_peer = -1;
     int last_vote_peer = -1;
     AppendEntriesRequest last_ae_req;

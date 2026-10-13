@@ -22,6 +22,8 @@ namespace rpc_method {
 /* --- Raft 노드 사이 (peer) --- */
 constexpr const char *kAppendEntries = "Server.HandleAppendEntriesRequest";
 constexpr const char *kRequestVote   = "Server.HandleRequestVoteRequest";
+/* ReadIndex 리더십 확인 heartbeat -- AE 와 다른 커넥션으로 간다 */
+constexpr const char *kReadIndexHeartbeat = "Server.HandleReadIndexHeartbeat";
 
 /* --- 클라이언트 -> Raft 노드 --- */
 constexpr const char *kClientApply           = "Server.ClientApply";
@@ -30,6 +32,8 @@ constexpr const char *kClientEcho            = "Server.ClientEcho";
 constexpr const char *kClientGetCommitIndex  = "Server.ClientGetCommitIndex";
 constexpr const char *kClientGetHash         = "Server.ClientGetHash";
 constexpr const char *kClientGetAEBatchStats = "Server.ClientGetAEBatchStats";
+/* 읽기 전용 명령 (ReadIndex, 로그에 남지 않음) */
+constexpr const char *kClientRead            = "Server.ClientRead";
 
 /* --- Raft 노드 -> 스토리지(blockcopy) 노드 --- */
 constexpr const char *kWritePBABatch = "BlockCopyServer.HandleWritePBABatch";

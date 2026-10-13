@@ -50,6 +50,41 @@ bool dispatch_client_method(const std::string &method,
         return true;
     }
 
+    /* [수정-17] 읽기 전용 명령 -- 로그에 넣지 않고 ReadIndex 로 처리한다
+     * (core/src/raft_read.cpp). 결과는 queries 와 같은 순서로 돌려준다. */
+    if (method == rpc_method::kClientRead) {
+        rpcproto::ClientReadRequest proto_req;
+        proto_req.ParseFromArray(body.data(), static_cast<int>(body.size()));
+        ClientReadRequest req;
+        client_read_request_from_proto(proto_req, req);
+
+        ReadTimings t;
+        ReadResult res = server->read(req.queries, &t);
+
+        ClientReadResponse rsp;
+        rsp.error = res.error;
+        rsp.busy = res.busy;
+        rsp.retry_after_ms = res.busy ? apply_busy_retry_after_ms() : 0;
+        if (res.error.empty()) {
+            rsp.results.reserve(res.results.size());
+            for (auto &r : res.results) {
+                if (!r.error.empty() && rsp.error.empty()) {
+                    rsp.error = r.error;
+                }
+                rsp.results.push_back(std::move(r.result));
+            }
+        }
+        rsp.latency_ns = t.total_ns;
+        rsp.confirm_ns = t.confirm_ns;
+        rsp.apply_wait_ns = t.apply_wait_ns;
+        rsp.sm_ns = t.sm_ns;
+
+        rpcproto::ClientReadResponse proto_rsp;
+        client_read_response_to_proto(rsp, &proto_rsp);
+        serialize(proto_rsp);
+        return true;
+    }
+
     if (method == rpc_method::kClientApplyTimed) {
         rpcproto::ClientApplyTimedRequest proto_req;
         proto_req.ParseFromArray(body.data(), static_cast<int>(body.size()));
@@ -180,6 +215,24 @@ bool dispatch_raft_method(Server *server, const std::string &method,
 
         rpcproto::AppendEntriesResponse proto_rsp;
         append_entries_response_to_proto(rsp, &proto_rsp);
+        rsp_body.resize(static_cast<size_t>(proto_rsp.ByteSizeLong()));
+        proto_rsp.SerializeToArray(rsp_body.data(), static_cast<int>(rsp_body.size()));
+        return true;
+    }
+
+    /* [수정-17] ReadIndex heartbeat. 리더는 이걸 AE 와 다른 커넥션으로
+     * 보내고, 서버는 커넥션마다 스레드를 띄우므로 AE 처리와 병렬로 돈다. */
+    if (method == rpc_method::kReadIndexHeartbeat) {
+        rpcproto::ReadIndexHeartbeatRequest proto_req;
+        proto_req.ParseFromArray(body.data(), static_cast<int>(body.size()));
+        ReadIndexHeartbeatRequest req;
+        read_index_heartbeat_request_from_proto(proto_req, req);
+
+        ReadIndexHeartbeatResponse rsp;
+        server->handle_read_index_heartbeat(req, rsp);
+
+        rpcproto::ReadIndexHeartbeatResponse proto_rsp;
+        read_index_heartbeat_response_to_proto(rsp, &proto_rsp);
         rsp_body.resize(static_cast<size_t>(proto_rsp.ByteSizeLong()));
         proto_rsp.SerializeToArray(rsp_body.data(), static_cast<int>(rsp_body.size()));
         return true;

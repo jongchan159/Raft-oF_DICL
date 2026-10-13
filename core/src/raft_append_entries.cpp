@@ -41,6 +41,10 @@ void Server::append_entries(std::shared_ptr<ReplSink> sink) {
 
         // New Method - Use persistent worker that is spawned in initial time
         // [Persistent Worker]
+        /* start() 를 거치지 않은 하네스(유닛 테스트)에는 워커가 없다 */
+        if (i >= workers.ae_workers.size() || !workers.ae_workers[i]) {
+            continue;
+        }
         auto &w = *workers.ae_workers[i];
         
         {
