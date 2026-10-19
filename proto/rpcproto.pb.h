@@ -2265,6 +2265,9 @@ class ClientApplyTimedResponse final :
     kPostRpcNanosFieldNumber = 13,
     kCommitWaitNanosFieldNumber = 14,
     kWgSchedulingNanosFieldNumber = 15,
+    kMutexANanosFieldNumber = 16,
+    kMutexBNanosFieldNumber = 17,
+    kMutexCNanosFieldNumber = 18,
   };
   // string err = 1;
   void clear_err();
@@ -2406,6 +2409,33 @@ class ClientApplyTimedResponse final :
   void _internal_set_wg_scheduling_nanos(int64_t value);
   public:
 
+  // int64 mutex_a_nanos = 16;
+  void clear_mutex_a_nanos();
+  int64_t mutex_a_nanos() const;
+  void set_mutex_a_nanos(int64_t value);
+  private:
+  int64_t _internal_mutex_a_nanos() const;
+  void _internal_set_mutex_a_nanos(int64_t value);
+  public:
+
+  // int64 mutex_b_nanos = 17;
+  void clear_mutex_b_nanos();
+  int64_t mutex_b_nanos() const;
+  void set_mutex_b_nanos(int64_t value);
+  private:
+  int64_t _internal_mutex_b_nanos() const;
+  void _internal_set_mutex_b_nanos(int64_t value);
+  public:
+
+  // int64 mutex_c_nanos = 18;
+  void clear_mutex_c_nanos();
+  int64_t mutex_c_nanos() const;
+  void set_mutex_c_nanos(int64_t value);
+  private:
+  int64_t _internal_mutex_c_nanos() const;
+  void _internal_set_mutex_c_nanos(int64_t value);
+  public:
+
   // @@protoc_insertion_point(class_scope:rpcproto.ClientApplyTimedResponse)
  private:
   class _Internal;
@@ -2429,6 +2459,9 @@ class ClientApplyTimedResponse final :
     int64_t post_rpc_nanos_;
     int64_t commit_wait_nanos_;
     int64_t wg_scheduling_nanos_;
+    int64_t mutex_a_nanos_;
+    int64_t mutex_b_nanos_;
+    int64_t mutex_c_nanos_;
     mutable ::PROTOBUF_NAMESPACE_ID::internal::CachedSize _cached_size_;
   };
   union { Impl_ _impl_; };
@@ -5278,6 +5311,66 @@ inline void ClientApplyTimedResponse::_internal_set_wg_scheduling_nanos(int64_t 
 inline void ClientApplyTimedResponse::set_wg_scheduling_nanos(int64_t value) {
   _internal_set_wg_scheduling_nanos(value);
   // @@protoc_insertion_point(field_set:rpcproto.ClientApplyTimedResponse.wg_scheduling_nanos)
+}
+
+// int64 mutex_a_nanos = 16;
+inline void ClientApplyTimedResponse::clear_mutex_a_nanos() {
+  _impl_.mutex_a_nanos_ = int64_t{0};
+}
+inline int64_t ClientApplyTimedResponse::_internal_mutex_a_nanos() const {
+  return _impl_.mutex_a_nanos_;
+}
+inline int64_t ClientApplyTimedResponse::mutex_a_nanos() const {
+  // @@protoc_insertion_point(field_get:rpcproto.ClientApplyTimedResponse.mutex_a_nanos)
+  return _internal_mutex_a_nanos();
+}
+inline void ClientApplyTimedResponse::_internal_set_mutex_a_nanos(int64_t value) {
+  
+  _impl_.mutex_a_nanos_ = value;
+}
+inline void ClientApplyTimedResponse::set_mutex_a_nanos(int64_t value) {
+  _internal_set_mutex_a_nanos(value);
+  // @@protoc_insertion_point(field_set:rpcproto.ClientApplyTimedResponse.mutex_a_nanos)
+}
+
+// int64 mutex_b_nanos = 17;
+inline void ClientApplyTimedResponse::clear_mutex_b_nanos() {
+  _impl_.mutex_b_nanos_ = int64_t{0};
+}
+inline int64_t ClientApplyTimedResponse::_internal_mutex_b_nanos() const {
+  return _impl_.mutex_b_nanos_;
+}
+inline int64_t ClientApplyTimedResponse::mutex_b_nanos() const {
+  // @@protoc_insertion_point(field_get:rpcproto.ClientApplyTimedResponse.mutex_b_nanos)
+  return _internal_mutex_b_nanos();
+}
+inline void ClientApplyTimedResponse::_internal_set_mutex_b_nanos(int64_t value) {
+  
+  _impl_.mutex_b_nanos_ = value;
+}
+inline void ClientApplyTimedResponse::set_mutex_b_nanos(int64_t value) {
+  _internal_set_mutex_b_nanos(value);
+  // @@protoc_insertion_point(field_set:rpcproto.ClientApplyTimedResponse.mutex_b_nanos)
+}
+
+// int64 mutex_c_nanos = 18;
+inline void ClientApplyTimedResponse::clear_mutex_c_nanos() {
+  _impl_.mutex_c_nanos_ = int64_t{0};
+}
+inline int64_t ClientApplyTimedResponse::_internal_mutex_c_nanos() const {
+  return _impl_.mutex_c_nanos_;
+}
+inline int64_t ClientApplyTimedResponse::mutex_c_nanos() const {
+  // @@protoc_insertion_point(field_get:rpcproto.ClientApplyTimedResponse.mutex_c_nanos)
+  return _internal_mutex_c_nanos();
+}
+inline void ClientApplyTimedResponse::_internal_set_mutex_c_nanos(int64_t value) {
+  
+  _impl_.mutex_c_nanos_ = value;
+}
+inline void ClientApplyTimedResponse::set_mutex_c_nanos(int64_t value) {
+  _internal_set_mutex_c_nanos(value);
+  // @@protoc_insertion_point(field_set:rpcproto.ClientApplyTimedResponse.mutex_c_nanos)
 }
 
 // -------------------------------------------------------------------

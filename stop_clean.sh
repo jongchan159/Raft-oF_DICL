@@ -12,14 +12,11 @@ fi
 
 ID="$1"
 
-case "$ID" in
-    4|5|6|7) ;;
-    *)
-        echo "invalid node id: $ID"
-        echo "valid ids: 4, 5, 6, 7"
-        exit 1
-        ;;
-esac
+is_valid_id "$ID" || {
+    echo "invalid node id: $ID"
+    echo "valid ids: $(valid_ids_str)"
+    exit 1
+}
 
 META_DIR="$(metadata_dir_for_id "$ID")"
 
@@ -130,15 +127,11 @@ if ! mountpoint -q /mnt/raftvol; then
 fi
 
 # 잘못된 경로 삭제 방지
-case "$META_DIR" in
-    /mnt/raftvol/node5|/mnt/raftvol/node6|/mnt/raftvol/node7)
-        ;;
-    *)
-        echo "ERROR: refusing to clean unexpected path:"
-        echo "  $META_DIR"
-        exit 1
-        ;;
-esac
+if [[ "$META_DIR" != "/mnt/raftvol/node$ID" ]]; then
+    echo "ERROR: refusing to clean unexpected path:"
+    echo "  $META_DIR"
+    exit 1
+fi
 
 sudo mkdir -p "$META_DIR"
 

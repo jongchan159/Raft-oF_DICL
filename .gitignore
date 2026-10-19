@@ -20,6 +20,7 @@ selftest-workdir/
 e2e-*/
 
 results/
+*.log
 
 # 주의: proto/rpcproto.pb.{h,cc}는 **의도적으로 커밋한다.**
 # protoc 없는 환경에서 빌드할 수 있게 하려는 것이므로 무시하지 말 것
@@ -29,3 +30,7 @@ DECISIONS.md
 E2E_EXPERIMENT.md
 BLKCOPY_EXPERIMENT.md
 HANDOFF.md
+raft_blockcopy_server_tcp.log
+raft_node_4_destination_tcp.log
+raft_node_5_destination_tcp.log
+raft_node_6_destination_tcp.log

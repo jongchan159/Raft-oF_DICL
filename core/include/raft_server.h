@@ -19,6 +19,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <stdexcept>
+#include <deque>
 
 #include "raft_constants.h"   /* SECTOR_SIZE (AlignedBuffer 기본 정렬) */
 #include "raft_entry.h"
@@ -32,6 +33,8 @@ namespace nvmeof_raft {
 uint64_t slots_for_entry(size_t cmd_len);
 uint64_t entry_slots(const Entry &e);
 int64_t slot_offset(uint64_t slot);
+
+struct GcReq; // 그룹 커밋을 위한 구조체 정의는 raft_apply.cpp에
 
 /* ============================================================
  * StateMachine (raft.go 원본 인터페이스)
@@ -116,6 +119,12 @@ public:
      * 이 포팅도 같다 (락을 쪼개지 않았다). 락 순서는 파일 상단 참고. */
     std::mutex mu;
 
+    std::mutex gc_mu; // 그룹 커밋 상태 관리에 쓰이는 락
+    std::deque<GcReq *> gc_queue;
+
+    size_t gc_max_reqs  = 32;           // 그룹 커밋 한 묶음의 최대 요청 수 (-gc-max-reqs)
+    size_t gc_max_bytes = 256 * 1024;   // 한 묶음의 최대 payload 합 (-gc-max-bytes)
+
     /* --- Raft 합의 상태 (위 RaftState 참고). 전부 mu로 보호된다 --- */
     RaftState raft;
 
@@ -174,7 +183,10 @@ public:
      * 배치 clamp 루프 세 개가 이 조회를 각자 인라인으로 네 번 반복하고
      * 있었다. **호출자가 mu를 보유해야 한다.** */
     uint64_t slots_for_log_index(uint64_t log_idx) const;
+
     bool can_write_all(const std::vector<std::vector<uint8_t>> &commands) const;
+    bool can_write_sizes(const std::vector<size_t> &sizes) const;
+    
     void recompute_head_slot();
     void init_slot_states();
     void rebuild_slot_states_from_map();
@@ -198,6 +210,11 @@ public:
 
     /* advanceCommitIndex, applyPending, doSlotGC (raft_commit.cpp에서 정의) */
     void advance_commit_index();
+    void advance_commit_index_locked(
+        std::vector<std::shared_ptr<EntryCommitSignal>> *to_signal = nullptr); // 호출자가 Lock을 쥐고 있어야 함.
+    void signal_committed_batch(
+        std::vector<std::shared_ptr<EntryCommitSignal>> &sig);
+
     void apply_pending();
     void do_slot_gc();
 

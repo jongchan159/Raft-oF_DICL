@@ -101,7 +101,7 @@ TEST_CASE("보정값과 파생 서브스테이지") {
     /* 샘플의 mutex_ns가 0이 아니면 Lock A 대기값을 덮어쓴다 */
     CHECK(t.mutex_ns == smp.mutex_ns);
     CHECK(t.mutex_c_ns == smp.mutex_c_ns);
-    CHECK(t.wait_lock_b_ns == smp.mutex_ns - smp.mutex_c_ns);
+    CHECK(t.wait_lock_ab_ns == smp.mutex_ns - smp.mutex_c_ns);
 
     CHECK(t.replicate_corrected_ns == w.replicate_ns - smp.mutex_ns);
     CHECK(t.quorum_wait_corrected_ns ==
@@ -155,7 +155,7 @@ TEST_CASE("모든 파생 항이 음수가 되지 않는다 (clamp0)") {
     CHECK(t.f_handler_ns == 0);
     CHECK(t.repl_net_ns == 0);
     CHECK(t.quorum_wait_ns == 0);
-    CHECK(t.wait_lock_b_ns == 0);
+    CHECK(t.wait_lock_ab_ns == 0);
     CHECK(t.replicate_corrected_ns >= 0);
     CHECK(t.quorum_wait_corrected_ns == 0);
     CHECK(t.wg_scheduling_ns == 0);

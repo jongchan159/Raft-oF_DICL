@@ -76,6 +76,35 @@ void Server::init_storage() {
 
     uint64_t want = ring.file_size_bytes();
     int64_t actual = create_ring_file(meta_path, want);
+
+    if (io.precondition_ring) {
+        const auto t0 = std::chrono::steady_clock::now();
+
+        std::fprintf(stdout, "[storage] preconditioning ring : %s (%llu bytes)\n",
+                            meta_path.c_str(),
+                            static_cast<unsigned long long>(want));
+        std::fflush(stdout);
+
+        // precondition_ring_file(meta_path, want);  를 아래로 교체
+        const uint64_t wrote = precondition_ring_file(meta_path, want);
+
+        const auto ms =
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - t0).count();
+        // std::fprintf(stdout, "[storage] ring precondition complete: %lld ms\n", ...);  를 아래로 교체
+        std::fprintf(stdout,
+                    "[storage] ring precondition complete: %lld ms (wrote %llu MiB of %llu MiB%s)\n",
+                    static_cast<long long>(ms),
+                    static_cast<unsigned long long>(wrote >> 20),
+                    static_cast<unsigned long long>(want >> 20),
+                    wrote == 0 ? ", already written" : "");
+
+
+        std::fprintf(stdout, "[storage] ring precondition complete: %lld ms\n", static_cast<long long>(ms));
+
+        std::fflush(stdout);
+    }
+
     if (static_cast<uint64_t>(actual) < want) {
         throw std::runtime_error("init_storage: ring file " + meta_path + " is " +
             std::to_string(actual) + " bytes, need " + std::to_string(want));
@@ -352,32 +381,13 @@ void Server::reap_finished_threads(){
 }
 
 void Server::spawn_replication_thread(std::function<void()> work) {
-    auto t1 = clock_type::now();
     reap_finished_threads();
-    auto reap_ns = elapsed_ns(t1);
-
     auto done = std::make_shared<std::atomic<bool>>(false);
 
-    // auto t2 = clock_type::now();
     std::thread th([work = std::move(work), done]() mutable {
         work();
         done->store(true, std::memory_order_release);   /* 실행 완료 표시 */
     });
-    // auto thread_create_ns = elapsed_ns(t2);
-
-    // std::cout
-    // << "[diag] reap_ns="
-    // << reap_ns
-    // << " ("
-    // << reap_ns / 1000.0
-    // << " us)\n";
-
-    // std::cout
-    // << "[diag] thread_create_ns="
-    // << thread_create_ns
-    // << " ("
-    // << thread_create_ns / 1000.0
-    // << " us)\n";
 
     std::lock_guard<std::mutex> lk(workers.inflight_mu);
     workers.inflight.push_back(ReplicationThreadSlot{std::move(th), done});

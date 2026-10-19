@@ -210,6 +210,9 @@ PROTOBUF_CONSTEXPR ClientApplyTimedResponse::ClientApplyTimedResponse(
   , /*decltype(_impl_.post_rpc_nanos_)*/int64_t{0}
   , /*decltype(_impl_.commit_wait_nanos_)*/int64_t{0}
   , /*decltype(_impl_.wg_scheduling_nanos_)*/int64_t{0}
+  , /*decltype(_impl_.mutex_a_nanos_)*/int64_t{0}
+  , /*decltype(_impl_.mutex_b_nanos_)*/int64_t{0}
+  , /*decltype(_impl_.mutex_c_nanos_)*/int64_t{0}
   , /*decltype(_impl_._cached_size_)*/{}} {}
 struct ClientApplyTimedResponseDefaultTypeInternal {
   PROTOBUF_CONSTEXPR ClientApplyTimedResponseDefaultTypeInternal()
@@ -461,6 +464,9 @@ const uint32_t TableStruct_rpcproto_2eproto::offsets[] PROTOBUF_SECTION_VARIABLE
   PROTOBUF_FIELD_OFFSET(::rpcproto::ClientApplyTimedResponse, _impl_.post_rpc_nanos_),
   PROTOBUF_FIELD_OFFSET(::rpcproto::ClientApplyTimedResponse, _impl_.commit_wait_nanos_),
   PROTOBUF_FIELD_OFFSET(::rpcproto::ClientApplyTimedResponse, _impl_.wg_scheduling_nanos_),
+  PROTOBUF_FIELD_OFFSET(::rpcproto::ClientApplyTimedResponse, _impl_.mutex_a_nanos_),
+  PROTOBUF_FIELD_OFFSET(::rpcproto::ClientApplyTimedResponse, _impl_.mutex_b_nanos_),
+  PROTOBUF_FIELD_OFFSET(::rpcproto::ClientApplyTimedResponse, _impl_.mutex_c_nanos_),
   ~0u,  // no _has_bits_
   PROTOBUF_FIELD_OFFSET(::rpcproto::ClientEchoRequest, _internal_metadata_),
   ~0u,  // no _extensions_
@@ -533,14 +539,14 @@ static const ::_pbi::MigrationSchema schemas[] PROTOBUF_SECTION_VARIABLE(protode
   { 92, -1, -1, sizeof(::rpcproto::ClientApplyResponse)},
   { 102, -1, -1, sizeof(::rpcproto::ClientApplyTimedRequest)},
   { 109, -1, -1, sizeof(::rpcproto::ClientApplyTimedResponse)},
-  { 130, -1, -1, sizeof(::rpcproto::ClientEchoRequest)},
-  { 137, -1, -1, sizeof(::rpcproto::ClientEchoResponse)},
-  { 144, -1, -1, sizeof(::rpcproto::ClientGetCommitIndexRequest)},
-  { 150, -1, -1, sizeof(::rpcproto::ClientGetCommitIndexResponse)},
-  { 158, -1, -1, sizeof(::rpcproto::ClientGetHashRequest)},
-  { 165, -1, -1, sizeof(::rpcproto::ClientGetHashResponse)},
-  { 174, -1, -1, sizeof(::rpcproto::ClientGetAEBatchStatsRequest)},
-  { 180, -1, -1, sizeof(::rpcproto::ClientGetAEBatchStatsResponse)},
+  { 133, -1, -1, sizeof(::rpcproto::ClientEchoRequest)},
+  { 140, -1, -1, sizeof(::rpcproto::ClientEchoResponse)},
+  { 147, -1, -1, sizeof(::rpcproto::ClientGetCommitIndexRequest)},
+  { 153, -1, -1, sizeof(::rpcproto::ClientGetCommitIndexResponse)},
+  { 161, -1, -1, sizeof(::rpcproto::ClientGetHashRequest)},
+  { 168, -1, -1, sizeof(::rpcproto::ClientGetHashResponse)},
+  { 177, -1, -1, sizeof(::rpcproto::ClientGetAEBatchStatsRequest)},
+  { 183, -1, -1, sizeof(::rpcproto::ClientGetAEBatchStatsResponse)},
 };
 
 static const ::_pb::Message* const file_default_instances[] = {
@@ -599,7 +605,7 @@ const char descriptor_table_protodef_rpcproto_2eproto[] PROTOBUF_SECTION_VARIABL
   "\"_\n\023ClientApplyResponse\022\013\n\003err\030\001 \001(\t\022\014\n\004"
   "busy\030\002 \001(\010\022\026\n\016retry_after_ms\030\003 \001(\005\022\025\n\rla"
   "tency_nanos\030\004 \001(\003\"+\n\027ClientApplyTimedReq"
-  "uest\022\020\n\010commands\030\001 \003(\014\"\366\002\n\030ClientApplyTi"
+  "uest\022\020\n\010commands\030\001 \003(\014\"\273\003\n\030ClientApplyTi"
   "medResponse\022\013\n\003err\030\001 \001(\t\022\027\n\017l_handler_na"
   "nos\030\002 \001(\003\022\027\n\017l_persist_nanos\030\003 \001(\003\022\024\n\014ae"
   "_net_nanos\030\004 \001(\003\022\027\n\017f_handler_nanos\030\005 \001("
@@ -608,22 +614,24 @@ const char descriptor_table_protodef_rpcproto_2eproto[] PROTOBUF_SECTION_VARIABL
   "\023\n\013mutex_nanos\030\t \001(\003\022\023\n\013total_nanos\030\n \001("
   "\003\022\014\n\004busy\030\013 \001(\010\022\026\n\016retry_after_ms\030\014 \001(\005\022"
   "\026\n\016post_rpc_nanos\030\r \001(\003\022\031\n\021commit_wait_n"
-  "anos\030\016 \001(\003\022\033\n\023wg_scheduling_nanos\030\017 \001(\003\""
-  "%\n\021ClientEchoRequest\022\020\n\010commands\030\001 \003(\014\"\037"
-  "\n\022ClientEchoResponse\022\t\n\001n\030\001 \001(\003\"\035\n\033Clien"
-  "tGetCommitIndexRequest\"A\n\034ClientGetCommi"
-  "tIndexResponse\022\024\n\014commit_index\030\001 \001(\004\022\013\n\003"
-  "err\030\002 \001(\t\"(\n\024ClientGetHashRequest\022\020\n\010at_"
-  "count\030\001 \001(\004\"A\n\025ClientGetHashResponse\022\014\n\004"
-  "hash\030\001 \001(\t\022\r\n\005count\030\002 \001(\004\022\013\n\003err\030\003 \001(\t\"\036"
-  "\n\034ClientGetAEBatchStatsRequest\"R\n\035Client"
-  "GetAEBatchStatsResponse\022\020\n\010ae_count\030\001 \001("
-  "\004\022\022\n\nae_entries\030\002 \001(\004\022\013\n\003err\030\003 \001(\tB\026Z\024nv"
-  "meof_raft/rpcprotob\006proto3"
+  "anos\030\016 \001(\003\022\033\n\023wg_scheduling_nanos\030\017 \001(\003\022"
+  "\025\n\rmutex_a_nanos\030\020 \001(\003\022\025\n\rmutex_b_nanos\030"
+  "\021 \001(\003\022\025\n\rmutex_c_nanos\030\022 \001(\003\"%\n\021ClientEc"
+  "hoRequest\022\020\n\010commands\030\001 \003(\014\"\037\n\022ClientEch"
+  "oResponse\022\t\n\001n\030\001 \001(\003\"\035\n\033ClientGetCommitI"
+  "ndexRequest\"A\n\034ClientGetCommitIndexRespo"
+  "nse\022\024\n\014commit_index\030\001 \001(\004\022\013\n\003err\030\002 \001(\t\"("
+  "\n\024ClientGetHashRequest\022\020\n\010at_count\030\001 \001(\004"
+  "\"A\n\025ClientGetHashResponse\022\014\n\004hash\030\001 \001(\t\022"
+  "\r\n\005count\030\002 \001(\004\022\013\n\003err\030\003 \001(\t\"\036\n\034ClientGet"
+  "AEBatchStatsRequest\"R\n\035ClientGetAEBatchS"
+  "tatsResponse\022\020\n\010ae_count\030\001 \001(\004\022\022\n\nae_ent"
+  "ries\030\002 \001(\004\022\013\n\003err\030\003 \001(\tB\026Z\024nvmeof_raft/r"
+  "pcprotob\006proto3"
   ;
 static ::_pbi::once_flag descriptor_table_rpcproto_2eproto_once;
 const ::_pbi::DescriptorTable descriptor_table_rpcproto_2eproto = {
-    false, false, 2146, descriptor_table_protodef_rpcproto_2eproto,
+    false, false, 2215, descriptor_table_protodef_rpcproto_2eproto,
     "rpcproto.proto",
     &descriptor_table_rpcproto_2eproto_once, nullptr, 0, 19,
     schemas, file_default_instances, TableStruct_rpcproto_2eproto::offsets,
@@ -3591,6 +3599,9 @@ ClientApplyTimedResponse::ClientApplyTimedResponse(const ClientApplyTimedRespons
     , decltype(_impl_.post_rpc_nanos_){}
     , decltype(_impl_.commit_wait_nanos_){}
     , decltype(_impl_.wg_scheduling_nanos_){}
+    , decltype(_impl_.mutex_a_nanos_){}
+    , decltype(_impl_.mutex_b_nanos_){}
+    , decltype(_impl_.mutex_c_nanos_){}
     , /*decltype(_impl_._cached_size_)*/{}};
 
   _internal_metadata_.MergeFrom<::PROTOBUF_NAMESPACE_ID::UnknownFieldSet>(from._internal_metadata_);
@@ -3603,8 +3614,8 @@ ClientApplyTimedResponse::ClientApplyTimedResponse(const ClientApplyTimedRespons
       _this->GetArenaForAllocation());
   }
   ::memcpy(&_impl_.l_handler_nanos_, &from._impl_.l_handler_nanos_,
-    static_cast<size_t>(reinterpret_cast<char*>(&_impl_.wg_scheduling_nanos_) -
-    reinterpret_cast<char*>(&_impl_.l_handler_nanos_)) + sizeof(_impl_.wg_scheduling_nanos_));
+    static_cast<size_t>(reinterpret_cast<char*>(&_impl_.mutex_c_nanos_) -
+    reinterpret_cast<char*>(&_impl_.l_handler_nanos_)) + sizeof(_impl_.mutex_c_nanos_));
   // @@protoc_insertion_point(copy_constructor:rpcproto.ClientApplyTimedResponse)
 }
 
@@ -3628,6 +3639,9 @@ inline void ClientApplyTimedResponse::SharedCtor(
     , decltype(_impl_.post_rpc_nanos_){int64_t{0}}
     , decltype(_impl_.commit_wait_nanos_){int64_t{0}}
     , decltype(_impl_.wg_scheduling_nanos_){int64_t{0}}
+    , decltype(_impl_.mutex_a_nanos_){int64_t{0}}
+    , decltype(_impl_.mutex_b_nanos_){int64_t{0}}
+    , decltype(_impl_.mutex_c_nanos_){int64_t{0}}
     , /*decltype(_impl_._cached_size_)*/{}
   };
   _impl_.err_.InitDefault();
@@ -3662,8 +3676,8 @@ void ClientApplyTimedResponse::Clear() {
 
   _impl_.err_.ClearToEmpty();
   ::memset(&_impl_.l_handler_nanos_, 0, static_cast<size_t>(
-      reinterpret_cast<char*>(&_impl_.wg_scheduling_nanos_) -
-      reinterpret_cast<char*>(&_impl_.l_handler_nanos_)) + sizeof(_impl_.wg_scheduling_nanos_));
+      reinterpret_cast<char*>(&_impl_.mutex_c_nanos_) -
+      reinterpret_cast<char*>(&_impl_.l_handler_nanos_)) + sizeof(_impl_.mutex_c_nanos_));
   _internal_metadata_.Clear<::PROTOBUF_NAMESPACE_ID::UnknownFieldSet>();
 }
 
@@ -3795,6 +3809,30 @@ const char* ClientApplyTimedResponse::_InternalParse(const char* ptr, ::_pbi::Pa
         } else
           goto handle_unusual;
         continue;
+      // int64 mutex_a_nanos = 16;
+      case 16:
+        if (PROTOBUF_PREDICT_TRUE(static_cast<uint8_t>(tag) == 128)) {
+          _impl_.mutex_a_nanos_ = ::PROTOBUF_NAMESPACE_ID::internal::ReadVarint64(&ptr);
+          CHK_(ptr);
+        } else
+          goto handle_unusual;
+        continue;
+      // int64 mutex_b_nanos = 17;
+      case 17:
+        if (PROTOBUF_PREDICT_TRUE(static_cast<uint8_t>(tag) == 136)) {
+          _impl_.mutex_b_nanos_ = ::PROTOBUF_NAMESPACE_ID::internal::ReadVarint64(&ptr);
+          CHK_(ptr);
+        } else
+          goto handle_unusual;
+        continue;
+      // int64 mutex_c_nanos = 18;
+      case 18:
+        if (PROTOBUF_PREDICT_TRUE(static_cast<uint8_t>(tag) == 144)) {
+          _impl_.mutex_c_nanos_ = ::PROTOBUF_NAMESPACE_ID::internal::ReadVarint64(&ptr);
+          CHK_(ptr);
+        } else
+          goto handle_unusual;
+        continue;
       default:
         goto handle_unusual;
     }  // switch
@@ -3918,6 +3956,24 @@ uint8_t* ClientApplyTimedResponse::_InternalSerialize(
     target = ::_pbi::WireFormatLite::WriteInt64ToArray(15, this->_internal_wg_scheduling_nanos(), target);
   }
 
+  // int64 mutex_a_nanos = 16;
+  if (this->_internal_mutex_a_nanos() != 0) {
+    target = stream->EnsureSpace(target);
+    target = ::_pbi::WireFormatLite::WriteInt64ToArray(16, this->_internal_mutex_a_nanos(), target);
+  }
+
+  // int64 mutex_b_nanos = 17;
+  if (this->_internal_mutex_b_nanos() != 0) {
+    target = stream->EnsureSpace(target);
+    target = ::_pbi::WireFormatLite::WriteInt64ToArray(17, this->_internal_mutex_b_nanos(), target);
+  }
+
+  // int64 mutex_c_nanos = 18;
+  if (this->_internal_mutex_c_nanos() != 0) {
+    target = stream->EnsureSpace(target);
+    target = ::_pbi::WireFormatLite::WriteInt64ToArray(18, this->_internal_mutex_c_nanos(), target);
+  }
+
   if (PROTOBUF_PREDICT_FALSE(_internal_metadata_.have_unknown_fields())) {
     target = ::_pbi::WireFormat::InternalSerializeUnknownFieldsToArray(
         _internal_metadata_.unknown_fields<::PROTOBUF_NAMESPACE_ID::UnknownFieldSet>(::PROTOBUF_NAMESPACE_ID::UnknownFieldSet::default_instance), target, stream);
@@ -4011,6 +4067,27 @@ size_t ClientApplyTimedResponse::ByteSizeLong() const {
     total_size += ::_pbi::WireFormatLite::Int64SizePlusOne(this->_internal_wg_scheduling_nanos());
   }
 
+  // int64 mutex_a_nanos = 16;
+  if (this->_internal_mutex_a_nanos() != 0) {
+    total_size += 2 +
+      ::_pbi::WireFormatLite::Int64Size(
+        this->_internal_mutex_a_nanos());
+  }
+
+  // int64 mutex_b_nanos = 17;
+  if (this->_internal_mutex_b_nanos() != 0) {
+    total_size += 2 +
+      ::_pbi::WireFormatLite::Int64Size(
+        this->_internal_mutex_b_nanos());
+  }
+
+  // int64 mutex_c_nanos = 18;
+  if (this->_internal_mutex_c_nanos() != 0) {
+    total_size += 2 +
+      ::_pbi::WireFormatLite::Int64Size(
+        this->_internal_mutex_c_nanos());
+  }
+
   return MaybeComputeUnknownFieldsSize(total_size, &_impl_._cached_size_);
 }
 
@@ -4074,6 +4151,15 @@ void ClientApplyTimedResponse::MergeImpl(::PROTOBUF_NAMESPACE_ID::Message& to_ms
   if (from._internal_wg_scheduling_nanos() != 0) {
     _this->_internal_set_wg_scheduling_nanos(from._internal_wg_scheduling_nanos());
   }
+  if (from._internal_mutex_a_nanos() != 0) {
+    _this->_internal_set_mutex_a_nanos(from._internal_mutex_a_nanos());
+  }
+  if (from._internal_mutex_b_nanos() != 0) {
+    _this->_internal_set_mutex_b_nanos(from._internal_mutex_b_nanos());
+  }
+  if (from._internal_mutex_c_nanos() != 0) {
+    _this->_internal_set_mutex_c_nanos(from._internal_mutex_c_nanos());
+  }
   _this->_internal_metadata_.MergeFrom<::PROTOBUF_NAMESPACE_ID::UnknownFieldSet>(from._internal_metadata_);
 }
 
@@ -4098,8 +4184,8 @@ void ClientApplyTimedResponse::InternalSwap(ClientApplyTimedResponse* other) {
       &other->_impl_.err_, rhs_arena
   );
   ::PROTOBUF_NAMESPACE_ID::internal::memswap<
-      PROTOBUF_FIELD_OFFSET(ClientApplyTimedResponse, _impl_.wg_scheduling_nanos_)
-      + sizeof(ClientApplyTimedResponse::_impl_.wg_scheduling_nanos_)
+      PROTOBUF_FIELD_OFFSET(ClientApplyTimedResponse, _impl_.mutex_c_nanos_)
+      + sizeof(ClientApplyTimedResponse::_impl_.mutex_c_nanos_)
       - PROTOBUF_FIELD_OFFSET(ClientApplyTimedResponse, _impl_.l_handler_nanos_)>(
           reinterpret_cast<char*>(&_impl_.l_handler_nanos_),
           reinterpret_cast<char*>(&other->_impl_.l_handler_nanos_));

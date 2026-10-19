@@ -112,7 +112,7 @@ int64_t Server::persist_circular(bool write_log, int n_new_entries) {
 
             size_t entry_bytes = static_cast<size_t>(needed) * SECTOR_SIZE;
             size_t off = run_buffer.size();
-            run_buffer.resize(off + entry_bytes);
+            run_buffer.grow_uninit(off + entry_bytes);
             uint8_t *region = run_buffer.data() + off;
 
             /* Entry 헤더 레이아웃 (raft.go 원본 그대로):
@@ -138,8 +138,9 @@ int64_t Server::persist_circular(bool write_log, int n_new_entries) {
              * without this clear stale tail bytes from prior calls
              * would leak onto the device." */
             size_t pad_start = ENTRY_META_SIZE + e.command.size();
-            for (size_t j = pad_start; j < entry_bytes; j++) {
-                region[j] = 0;
+
+            if (entry_bytes > pad_start) {
+                std::memset(region + pad_start, 0, entry_bytes - pad_start);
             }
 
             uint64_t start_slot = ring.tail_slot;

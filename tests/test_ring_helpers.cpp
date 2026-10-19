@@ -246,3 +246,49 @@ TEST_CASE("한 프로세스에 링 크기가 다른 Server를 여러 개 만들 
     CHECK(def->max_ae_batch == DEFAULT_MAX_AE_BATCH);
     CHECK(def->max_ae_batch_bytes == DEFAULT_MAX_AE_BATCH_BYTES);
 }
+
+/* ============================================================
+ * AlignedBuffer::grow_uninit: 0 채우기 없이 늘리되 정렬과 기존 데이터는 보존
+ * ============================================================ */
+TEST_CASE("AlignedBuffer::grow_uninit: 재할당 시 기존 데이터를 보존하고 정렬을 유지한다") {
+    AlignedBuffer b;
+    b.grow_uninit(1024);
+    CHECK(b.size() == 1024);
+    CHECK(reinterpret_cast<uintptr_t>(b.data()) % SECTOR_SIZE == 0);
+    for (size_t i = 0; i < 1024; i++) b.data()[i] = static_cast<uint8_t>(i * 7 + 3);
+
+    b.grow_uninit(1024 * 64);               // 용량 초과 -> 재할당
+    CHECK(b.size() == 1024 * 64);
+    CHECK(reinterpret_cast<uintptr_t>(b.data()) % SECTOR_SIZE == 0);
+    bool same = true;
+    for (size_t i = 0; i < 1024; i++) same = same && (b.data()[i] == static_cast<uint8_t>(i * 7 + 3));
+    CHECK(same);                             // 앞 1024바이트는 그대로
+
+    size_t cap = b.capacity();
+    b.clear();
+    b.grow_uninit(4608);                     // 용량 안: 재할당 없이 size만 변경
+    CHECK(b.capacity() == cap);
+    CHECK(b.size() == 4608);
+}
+
+TEST_CASE("AlignedBuffer::resize: 늘어난 구간은 0으로 채우고 grow_uninit은 채우지 않는다") {
+    AlignedBuffer b;
+    b.grow_uninit(4096);
+    for (size_t i = 0; i < 4096; i++) b.data()[i] = 0xAB;
+
+    // grow_uninit: 용량 안에서 늘릴 때 기존 바이트를 건드리지 않음 (memset 회귀 방지)
+    b.clear();
+    b.grow_uninit(4096);
+    CHECK(b.data()[0] == 0xAB);
+    CHECK(b.data()[4095] == 0xAB);
+
+    // resize: 늘어난 구간 [1024, 4096)은 반드시 0
+    b.clear();
+    b.resize(1024);                  // 이 구간은 0으로 채워져야 함
+    for (size_t i = 0; i < 1024; i++) b.data()[i] = 0xCD;
+    b.resize(4096);                  // 용량 안: 더러운 메모리 위에서 늘림
+    bool tail_zero = true;
+    for (size_t i = 1024; i < 4096; i++) tail_zero = tail_zero && (b.data()[i] == 0);
+    CHECK(tail_zero);
+    CHECK(b.data()[0] == 0xCD);      // 앞부분은 보존
+}

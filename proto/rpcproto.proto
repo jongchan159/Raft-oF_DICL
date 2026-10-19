@@ -138,6 +138,9 @@ message ClientApplyTimedResponse {
   int64 post_rpc_nanos = 13;
   int64 commit_wait_nanos = 14;
   int64 wg_scheduling_nanos = 15;
+  int64 mutex_a_nanos = 16;
+  int64 mutex_b_nanos = 17;
+  int64 mutex_c_nanos = 18;
 }
 
 message ClientEchoRequest {

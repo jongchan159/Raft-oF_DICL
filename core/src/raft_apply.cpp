@@ -25,6 +25,9 @@
 #include "raft_basics.h"
 
 #include <chrono>
+#include <algorithm>
+#include <atomic>
+#include <cstdio>
 
 namespace nvmeof_raft {
 
@@ -61,6 +64,149 @@ constexpr int kResultWaitMs = 200;
 
 } /* anonymous namespace */
 
+struct GcReq {
+    const std::vector<std::vector<uint8_t>> *commands;
+    std::shared_ptr<ApplyCollector> collector;
+    std::shared_ptr<EntryCommitSignal> last_signal;
+
+    bool done = false;
+    bool busy = false;
+    std::string error;
+    
+    int64_t nvme_ns = 0;      // 대표가 채움 (묶음 전체의 persist 시간)
+    int64_t a_held_ns = 0;    // 대표가 채움
+};
+
+static void commit_batch_locked(Server *s, std::unique_lock<std::mutex> &lk, 
+                                std::vector<GcReq *> &batch, clock_type::time_point t_a_held) {
+    auto fail = [&](const std::string &err, bool busy) {
+        for (GcReq *r : batch) { 
+            r->error = err;
+            r->busy = busy;
+            r->done = true;
+        }
+    };
+
+    if (s->raft.state != ServerState::Leader) {
+        fail("not leader", false);
+        return;
+    }
+
+    if (batch.size() > 1) {
+        std::vector<size_t> sizes;
+        for (GcReq *r : batch) {
+            for (const auto &c : *r->commands) { sizes.push_back(c.size()); }
+        }
+        if (!s->can_write_sizes(sizes)) {
+            {
+                std::lock_guard<std::mutex> gcl(s->gc_mu);
+                for (size_t i = batch.size(); i-- > 1; ) {
+                    s->gc_queue.push_front(batch[i]);
+                }
+            }
+            batch.resize(1);
+        }
+    }
+
+    const auto &cmds0 = *batch[0]->commands;
+    if (!s->can_write_all(cmds0)) {
+        bool ok  = s->ring_not_full.wait_for(
+            lk, std::chrono::milliseconds(kRingWaitMs),
+            [&]() { return s->done.load() || 
+                           s->raft.state != ServerState::Leader ||
+                           s->can_write_all(cmds0); 
+            }
+        );
+
+        if (!ok || s->done.load()) { 
+            fail("ring buffer full", true);
+            return;
+        }
+
+        if (s->raft.state != ServerState::Leader) {
+            fail("not leader", false);
+            return;
+        }
+    }
+
+    const uint64_t saved_tail_log_index = s->ring.tail_log_index;
+    const uint64_t saved_tail_slot = s->ring.tail_slot;
+
+    size_t total_n = 0;
+    for (GcReq *r : batch) {
+        const auto &cmds = *r->commands;
+        const size_t n = cmds.size();
+        auto collector = r->collector;
+        for (size_t i = 0; i < n; i++) {
+            Entry e;
+            e.term = s->raft.current_term;
+            e.command = cmds[i];
+            bool is_last = (i + 1 == n);
+            e.result_sink = [collector, is_last](ApplyResult res) {
+                {
+                    std::lock_guard<std::mutex> clk(collector->mu);
+                    collector->received++;
+                    if (!res.error.empty() && collector->error.empty()) {
+                        collector->error = res.error;
+                    }
+
+                    if (is_last) {
+                        collector->last_result = std::move(res.result);
+                    }
+                }
+                collector->cv.notify_all();
+            };
+            if (is_last) { r->last_signal = e.committed; }
+            s->raft.log.push_back(std::move(e));
+            s->ring.tail_log_index++;
+        }
+        total_n += n;
+    }
+
+    int64_t nvme_ns = 0;
+    try {
+        nvme_ns = s->persist_circular(true, static_cast<int>(total_n));
+    } catch (const std::exception &e) {
+        for (size_t i = 0; i < total_n && s->raft.log.size() > 1; i++) {
+            s->raft.log.pop_back();
+            s->ring.tail_log_index--;
+        }
+        s->ring.tail_slot = saved_tail_slot;                        // 보강: 복원
+        for (uint64_t idx = saved_tail_log_index;
+            idx < saved_tail_log_index + total_n; idx++) {
+            s->ring.log_slot_map.erase(idx);                         // 보강: 낡은 기록 삭제
+        }
+        fail(std::string("persist failed: ") + e.what(), false);
+        return;
+    }
+
+    const int64_t a_held_ns = elapsed_ns(t_a_held);
+    for (GcReq *r : batch) { 
+        r->nvme_ns = nvme_ns;
+        r->a_held_ns = a_held_ns;
+        r->done = true;
+    }
+
+    static uint64_t g_batches = 0, g_reqs = 0, g_entries = 0;
+    static int64_t  g_held_ns = 0, g_persist_ns = 0;
+    static auto     g_t0 = clock_type::now();
+    g_batches++; g_reqs += batch.size(); g_entries += total_n;
+    g_held_ns += a_held_ns; g_persist_ns += nvme_ns;
+    {
+        auto now = clock_type::now();
+        int64_t el = std::chrono::duration_cast<std::chrono::nanoseconds>(now - g_t0).count();
+        if (el >= 5'000'000'000LL) {
+            std::fprintf(stderr,
+                "[LOCKA] batches/s=%.0f entries/batch=%.1f reqs/batch=%.1f "
+                "held/batch=%.0fus persist/batch=%.0fus held/entry=%.1fus util=%.0f%%\n",
+                g_batches * 1e9 / el, (double)g_entries / g_batches, (double)g_reqs / g_batches,
+                g_held_ns / 1e3 / g_batches, g_persist_ns / 1e3 / g_batches,
+                g_held_ns / 1e3 / g_entries, 100.0 * g_held_ns / el);
+            g_batches = g_reqs = g_entries = 0; g_held_ns = g_persist_ns = 0; g_t0 = now;
+        }
+    }
+}
+
 /* ============================================================
  * apply_internal: apply와 apply_timed의 공통 본문.
  * timings != nullptr이면 ReplSink를 붙여 구간을 분해한다.
@@ -82,12 +228,23 @@ static ApplyResult apply_internal(Server *s,
     /* [수정-7] ReplSink는 반드시 힙에 둔다 (스택에 두면 AE 워커가 죽은
      * 프레임을 건드린다) -- DECISIONS.md D7 */
     std::shared_ptr<ReplSink> sink =
-        (timings != nullptr) ? std::make_shared<ReplSink>() : nullptr;
+        (timings != nullptr) ? std::make_shared<ReplSink>(s->raft.cluster.size() - 1) : nullptr;
 
     auto collector = std::make_shared<ApplyCollector>();
     std::shared_ptr<EntryCommitSignal> last_signal;
     size_t n = commands.size();
     collector->expected = n;
+
+    // [Group Commit]
+    GcReq req;
+    req.commands = &commands;
+    req.collector = collector;
+    {
+        std::lock_guard<std::mutex> gcl(s->gc_mu);
+        s->gc_queue.push_back(&req);
+    }
+    // [Group Commit]
+
 
     /* ---- Lock A ---- */
     auto t_lock_a = clock_type::now();
@@ -98,95 +255,59 @@ static ApplyResult apply_internal(Server *s,
     }
     auto t_a_held = clock_type::now();
 
-    if (s->raft.state != ServerState::Leader) {
-        out.error = "not leader";
+    // [Group Commit]
+    std::vector<GcReq *> batch;
+    if (!req.done) {
+        batch.push_back(&req);
+        {
+            std::lock_guard<std::mutex> gcl(s->gc_mu);
+            auto it = std::find(s->gc_queue.begin(), s->gc_queue.end(), &req);
+            if (it != s->gc_queue.end()) {
+                s->gc_queue.erase(it);
+            }
+
+            auto bytes_of = [](const GcReq &r) {
+                size_t b = 0;
+                for (const auto &c : *r.commands) {
+                    b += c.size();
+                }
+                return b;
+            };
+
+            size_t bytes = bytes_of(req);
+            while (!s->gc_queue.empty() && batch.size() < s->gc_max_reqs) {
+                GcReq *nx = s->gc_queue.front();
+                size_t nb = bytes_of(*nx);
+                if (bytes + nb > s->gc_max_bytes) {
+                    break;
+                }
+                batch.push_back(nx);
+                bytes += nb;
+                s->gc_queue.pop_front();
+            }
+        }
+        commit_batch_locked(s, lk, batch, t_a_held);
+    }
+    
+
+    if (!req.error.empty()) {
+        if (req.busy && out_busy != nullptr) {
+            *out_busy = true;
+        }
+        out.error = req.error;
         return out;
     }
+    last_signal = req.last_signal;
+    const int64_t nvme_ns = req.nvme_ns;
+    const int64_t a_held_ns = req.a_held_ns;
 
-    /* 링 여유 확인. can_write_all이 false면 slot GC가 앞쪽을 비워줄
-     * 때까지 기다린다 (do_slot_gc -> ring_not_full.notify_all).
-     * 상한을 넘으면 busy로 돌려보낸다 -- 원본의 RingBusy 조기 거절과
-     * 같은 backpressure 정책. */
-    if (!s->can_write_all(commands)) {
-        bool ok = s->ring_not_full.wait_for(
-            lk, std::chrono::milliseconds(kRingWaitMs),
-            [&]() { return s->done.load() ||
-                            s->raft.state != ServerState::Leader ||
-                            s->can_write_all(commands); });
-        if (!ok || s->done.load()) {    // !ok - timeout
-            if (out_busy != nullptr) {
-                *out_busy = true;
-            }
-            out.error = "ring buffer full";
-            return out;
-        }
-        if (s->raft.state != ServerState::Leader) {
-            out.error = "not leader";
-            return out;
-        }
-    }
-
-    /* 엔트리 생성 + 로그 append */
-    // size_t n = commands.size(); // 커맨드 개수 (배치 처리 고려)
-    // collector->expected = n;
-    for (size_t i = 0; i < n; i++) {
-        Entry e;
-        e.term = s->raft.current_term;
-        e.command = commands[i];
-        bool is_last = (i + 1 == n);
-        e.result_sink = [collector, is_last](ApplyResult r) {
-            {
-                std::lock_guard<std::mutex> clk(collector->mu);     // {...}가 끝나면 자동 파괴
-                collector->received++;
-                if (!r.error.empty() && collector->error.empty()) {
-                    collector->error = r.error;
-                }
-                if (is_last) {
-                    collector->last_result = std::move(r.result);
-                }
-            }
-            /* notify는 락 밖에서. 이 sink는 apply_pending이 s.mu를 잡은
-             * 채로 부르므로 절대 블록하면 안 된다. */
-            collector->cv.notify_all();
-        };
-        if (is_last) {
-            last_signal = e.committed;
-        }
-        s->raft.log.push_back(std::move(e));
-        s->ring.tail_log_index++;
-    }
-
-    /* persist_circular: O_DIRECT로 device에 엔트리를 쓰고 log_slot_map에
-     * 슬롯을 기록한다. 반환값 nvme_ns가 곧 LPersist. */
-    int64_t nvme_ns = 0;
-    try {
-        nvme_ns = s->persist_circular(true, static_cast<int>(n));
-    } catch (const std::exception &e) {
-        /* persist 실패: 방금 넣은 엔트리를 되돌린다 (device에 안 올라간
-         * 엔트리를 로그에 남기면 이후 PBA 복제가 쓰레기를 읽는다) */
-        for (size_t i = 0; i < n && s->raft.log.size() > 1; i++) {
-            s->raft.log.pop_back();
-            s->ring.tail_log_index--;
-        }
-        out.error = std::string("persist failed: ") + e.what();
-        return out;
-    }
-
-    int64_t a_held_ns = elapsed_ns(t_a_held);
-    if (timings != nullptr) {
-        s->prof.ae_lock_a_held_ns.store(a_held_ns);
-    }
-
-    lk.unlock();   /* ---- Lock A 끝 ---- */
+    lk.unlock();
+    // [Group Commit]
 
     /* ---- 복제 ---- */
     auto t_repl = clock_type::now();
     s->append_entries(sink);   /* shared_ptr 복사가 워커에게 전달된다 */
 
-    /* 마지막 엔트리가 커밋될 때까지 대기.
-     * advance_commit_index가 signal_committed()를 호출한다 (메인 루프에서
-     * 주기적으로 돌고, AE 성공 시 heartbeat_timeout을 즉시 만료시켜
-     * 다음 라운드를 앞당긴다). */
     int64_t commit_wait_ns = 0;
     {
         auto t_cw = clock_type::now();

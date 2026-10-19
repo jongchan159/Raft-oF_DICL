@@ -82,6 +82,13 @@ MemberSpec parse_member(const std::string &spec) {
     return m;
 }
 
+class NoopStateMachine : public nvmeof_raft::StateMachine {
+public:
+    nvmeof_raft::ApplyResult apply(const std::vector<uint8_t> &) override {
+        return nvmeof_raft::ApplyResult{};
+    }
+};
+
 void usage(const char *prog) {
     std::fprintf(stderr,
       "usage: %s -id N -cluster SPEC[,SPEC...] [options]\n"
@@ -101,11 +108,15 @@ void usage(const char *prog) {
       "                     policy for comparison (hpdc15dare 3.1.2)\n"
       "  -ring-pages N      ring size in 4KiB pages (default %llu = 32GiB).\n"
       "                     Ring file is N*4096 bytes and is fallocate'd.\n"
+      "  -precondition-ring after ZERO_RANGE, O_DIRECT-write the whole ring\n"
+      "                     once before Raft starts (benchmark-only).\n"
       "  -loop-sleep-us N   main loop pause per iteration (default 200, 0=spin)\n"
       "  -log-trim N        trim the in-memory log vector once N entries are\n"
       "                     reclaimable (default 8192, 0=never)\n"
       "  -ae-batch N        max_ae_batch override\n"
       "  -ae-batch-bytes N  max_ae_batch_bytes override\n"
+      "  -gc-max-reqs N     group-commit: max requests per batch (default 32, 1=off)\n"
+      "  -gc-max-bytes N    group-commit: max payload bytes per batch (default 262144)\n"
       "  -debug             verbose logging\n",
       prog, static_cast<unsigned long long>(nvmeof_raft::DEFAULT_NUM_PAGES));
 }
@@ -122,12 +133,16 @@ int main(int argc, char **argv) {
     std::string mode = "destination";
     std::string transport = "rdma";
     uint64_t ring_pages = DEFAULT_NUM_PAGES;
+    bool precondition_ring = false;
     bool profile = false;
+    std::string sm_kind = "noop";
     bool debug = false;
     int loop_sleep_us = 200;
     uint64_t log_trim = 8192;
     uint64_t ae_batch = 0;
     uint64_t ae_batch_bytes = 0;
+    uint64_t gc_max_reqs = 0;
+    uint64_t gc_max_bytes = 0;
 
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
@@ -145,8 +160,12 @@ int main(int argc, char **argv) {
             mode = next_arg_value(argc, argv, i, "-mode");
         } else if (arg == "-ring-pages") {
             ring_pages = std::strtoull(next_arg_value(argc, argv, i, "-ring-pages").c_str(), nullptr, 10);
-                } else if (arg == "-profile") {
+        } else if (arg == "-precondition-ring") {
+            precondition_ring = true; 
+        } else if (arg == "-profile") {
             profile = true;
+        } else if (arg == "-sm") {
+            sm_kind = next_arg_value(argc, argv, i, "-sm");
         } else if (arg == "-debug") {
             debug = true;
         } else if (arg == "-loop-sleep-us") {
@@ -157,6 +176,10 @@ int main(int argc, char **argv) {
             ae_batch = std::strtoull(next_arg_value(argc, argv, i, "-ae-batch").c_str(), nullptr, 10);
         } else if (arg == "-ae-batch-bytes") {
             ae_batch_bytes = std::strtoull(next_arg_value(argc, argv, i, "-ae-batch-bytes").c_str(), nullptr, 10);
+        } else if (arg == "-gc-max-reqs") {
+            gc_max_reqs = std::strtoull(next_arg_value(argc, argv, i, "-gc-max-reqs").c_str(), nullptr, 10);
+        } else if (arg == "-gc-max-bytes") {
+            gc_max_bytes = std::strtoull(next_arg_value(argc, argv, i, "-gc-max-bytes").c_str(), nullptr, 10);
         } else if (arg == "-h" || arg == "--help") {
             usage(argv[0]);
             return 0;
@@ -213,16 +236,30 @@ int main(int argc, char **argv) {
     if (ae_batch_bytes > 0) {
         server->max_ae_batch_bytes = ae_batch_bytes;
     }
+    if (gc_max_reqs > 0) {
+        server->gc_max_reqs = gc_max_reqs;
+    }
+    if (gc_max_bytes > 0) {
+        server->gc_max_bytes = gc_max_bytes;
+    }
     server->raft.id = my_id;
     server->raft.cluster_index = my_index;
     server->raft.address = members[static_cast<size_t>(my_index)].address;
     server->io.device_path = members[static_cast<size_t>(my_index)].device_path;
     server->io.metadata_dir = metadata_dir;
+    server->io.precondition_ring = precondition_ring;
     server->raft.heartbeat_ms = heartbeat_ms;
     server->debug_enabled = debug;
     server->loop_sleep_us = loop_sleep_us;
     server->ring.log_trim_threshold = log_trim;
-    server->statemachine = std::make_shared<HashStateMachine>();
+    if (sm_kind == "hash") {
+        server->statemachine = std::make_shared<HashStateMachine>();
+    } else if (sm_kind == "noop") {
+        server->statemachine = std::make_shared<NoopStateMachine>();
+    } else {
+        std::fprintf(stderr, "unknown -sm %s (hash|noop)\n", sm_kind.c_str());
+        return 2;
+    }
     server->prof.enabled.store(profile ? 1 : 0);
 
     if (mode == "leader") {
@@ -291,9 +328,14 @@ int main(int argc, char **argv) {
                 members[static_cast<size_t>(my_index)].storage_host.c_str());
     std::printf("  device       : %s\n",
                 server->io.device_path.c_str());
+    std::printf("  precondition : %s\n",
+                precondition_ring ? "on" : "off");
     std::printf("  replication  : %s-side\n", mode.c_str());
     std::printf("  transport    : %s\n", transport_kind_name(transport_kind));
     std::printf("  heartbeat    : %d ms\n", heartbeat_ms);
+    std::printf("  loop_sleep   : %d ms\n", loop_sleep_us);
+    std::printf("  max_gc_req   : %ld \n", gc_max_reqs);
+    std::printf("  max_gc_bytes : %ld bytes\n", gc_max_bytes);
     std::printf("  term/tail    : term=%llu tail_log_index=%llu tail_slot=%llu\n",
                 static_cast<unsigned long long>(server->raft.current_term),
                 static_cast<unsigned long long>(server->ring.tail_log_index),

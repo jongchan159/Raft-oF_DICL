@@ -24,67 +24,72 @@ using clock_type = std::chrono::steady_clock;
 namespace nvmeof_raft {
 
 AlignedBuffer::AlignedBuffer(size_t size, size_t align){
-        resize(size, align);
-    }
+    resize(size, align);
+}
 
 AlignedBuffer::~AlignedBuffer(){ reset(); }
 
 AlignedBuffer::AlignedBuffer(AlignedBuffer &&other) noexcept
-    : data_(other.data_), size_(other.size_), capacity_(other.capacity_) {
+: data_(other.data_), size_(other.size_), capacity_(other.capacity_) {
+    other.data_ = nullptr;
+    other.size_ = other.capacity_ = 0;
+}
+
+AlignedBuffer &AlignedBuffer::operator=(AlignedBuffer &&other) noexcept {
+    if (this != &other) {
+        reset();
+        data_ = other.data_;
+        size_ = other.size_;
+        capacity_ = other.capacity_;
         other.data_ = nullptr;
         other.size_ = other.capacity_ = 0;
     }
-
-AlignedBuffer &AlignedBuffer::operator=(AlignedBuffer &&other) noexcept {
-        if (this != &other) {
-            reset();
-            data_ = other.data_;
-            size_ = other.size_;
-            capacity_ = other.capacity_;
-            other.data_ = nullptr;
-            other.size_ = other.capacity_ = 0;
-        }
-        return *this;
-    }
+    return *this;
+}
 
 void AlignedBuffer::resize(size_t new_size, size_t align){
-        if (new_size > capacity_) {
-            size_t aligned_cap = (new_size + align - 1) / align * align;
-            void *new_raw = nullptr;
-            if (posix_memalign(&new_raw, align, aligned_cap) != 0) {
-                throw std::runtime_error("AlignedBuffer::resize: posix_memalign failed");
-            }
-            if (data_ != nullptr && size_ > 0) {
-                std::memcpy(new_raw, data_, size_);
-            }
-            std::memset(static_cast<uint8_t *>(new_raw) + size_, 0, aligned_cap - size_);
-            if (data_ != nullptr) {
-                free(data_);
-            }
-            data_ = new_raw;
-            capacity_ = aligned_cap;
-        } else if (new_size > size_) {
-            std::memset(static_cast<uint8_t *>(data_) + size_, 0, new_size - size_);
-        }
-        size_ = new_size;
+    size_t old_size = size_;
+    grow_uninit(new_size, align);
+    if (new_size > old_size) {
+        std::memset(static_cast<uint8_t *>(data_) + old_size, 0, new_size - old_size);
     }
+}
 
-void AlignedBuffer::reset(){
+void AlignedBuffer::grow_uninit(size_t new_size, size_t align){
+    if (new_size > capacity_) {
+        size_t aligned_cap = (new_size + align - 1) / align * align;
+        void *new_raw = nullptr;
+        if (posix_memalign(&new_raw, align, aligned_cap) != 0) {
+            throw std::runtime_error("AlignedBuffer::grow_uninit: posix_memalign failed");
+        }
+        if (data_ != nullptr && size_ > 0) {
+            std::memcpy(new_raw, data_, size_);       // 기존 데이터는 보존
+        }
         if (data_ != nullptr) {
             free(data_);
-            data_ = nullptr;
         }
-        size_ = capacity_ = 0;
+        data_ = new_raw;
+        capacity_ = aligned_cap;
     }
+    size_ = new_size;                                 // 0 채우기 없음
+}
+
+void AlignedBuffer::reset(){
+    if (data_ != nullptr) {
+        free(data_);
+        data_ = nullptr;
+    }
+    size_ = capacity_ = 0;
+}
 
 void RingLog::configure(uint64_t pages){
-        if (pages < 2) {
-            pages = 2;   /* 헤더 1섹터 + 최소한의 링 */
-        }
-        num_pages = pages;
-        total_slots = pages * SLOTS_PER_PAGE;
-        ring_slots = total_slots - 1;
+    if (pages < 2) {
+        pages = 2;   /* 헤더 1섹터 + 최소한의 링 */
     }
+    num_pages = pages;
+    total_slots = pages * SLOTS_PER_PAGE;
+    ring_slots = total_slots - 1;
+}
 
 std::string to_string(LogEntryState st) {
     switch (st) {
@@ -109,25 +114,21 @@ void ReplSink::push(const ReplSample &s) {
     samples_.push_back(s);
 
     // [Diag]
-    if (samples_.size() == 2) {
-        const auto &s0 = samples_[0];
-        const auto &s1 = samples_[1];
+    static const bool ae_stage_log = std::getenv("RAFT_AE_STAGE_LOG") != nullptr;
+    const size_t k = (n_followers_ + 1) / 2;
+    if (ae_stage_log && samples_.size() == k) {
+        int64_t aenet_ns = 0, fhandler_ns =0, replnet_ns = 0, storage_ns = 0;
+        
+        for(const auto &x : samples_) {
+            aenet_ns += x.ae_rt_ns - x.r2_ns;
 
-        const int64_t aenet_ns =
-            (s0.ae_rt_ns - s0.r2_ns) +
-            (s1.ae_rt_ns - s1.r2_ns);
+            fhandler_ns += x.r2_ns - x.write_pba_rt_ns;
 
-        const int64_t fhandler_ns =
-            (s0.r2_ns - s0.write_pba_rt_ns) +
-            (s1.r2_ns - s1.write_pba_rt_ns);
+            replnet_ns += x.write_pba_rt_ns - x.storage_copy_ns;
 
-        const int64_t replnet_ns =
-            (s0.write_pba_rt_ns - s0.storage_copy_ns) +
-            (s1.write_pba_rt_ns - s1.storage_copy_ns);
+            storage_ns += x.storage_copy_ns;
+        }
 
-        const int64_t storage_ns =
-            s0.storage_copy_ns +
-            s1.storage_copy_ns;
 
         /*
          * ReplSink마다 mu_가 다르므로,
@@ -167,10 +168,10 @@ void ReplSink::push(const ReplSample &s) {
              * denominator = requests * 2
              */
             const double window_samples =
-                static_cast<double>(window_requests) * 2.0;
+                static_cast<double>(window_requests) * static_cast<double>(n_followers_);
 
             const double total_samples =
-                static_cast<double>(total_requests) * 2.0;
+                static_cast<double>(total_requests) * static_cast<double>(n_followers_);
 
             std::fprintf(
                 stderr,
@@ -204,43 +205,14 @@ void ReplSink::push(const ReplSample &s) {
     // [Diag]
 }
 
-void note_worker_start(
-    int peer_index,
-    clock_type::time_point start,
-    int64_t wake_ns)
-{
+std::pair<ReplSample, bool> ReplSink::quorum_sample(){
     std::lock_guard<std::mutex> lk(mu_);
-
-    diag_wake_sum_ns_ += wake_ns;
-    diag_wake_count_++;
-
-    if (!diag_first_worker_seen_) {
-        diag_first_worker_seen_ = true;
-        diag_first_peer_ = peer_index;
-        diag_first_worker_start_ = start;
-        return;
+    const size_t k = quorum_followers();
+    if (k == 0 || samples_.size() < k) {
+        return {ReplSample{}, false};
     }
-
-    if (peer_index != diag_first_peer_) {
-        diag_worker_start_gap_ns_ =
-            std::chrono::duration_cast<std::chrono::nanoseconds>(
-                start - diag_first_worker_start_).count();
-
-        if (diag_worker_start_gap_ns_ < 0) {
-            diag_worker_start_gap_ns_ =
-                -diag_worker_start_gap_ns_;
-        }
-    }
+    return {samples_[k - 1], true};
 }
-
-
-std::pair<ReplSample, bool> ReplSink::first_sample(){
-        std::lock_guard<std::mutex> lk(mu_);
-        if (samples_.empty()) {
-            return {ReplSample{}, false};
-        }
-        return {samples_.front(), true};
-    }
 
 void derive_apply_timings(const ApplyWalls &w, ReplSink *sink,
                           const ProfilingSink &prof, ApplyTimings &t) {
@@ -251,7 +223,7 @@ void derive_apply_timings(const ApplyWalls &w, ReplSink *sink,
     t.mutex_ns = w.mutex_a_ns;
     t.commit_wait_ns = w.commit_wait_ns;
 
-    auto [sample, have] = sink->first_sample();
+    auto [sample, have] = sink->quorum_sample();
 
     if (!have) {
         /*
@@ -369,8 +341,10 @@ void derive_apply_timings(const ApplyWalls &w, ReplSink *sink,
     }
 
     t.mutex_c_ns = sample.mutex_c_ns;
-
-    t.wait_lock_b_ns =
+    t.mutex_a_ns = w.mutex_a_ns;
+    t.mutex_b_ns = sample.mutex_b_ns;
+    
+    t.wait_lock_ab_ns =
         timings_clamp0(
             t.mutex_ns -
             t.mutex_c_ns);

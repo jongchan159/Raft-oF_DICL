@@ -3,7 +3,7 @@ set -euo pipefail
 
 #
 # usage:
-#   ./sweep_payload.sh <destination|leader> <rdma|tcp-ipoib|tcp>
+#   ./sweep_payload.sh <destination|leader> <rdma|tcp-ib|tcp>
 #
 # examples:
 #   ./sweep_payload.sh destination rdma

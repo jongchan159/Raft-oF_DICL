@@ -2,7 +2,9 @@
 #include "raft_constants.h"
 #include "raft_basics.h"
 
+#include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <algorithm>
 #include <iostream>
 #include <sstream>
@@ -24,6 +26,63 @@ namespace nvmeof_raft {
  * join_all_replication_threads로 관리 (raft_server.h 참고,
  * use-after-free 방지를 위해 join도 detach도 아닌 절충안).
  * ============================================================ */
+
+// [TMP MUTEX]
+static std::mutex diag_ae_rpc_mu;
+// [TMP MUTEX]
+
+namespace {
+struct AeCycStat {
+    std::atomic<uint64_t> n{0}, entries{0};
+    std::atomic<int64_t> b_wait{0}, b_held{0}, copy{0}, rpc{0}, c_wait{0}, c_held{0}, cycle{0};
+    std::atomic<int64_t> t0{0};
+};
+AeCycStat g_aecyc;
+
+void aecyc_record(size_t followers, uint64_t entries, int64_t b_wait, int64_t b_held,
+                  int64_t copy, int64_t rpc, int64_t c_wait, int64_t c_held, int64_t cycle) {
+    auto rel = std::memory_order_relaxed;
+    g_aecyc.n.fetch_add(1, rel);
+    g_aecyc.entries.fetch_add(entries, rel);
+    g_aecyc.b_wait.fetch_add(b_wait, rel);
+    g_aecyc.b_held.fetch_add(b_held, rel);
+    g_aecyc.copy.fetch_add(copy, rel);
+    g_aecyc.rpc.fetch_add(rpc, rel);
+    g_aecyc.c_wait.fetch_add(c_wait, rel);
+    g_aecyc.c_held.fetch_add(c_held, rel);
+    g_aecyc.cycle.fetch_add(cycle, rel);
+
+    const int64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    int64_t t0 = g_aecyc.t0.load(rel);
+    if (t0 == 0) {
+        g_aecyc.t0.compare_exchange_strong(t0, now);
+        return;
+    }
+    const int64_t el = now - t0;
+    if (el < 5'000'000'000LL || !g_aecyc.t0.compare_exchange_strong(t0, now)) {
+        return;   /* 5초 전이거나 다른 스레드가 이미 출력 담당 */
+    }
+    const uint64_t cnt = g_aecyc.n.exchange(0);
+    const uint64_t ent = g_aecyc.entries.exchange(0);
+    const double bw = g_aecyc.b_wait.exchange(0), bh = g_aecyc.b_held.exchange(0),
+                 cp = g_aecyc.copy.exchange(0), rp = g_aecyc.rpc.exchange(0),
+                 cw = g_aecyc.c_wait.exchange(0), ch = g_aecyc.c_held.exchange(0),
+                 cy = g_aecyc.cycle.exchange(0);
+    if (cnt == 0) {
+        return;
+    }
+    const double us = 1e-3 / cnt;
+    std::fprintf(stderr,
+        "[AECYC] ae/s=%.0f entries/ae=%.1f period/follower=%.0fus cycle=%.0fus | "
+        "b_wait=%.0f b_held=%.0f copy=%.0f rpc=%.0f c_wait=%.0f c_held=%.0f (us) | "
+        "mu util: B=%.1f%% C=%.1f%%\n",
+        cnt * 1e9 / el, (double)ent / cnt, (double)el * followers / 1e3 / cnt, cy * us,
+        bw * us, bh * us, cp * us, rp * us, cw * us, ch * us,
+        100.0 * bh / el, 100.0 * ch / el);
+}
+}  // namespace
+
 void Server::append_entries(std::shared_ptr<ReplSink> sink) {
     for (size_t i = 0; i < raft.cluster.size(); i++) {
         int fi = static_cast<int>(i);
@@ -46,10 +105,6 @@ void Server::append_entries(std::shared_ptr<ReplSink> sink) {
         {
             std::lock_guard<std::mutex> lk(w.mu);
             w.pending = true;
-
-            // [Diag]
-            w.trigger_time = clock_type::now();
-            // [Diag]
 
             if(sink != nullptr) {
                 w.sink = sink;
@@ -320,15 +375,32 @@ void Server::append_entries_worker(int fi, ReplSink *sink) {
         }
 
         AppendEntriesResponse rsp;
+        // bool ok = false;
+        // int64_t rt_ns = 0;
+        // {
+        //     // 임시로 Global Lock 잡고 PW에서 Serial AE 효과 확인
+        //     std::lock_guard<std::mutex> diag_lk(diag_ae_rpc_mu);
+
+        //     auto t_rep = clock_type::now();
+        //     /* transport가 없으면(주입 안 된 하네스) 전송 실패와 동일하게 다룬다 */
+        //     ok = (transport != nullptr) && transport->append_entries(fi, req, rsp);
+
+        //     rt_ns = elapsed_ns(t_rep);
+        // }
+
         auto t_rep = clock_type::now();
-        /* transport가 없으면(주입 안 된 하네스) 전송 실패와 동일하게 다룬다 */
-        bool ok = (transport != nullptr) && transport->append_entries(fi, req, rsp);
+
+        bool ok = transport->append_entries(fi, req, rsp);
+
         int64_t rt_ns = elapsed_ns(t_rep);
 
         /* ---- Lock C: post-RPC bookkeeping ---- */
+        std::vector<std::shared_ptr<EntryCommitSignal>> sig;
+
         auto t_c = clock_type::now();
         mu.lock();
         int64_t mutex_c = elapsed_ns(t_c);
+        auto t_c_held_start = clock_type::now();   /* [AECYC] */
 
         if (has_entries) {
             raft.cluster[static_cast<size_t>(fi)].inflight = false;
@@ -387,6 +459,7 @@ void Server::append_entries_worker(int fi, ReplSink *sink) {
             /* sink가 없으면 Apply가 아니므로 Lock A 대기도 없다 */
             sample.mutex_ns = (sink != nullptr ? sink->mutex_a_ns() : 0) + mutex_b + mutex_c;
             sample.mutex_c_ns = mutex_c;
+            sample.mutex_b_ns = mutex_b;
             sample.ae_rt_ns = rt_ns;
             sample.lock_b_held_ns = ae_lock_b_held;
             sample.slot_map_ns = ae_sub_slot_map_ns;
@@ -418,6 +491,7 @@ void Server::append_entries_worker(int fi, ReplSink *sink) {
          * (tests/test_ae_bookkeeping.cpp). 호출 시 mu를 보유해야 한다. */
         if (rsp.success) {
             apply_ae_success(fi, next, len_entries, has_entries);
+            advance_commit_index_locked(&sig);
         } else {
             if (!apply_ae_failure_backoff(fi, req.prev_log_index, rsp.conflict_term,
                                           rsp.conflict_index, sent_next)) {
@@ -431,7 +505,17 @@ void Server::append_entries_worker(int fi, ReplSink *sink) {
          * ProfilingSink::… 둘 다 기록하는 코드가 없어서, ApplyTimings의
          * post_rpc_ns가 항상 0으로 남고 wg_scheduling_ns 역산이 부정확하다
          * -- DECISIONS.md U4 (계측 배선 미완, 리팩토링 범위 밖). */
+        const int64_t aecyc_c_held = elapsed_ns(t_c_held_start);   /* [AECYC] mu 보유 중 */
         mu.unlock();
+        if (has_entries && rsp.success) {
+            /* 스토리지 복사 시간: leader 모드면 리더가 잰 값, destination 모드면 팔로워가 응답에 실어 준 값 */
+            const int64_t copy_ns = (replication_mode == ReplicationMode::LeaderSide)
+                                        ? leader_side_copy.storage_copy_ns
+                                        : rsp.storage_copy_ns;
+            aecyc_record(raft.cluster.size() - 1, len_entries, mutex_b, ae_lock_b_held,
+                         copy_ns, rt_ns, mutex_c, aecyc_c_held, elapsed_ns(t_b));
+        }
+        signal_committed_batch(sig);
     }
 }
 
@@ -450,22 +534,7 @@ void Server::append_entries_loop(int fi, AppendEntriesWorkerState *w) {
 
             w->pending = false;
 
-
-            // [Diag]
-            trigger_time = w->trigger_time;
-            // [Diag]
-
             sink = std::move(w->sink);
-        }
-
-        const auto worker_start = clock_type::now();
-
-        const int64_t wake_ns =
-            std::chrono::duration_cast<std::chrono::nanoseconds>(
-                worker_start - trigger_time).count();
-
-        if (sink != nullptr) {
-            sink->note_worker_start(fi, worker_start, wake_ns);
         }
 
         append_entries_worker(fi, sink.get());

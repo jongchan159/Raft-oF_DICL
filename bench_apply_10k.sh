@@ -2,8 +2,8 @@
 set -euo pipefail
 
 PAYLOAD="${1:-4096}"
-VER="${2:-}"
-TRANSPORT_MODE="${3:-tcp}"
+VER="${2:-old}"
+TRANSPORT_MODE="${3:-rdma}"
 WARMUP="${4:-1000}"
 COUNT="${5:-10000}"
 
@@ -30,8 +30,9 @@ case "$TRANSPORT_MODE" in
         ;;
 esac
 
-RESULT_DIR="$RAFT_ROOT/results/${VER}_ae_breakdown_0929"
+RESULT_DIR="$RAFT_ROOT/results/200us_rdma_group_commit_1013"
 mkdir -p "$RESULT_DIR"
+"$SCRIPT_DIR/node_cfg.sh" raft_node > "$D/node_args.txt" 2>&1
 TS="$(date +%Y%m%d_%H%M%S)"
 OUT="$RESULT_DIR/${PAYLOAD}B_${TS}_${TRANSPORT_MODE}.log"
 

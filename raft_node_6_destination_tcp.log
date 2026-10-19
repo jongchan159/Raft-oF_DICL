@@ -1,10 +1,15 @@
+[storage] preconditioning ring : /mnt/raftvol/node6/raft-6.ring (2147483648 bytes)
+[storage] ring precondition complete: 0 ms (wrote 0 MiB of 2048 MiB, already written)
+[storage] ring precondition complete: 0 ms
 raft_node id=6 index=2 addr=115.145.173.125:6000
   cluster      : 3 members
-  metadata     : /mnt/raftvol/node6/raft-6.ring (16777216 bytes, 4096 pages)
-  ring slots   : 32767
+  metadata     : /mnt/raftvol/node6/raft-6.ring (2147483648 bytes, 524288 pages)
+  ring slots   : 4194303
   storage host : 115.145.173.243:5050
-  device       : /dev/nvme3n1
+  device       : /dev/nvme1n1
+  precondition : on
   replication  : destination-side
   transport    : tcp
   heartbeat    : 300 ms
   term/tail    : term=0 tail_log_index=1 tail_slot=0
+shutting down...

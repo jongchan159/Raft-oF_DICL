@@ -1,10 +1,37 @@
+[storage] preconditioning ring : /mnt/raftvol/node5/raft-5.ring (2147483648 bytes)
+[storage] ring precondition complete: 0 ms (wrote 0 MiB of 2048 MiB, already written)
+[storage] ring precondition complete: 0 ms
 raft_node id=5 index=1 addr=115.145.173.124:6000
   cluster      : 3 members
-  metadata     : /mnt/raftvol/node5/raft-5.ring (16777216 bytes, 4096 pages)
-  ring slots   : 32767
+  metadata     : /mnt/raftvol/node5/raft-5.ring (2147483648 bytes, 524288 pages)
+  ring slots   : 4194303
   storage host : 115.145.173.243:5050
-  device       : /dev/nvme2n1
+  device       : /dev/nvme1n1
+  precondition : on
   replication  : destination-side
   transport    : tcp
   heartbeat    : 300 ms
   term/tail    : term=0 tail_log_index=1 tail_slot=0
+[AE-STAGE-WINDOW] requests=1000 AENet=74.0us FHandler=2.4us ReplNet=74.9us StorageIO=213.4us
+[AE-STAGE-TOTAL] requests=1000 AENet=74.0us FHandler=2.4us ReplNet=74.9us StorageIO=213.4us
+[AE-STAGE-WINDOW] requests=1000 AENet=74.0us FHandler=2.5us ReplNet=75.1us StorageIO=186.5us
+[AE-STAGE-TOTAL] requests=2000 AENet=74.0us FHandler=2.4us ReplNet=75.0us StorageIO=199.9us
+[AE-STAGE-WINDOW] requests=1000 AENet=73.8us FHandler=2.4us ReplNet=73.8us StorageIO=200.7us
+[AE-STAGE-TOTAL] requests=3000 AENet=73.9us FHandler=2.4us ReplNet=74.6us StorageIO=200.2us
+[AE-STAGE-WINDOW] requests=1000 AENet=72.7us FHandler=2.7us ReplNet=73.8us StorageIO=166.2us
+[AE-STAGE-TOTAL] requests=4000 AENet=73.6us FHandler=2.5us ReplNet=74.4us StorageIO=191.7us
+[AE-STAGE-WINDOW] requests=1000 AENet=72.3us FHandler=2.4us ReplNet=76.1us StorageIO=166.0us
+[AE-STAGE-TOTAL] requests=5000 AENet=73.3us FHandler=2.5us ReplNet=74.8us StorageIO=186.6us
+[AE-STAGE-WINDOW] requests=1000 AENet=72.9us FHandler=2.4us ReplNet=74.6us StorageIO=155.1us
+[AE-STAGE-TOTAL] requests=6000 AENet=73.3us FHandler=2.5us ReplNet=74.7us StorageIO=181.3us
+[AE-STAGE-WINDOW] requests=1000 AENet=71.8us FHandler=2.4us ReplNet=75.1us StorageIO=132.9us
+[AE-STAGE-TOTAL] requests=7000 AENet=73.1us FHandler=2.5us ReplNet=74.8us StorageIO=174.4us
+[AE-STAGE-WINDOW] requests=1000 AENet=72.3us FHandler=3.0us ReplNet=76.0us StorageIO=155.6us
+[AE-STAGE-TOTAL] requests=8000 AENet=73.0us FHandler=2.5us ReplNet=74.9us StorageIO=172.1us
+[AE-STAGE-WINDOW] requests=1000 AENet=72.2us FHandler=2.4us ReplNet=75.5us StorageIO=133.9us
+[AE-STAGE-TOTAL] requests=9000 AENet=72.9us FHandler=2.5us ReplNet=75.0us StorageIO=167.8us
+[warn] Error calling Server.HandleAppendEntriesRequest on 4: wire_read_full: read failed or connection closed
+[warn] Dial failed to 4: tcp_connect: connect failed to 115.145.173.123
+[warn] Dial failed to 4: tcp_connect: connect failed to 115.145.173.123
+[warn] Dial failed to 4: tcp_connect: connect failed to 115.145.173.123
+shutting down...

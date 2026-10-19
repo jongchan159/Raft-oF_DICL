@@ -165,6 +165,7 @@ public:
 
     /* std::vector::resize(off + entry_bytes) 패턴 지원용 */
     void grow_to(size_t new_size, size_t align = SECTOR_SIZE) { resize(new_size, align); }
+    void grow_uninit(size_t new_size, size_t align = SECTOR_SIZE);
 
 private:
     void reset();
@@ -309,6 +310,8 @@ struct StorageIo {
 
     /* NVMe-oF 블록 디바이스 경로. 비우면 링 파일 자체를 볼륨으로 쓴다. */
     std::string device_path;
+    
+    bool precondition_ring = false;
 
     /* 캐시된 fd + extent 맵. init_storage가 열고, 이후 모든 O_DIRECT I/O가
      * 이걸 통한다. */
@@ -344,10 +347,6 @@ struct AppendEntriesWorkerState {
 
     bool pending = false;
     std::shared_ptr<ReplSink> sink;
-    
-    // [Diag]
-    clock_type::time_point trigger_time;
-    // [Diag]
 };
 
 struct WorkerPool {

@@ -73,17 +73,14 @@ uint64_t Server::slots_for_log_index(uint64_t log_idx) const {
  * Slot state management (leader-only, raft.go 원본)
  * ============================================================ */
 
-/* canWriteAll (raft.go 원본)
- * "checks if all commands can be written to the ring. Uses headSlot
- *  (circular buffer model) instead of per-slot slotStates scan." */
-bool Server::can_write_all(const std::vector<std::vector<uint8_t>> &commands) const {
+bool Server::can_write_sizes(const std::vector<size_t> &sizes) const {
     if (ring.log_slot_map.empty()) {
         return true;
     }
     uint64_t slot = ring.tail_slot;
-    bool wrapped = ring.tail_slot < ring.head_slot;   /* already in wrapped state */
-    for (const auto &cmd : commands) {
-        uint64_t needed = slots_for_entry(cmd.size());
+    bool wrapped = ring.tail_slot < ring.head_slot;
+    for (size_t sz : sizes) {
+        uint64_t needed = slots_for_entry(sz);
         if (slot + needed > ring.ring_slots) {
             slot = 0;
             wrapped = true;
@@ -94,6 +91,15 @@ bool Server::can_write_all(const std::vector<std::vector<uint8_t>> &commands) co
         slot += needed;
     }
     return true;
+}
+
+bool Server::can_write_all(const std::vector<std::vector<uint8_t>> &commands) const {
+    std::vector<size_t> sizes;
+    sizes.reserve(commands.size());
+    for (const auto &c : commands) {
+        sizes.push_back(c.size());
+    }
+    return can_write_sizes(sizes);
 }
 
 /* recomputeHeadSlot (raft.go 원본)

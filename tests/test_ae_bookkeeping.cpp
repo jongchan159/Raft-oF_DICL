@@ -203,3 +203,103 @@ TEST_CASE("apply_ae_failure_backoff: conflict_term이 리더 로그에 없으면
     CHECK(applied == true);
     CHECK(s->raft.cluster[1].next_index == 2);
 }
+
+/* ============================================================
+ * advance_commit_index: commit 전진 로직 회귀 테스트
+ *
+ * 래퍼(advance_commit_index)와 락 없는 본문(advance_commit_index_locked)이
+ * 같은 결과를 내야 한다. 절대 인덱스 i의 엔트리는 raft.log[i] (sentinel 때문).
+ * ============================================================ */
+namespace {
+
+bool signaled(Server &s, uint64_t idx) {
+    return s.raft.log[idx].committed->signaled;
+}
+
+}  /* anonymous namespace */
+
+TEST_CASE("advance_commit_index: 과반이 match한 지점까지 commit을 전진시키고 신호를 보낸다") {
+    auto s = make_leader_with_log({1, 1, 1});   /* tail_log_index = 4, 리더 자신은 3 */
+    s->raft.cluster[1].match_index = 2;
+    s->raft.cluster[2].match_index = 0;
+    s->raft.commit_index = 0;
+
+    s->advance_commit_index();
+
+    CHECK(s->raft.commit_index == 2);   /* matches = [3,2,0] -> 과반 = 2 */
+    CHECK(signaled(*s, 1));
+    CHECK(signaled(*s, 2));
+    CHECK_FALSE(signaled(*s, 3));       /* 아직 과반 아님 */
+}
+
+TEST_CASE("advance_commit_index: 팔로워가 못 따라오면 전진하지 않는다") {
+    auto s = make_leader_with_log({1, 1, 1});
+    s->raft.cluster[1].match_index = 0;
+    s->raft.cluster[2].match_index = 0;
+    s->raft.commit_index = 0;
+
+    s->advance_commit_index();
+
+    CHECK(s->raft.commit_index == 0);   /* 리더 혼자로는 과반이 아니다 */
+    CHECK_FALSE(signaled(*s, 1));
+}
+
+TEST_CASE("advance_commit_index: 이전 term 엔트리는 현재 term 엔트리 없이 commit하지 않는다 (§5.4.2)") {
+    auto s = make_leader_with_log({1, 1, 2});   /* current_term = 2 */
+    s->raft.cluster[1].match_index = 2;         /* 인덱스 2의 term은 1 */
+    s->raft.commit_index = 0;
+
+    s->advance_commit_index();
+    CHECK(s->raft.commit_index == 0);
+
+    s->raft.cluster[1].match_index = 3;         /* 인덱스 3의 term은 2 = current */
+    s->advance_commit_index();
+    CHECK(s->raft.commit_index == 3);
+}
+
+TEST_CASE("advance_commit_index: 리더가 아니면 아무것도 하지 않는다") {
+    auto s = make_leader_with_log({1, 1, 1});
+    s->raft.state = ServerState::Follower;
+    s->raft.cluster[1].match_index = 3;
+    s->raft.commit_index = 0;
+
+    s->advance_commit_index();
+
+    CHECK(s->raft.commit_index == 0);
+}
+
+TEST_CASE("advance_commit_index_locked: 락을 쥔 채 호출해도 래퍼와 같은 결과") {
+    auto s = make_leader_with_log({1, 1, 1});
+    s->raft.cluster[1].match_index = 2;
+    s->raft.commit_index = 0;
+
+    {
+        std::lock_guard<std::mutex> lk(s->mu);
+        s->advance_commit_index_locked();
+    }
+
+    CHECK(s->raft.commit_index == 2);
+    CHECK(signaled(*s, 2));
+}
+
+TEST_CASE("advance_commit_index_locked: to_signal을 주면 신호를 보내지 않고 모아서 돌려준다") {
+    auto s = make_leader_with_log({1, 1, 1});
+    s->raft.cluster[1].match_index = 2;
+    s->raft.commit_index = 0;
+
+    std::vector<std::shared_ptr<EntryCommitSignal>> v;
+    {
+        std::lock_guard<std::mutex> lk(s->mu);
+        s->advance_commit_index_locked(&v);
+    }
+
+    CHECK(s->raft.commit_index == 2);
+    CHECK(v.size() == 2);                 // 엔트리 1, 2의 신호가 모였고
+    CHECK_FALSE(signaled(*s, 1));         // 아직 깨우지 않았다
+    CHECK_FALSE(signaled(*s, 2));
+
+    s->signal_committed_batch(v);
+    CHECK(signaled(*s, 1));               // 이제 신호가 갔다
+    CHECK(signaled(*s, 2));
+    CHECK(v.empty());
+}

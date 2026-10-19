@@ -11,13 +11,11 @@ fi
 
 ID="$1"
 
-case "$ID" in
-    4|5|6|7) ;;
-    *)
-        echo "invalid node id: $ID"
-        exit 1
-        ;;
-esac
+is_valid_id "$ID" || {
+    echo "invalid node id: $ID"
+    echo "valid ids: $(valid_ids_str)"
+    exit 1
+}
 
 META_DIR="$(metadata_dir_for_id "$ID")"
 
@@ -40,23 +38,31 @@ if ! mountpoint -q /mnt/raftvol; then
 fi
 
 # 안전장치
-case "$META_DIR" in
-    /mnt/raftvol/node4|/mnt/raftvol/node5|/mnt/raftvol/node6|/mnt/raftvol/node7)
-        ;;
-    *)
-        echo "ERROR: refusing to clean unexpected path: $META_DIR"
-        exit 1
-        ;;
-esac
+if [[ "$META_DIR" != "/mnt/raftvol/node$ID" ]]; then
+    echo "ERROR: refusing to clean unexpected path: $META_DIR"
+    exit 1
+fi
 
 echo "Removing contents of:"
 echo "  $META_DIR"
 
 sudo mkdir -p "$META_DIR"
 
+# 링 파일(raft-<ID>.ring)은 지우지 않는다: 다시 만들면 precondition 으로 파일 전체를
+# 다시 써야 해서 시작이 오래 걸린다. 헤더는 노드가 시작할 때 0 으로 되돌린다.
+# 링 파일까지 지우려면 RECREATE_RING=1 (예: ring 배치를 새로 받고 싶을 때, 정확성 검증).
+KEEP_ARGS=()
+if [[ "${RECREATE_RING:-0}" != "1" ]]; then
+    KEEP_ARGS=( ! -name "raft-${ID}.ring" )
+    echo "keeping ring file: raft-${ID}.ring  (RECREATE_RING=1 to delete)"
+else
+    echo "RECREATE_RING=1: deleting ring file too"
+fi
+
 sudo find "$META_DIR" \
     -mindepth 1 \
     -maxdepth 1 \
+    ${KEEP_ARGS[@]+"${KEEP_ARGS[@]}"} \
     -exec rm -rf -- {} +
 
 echo "clean complete."

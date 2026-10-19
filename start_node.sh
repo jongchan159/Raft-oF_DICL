@@ -17,18 +17,15 @@ if [[ $# -lt 1 || $# -gt 4 ]]; then
 fi
 
 ID="$1"
-VER="${2:-}"
+VER="${2:-old}"
 MODE="${3:-destination}"
-TRANSPORT_MODE="${4:-tcp}"
+TRANSPORT_MODE="${4:-rdma}"
 
-case "$ID" in
-    4|5|6|7) ;;
-    *)
-        echo "invalid node id: $ID"
-        echo "valid ids: 4, 5, 6, 7"
-        exit 1
-        ;;
-esac
+is_valid_id "$ID" || {
+    echo "invalid node id: $ID"
+    echo "valid ids: $(valid_ids_str)"
+    exit 1
+}
 
 case "$VER" in
     old|pw) ;;
@@ -82,6 +79,7 @@ echo "metadata    : $META_DIR"
 echo "device      : $DEVICE"
 echo "cluster     : $CLUSTER"
 echo "ring-pages  : $RING_PAGES"
+echo "precondition: $RING_PRECONDITION"
 echo "heartbeat   : $HEARTBEAT_MS ms"
 echo "ae-batch    : $AE_BATCH"
 echo "log         : $LOG"
@@ -105,18 +103,31 @@ if pgrep -f '[r]aft_node' >/dev/null; then
     exit 1
 fi
 
-sudo stdbuf -oL -eL ./build/raft_node_"$VER"_ae \
+PRECONDITION_ARGS=()
+if [[ "$RING_PRECONDITION" == "1" ]]; then
+    PRECONDITION_ARGS+=("-precondition-ring")
+fi
+
+
+sudo stdbuf -oL -eL ./build/raft_node \
     -id "$ID" \
     -cluster "$CLUSTER" \
     -metadata-dir "$META_DIR" \
     -transport "$TRANSPORT" \
     -mode "$MODE" \
     -ring-pages "$RING_PAGES" \
+    "${PRECONDITION_ARGS[@]}" \
     -heartbeat-ms "$HEARTBEAT_MS" \
-    -ae-batch "$AE_BATCH" \
+    -loop-sleep-us 200 \
+    -ae-batch 256 \
+    -gc-max-reqs 32 \
+    -gc-max-bytes "$MAX_GC_BYTES" \
     -profile \
+    -sm noop \
     > "$LOG" 2>&1 &
 
+# -gc-max-reqs "$MAX_GC_REQ" \
+# -gc-max-bytes "$MAX_GC_BYTES" \
 PID=$!
 
 sleep 1

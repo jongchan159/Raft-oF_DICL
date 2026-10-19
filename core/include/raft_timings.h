@@ -28,7 +28,7 @@ namespace nvmeof_raft {
  *   - last_persist_sub(PersistSubTimings 4개)는 write-only였다 ->
  *     **삭제.** persist_circular에서 타이머 6쌍이 함께 없어졌고,
  *     nvme_ns(= LPersist)를 만드는 3쌍만 남았다.
- *   - ae_lock_a_held_ns는 여전히 store만 있고 load가 없다 (U4에 남음).
+ *   - ae_lock_a_held_ns는 store만 있고 load가 없어 삭제했다 (U4 해소).
  *
  * 이 헤더에 남은 것을 남긴 기준: **3개 프로세스에 걸친 지연을 국소화할
  * 수 있는 최소 집합.** 항등식 7항 + total + mutex + AE 카운터 2개.
@@ -62,9 +62,6 @@ struct ProfilingSink {
     std::atomic<int64_t> sample_storage_copy_ns{0};
     std::atomic<int64_t> sample_mutex_ns{0};
     std::atomic<int64_t> sample_mutex_c_ns{0};
-
-    /* --- apply_timed의 LHandler 구간 (현재 load가 없다: U4) --- */
-    std::atomic<int64_t> ae_lock_a_held_ns{0};
     
     std::atomic<bool> sample_leader_side{false};
 };
@@ -131,6 +128,8 @@ struct ApplyTimings {
      * (parent appendEntries lock A + quorum-completing goroutine's
      * pre-RPC build lock B + post-RPC bookkeeping lock C). */
     int64_t mutex_ns = 0;
+    int64_t mutex_a_ns = 0;   /* Lock A wait alone (this request) */
+    int64_t mutex_b_ns = 0;   /* Lock B wait alone (quorum sample) */
     int64_t mutex_c_ns = 0;   /* Lock C wait alone (sub-component of PostRPC) */
 
     /* advanceCommitIndex sub-stages (CommitWait breakdown):
@@ -151,7 +150,7 @@ struct ApplyTimings {
     /* PureCommitWait = tLastCommitted - tAEDone, clamp >= 0. */
     int64_t pure_commit_wait_ns = 0;
 
-    int64_t wait_lock_b_ns = 0;              /* Lock B wait alone (= Mutex - MutexC) */
+    int64_t wait_lock_ab_ns = 0;             /* Lock A+B wait (= Mutex - MutexC). mutex_ns는 폴백 시 신뢰 불가 */
     int64_t replicate_ns = 0;                /* t2-t1: total leader->quorum wall (base for corrected values) */
     int64_t replicate_corrected_ns = 0;      /* Replicate - Mutex (Lock B+C wait removed) */
     int64_t quorum_wait_corrected_ns = 0;    /* QuorumWait with Lock B+C wait removed (= ReplicateCorrected - aeRT) */
@@ -172,6 +171,7 @@ struct ReplSample {
     int64_t write_pba_rt_ns = 0;  /* follower WritePBA wall (= R2 - FHandler) */
     int64_t storage_copy_ns = 0;  /* S internal pread+pwrite (Replication) */
     int64_t mutex_ns = 0;         /* sum of A+B+C lock waits */
+    int64_t mutex_b_ns = 0;
     int64_t mutex_c_ns = 0;       /* Lock C wait alone (AE goroutine post-rpcCall) */
     int64_t post_rpc_wall_ns = 0; /* AE goroutine: rpcCall return -> Lock C critical section end */
 
@@ -202,30 +202,23 @@ struct ReplSample {
  * ============================================================ */
 class ReplSink {
 public:
-    void set_mutex_a(int64_t d) { mutex_a_ns_ = d; }
+    explicit ReplSink(size_t n_followers = 2) : n_followers_(n_followers) {}
 
+    void set_mutex_a(int64_t d) { mutex_a_ns_ = d; }
     void push(const ReplSample &s);
 
     /* firstSample: "returns the first sample (the quorum-completing
      * follower's timings in a 3-node cluster with self-ACK) and
      * whether one was recorded." */
-    std::pair<ReplSample, bool> first_sample();
+    std::pair<ReplSample, bool> quorum_sample();
 
     int64_t mutex_a_ns() const { return mutex_a_ns_; }
-
 private:
     std::mutex mu_;
     std::vector<ReplSample> samples_;
     int64_t mutex_a_ns_ = 0;
-
-    bool diag_first_worker_seen_ = false;
-    int diag_first_peer_ = -1;
-    clock_type::time_point diag_first_worker_start_;
-
-    int64_t diag_worker_start_gap_ns_ = 0;
-
-    int64_t diag_wake_sum_ns_ = 0;
-    uint64_t diag_wake_count_ = 0;
+    size_t n_followers_;
+    size_t quorum_followers() const { return (n_followers_ + 1) / 2; }
 };
 
 /* clamp0: 음수를 0으로. 파생값이 클럭 해상도 때문에 음수가 나올 수 있어

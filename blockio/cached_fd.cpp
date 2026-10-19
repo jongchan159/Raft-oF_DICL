@@ -5,6 +5,7 @@
 #include <cstring>
 #include <cerrno>
 #include <stdexcept>
+#include <cstdlib>
 
 #include <fcntl.h>
 #include <unistd.h>
@@ -150,21 +151,22 @@ std::pair<uint64_t, int> ExtentCache::remaining_at(int64_t logical, int hint) co
 /* ============================================================
  * create_ring_file
  * ============================================================ */
-
+ 
 int64_t create_ring_file(const std::string &path, uint64_t size_bytes) {
     int fd = ::open(path.c_str(), O_RDWR | O_CREAT, kRingFileMode);
     if (fd < 0) {
         throw std::runtime_error("create_ring_file: open " + path + ": " + strerror(errno));
     }
-
+ 
     struct stat st{};
     if (::fstat(fd, &st) != 0) {
         int e = errno;
         ::close(fd);
         throw std::runtime_error("create_ring_file: fstat " + path + ": " + strerror(e));
     }
-
-    if (static_cast<uint64_t>(st.st_size) < size_bytes) {
+ 
+    const uint64_t old_size = static_cast<uint64_t>(st.st_size);
+    if (old_size < size_bytes) {
         /* fallocate: FIEMAP이 extent를 돌려주려면 블록이 실제로 할당돼
          * 있어야 한다 (sparse hole이면 BuildExtentCache가 던진다).
          * 기존 내용은 보존하면서 뒤쪽만 채운다. */
@@ -181,32 +183,63 @@ int64_t create_ring_file(const std::string &path, uint64_t size_bytes) {
             throw std::runtime_error("create_ring_file: fdatasync " + path + ": " + strerror(e));
         }
     }
-
-    /* 파일 전체에 ZERO_RANGE를 걸어 extent를 전부 "written"으로 만든다.
-     * [수정-9] 이 단계를 빼면 unwritten extent가 남아 첫 쓰기가 파일시스템
-     * 저널을 통한 extent 상태 변환으로 직렬화된다 (실서버 FIEMAP 모드의
-     * 지연에 직접 영향) -- DECISIONS.md D9 */
+ 
+    /* ZERO_RANGE 는 **새로 늘린 구간에만** 건다.
+     *
+     * 원래는 파일 전체에 매 시작마다 걸었고 주석은 "extent 를 전부 written 으로
+     * 만든다"고 했지만, ext4 에서 ZERO_RANGE 는 반대로 written extent 를
+     * **unwritten 으로 되돌리고 데이터를 0 으로 만든다**(이 환경에서 확인).
+     * 그러면 이미 precondition 을 마친 파일을 재사용해도 시작할 때마다 전부
+     * 다시 써야 한다. written 상태로 만드는 일은 precondition_ring_file 이
+     * 한다. [수정-9] 의 목적(첫 쓰기 때 extent 상태 변환 방지)은 그쪽이 맡는다. */
 #ifndef FALLOC_FL_KEEP_SIZE
 #define FALLOC_FL_KEEP_SIZE 0x01
 #endif
 #ifndef FALLOC_FL_ZERO_RANGE
 #define FALLOC_FL_ZERO_RANGE 0x10
 #endif
-    if (::fallocate(fd, FALLOC_FL_ZERO_RANGE | FALLOC_FL_KEEP_SIZE, 0,
-                    static_cast<off_t>(size_bytes)) != 0) {
-        int e = errno;
-        ::close(fd);
-        throw std::runtime_error(
-            "create_ring_file: fallocate(ZERO_RANGE) on " + path + ": " +
-            strerror(e) + " -- the filesystem must support "
-            "FALLOC_FL_ZERO_RANGE (ext4/xfs/btrfs)");
-    } else if (::fdatasync(fd) != 0) {
-        int e = errno;
-        ::close(fd);
-        throw std::runtime_error("create_ring_file: fdatasync after ZERO_RANGE " +
-                                  path + ": " + strerror(e));
+    if (old_size < size_bytes) {
+        if (::fallocate(fd, FALLOC_FL_ZERO_RANGE | FALLOC_FL_KEEP_SIZE,
+                        static_cast<off_t>(old_size),
+                        static_cast<off_t>(size_bytes - old_size)) != 0) {
+            int e = errno;
+            ::close(fd);
+            throw std::runtime_error(
+                "create_ring_file: fallocate(ZERO_RANGE) on " + path + ": " +
+                strerror(e) + " -- the filesystem must support "
+                "FALLOC_FL_ZERO_RANGE (ext4/xfs/btrfs)");
+        } else if (::fdatasync(fd) != 0) {
+            int e = errno;
+            ::close(fd);
+            throw std::runtime_error("create_ring_file: fdatasync after ZERO_RANGE " +
+                                      path + ": " + strerror(e));
+        }
     }
-
+ 
+    /* 헤더(offset 0, 한 섹터)는 시작할 때마다 0 으로 되돌린다.
+     * 예전에는 전체 ZERO_RANGE 가 헤더까지 0 으로 만들었으므로 그 동작을
+     * 명시적으로 유지한다 (term/votedFor 는 항상 0 에서 시작). 이미 쓰인 링 본문은
+     * 보존한다. */
+    {
+        static const char kZeroHeader[blockio::kSectorSize] = {0};
+        ssize_t w;
+        do {
+            w = ::pwrite(fd, kZeroHeader, sizeof(kZeroHeader), 0);
+        } while (w < 0 && errno == EINTR);
+        if (w != static_cast<ssize_t>(sizeof(kZeroHeader))) {
+            int e = errno;
+            ::close(fd);
+            throw std::runtime_error("create_ring_file: zero header " + path + ": " +
+                                      strerror(e));
+        }
+        if (::fdatasync(fd) != 0) {
+            int e = errno;
+            ::close(fd);
+            throw std::runtime_error("create_ring_file: fdatasync after header " +
+                                      path + ": " + strerror(e));
+        }
+    }
+ 
     if (::fstat(fd, &st) != 0) {
         int e = errno;
         ::close(fd);
@@ -214,6 +247,152 @@ int64_t create_ring_file(const std::string &path, uint64_t size_bytes) {
     }
     ::close(fd);
     return st.st_size;
+}
+
+bool find_unwritten_ranges(int fd, uint64_t size_bytes,
+                           std::vector<std::pair<uint64_t, uint64_t>> *out) {
+    out->clear();
+    constexpr uint32_t kBatch = 256;
+    constexpr uint64_t kAlign = blockio::kPageSize;
+ 
+    std::vector<uint8_t> buf(sizeof(struct fiemap) + kBatch * sizeof(struct fiemap_extent));
+    auto *fm = reinterpret_cast<struct fiemap *>(buf.data());
+ 
+    auto add = [&](uint64_t begin, uint64_t end) {
+        if (end > size_bytes) end = size_bytes;
+        begin = begin / kAlign * kAlign;
+        end = (end + kAlign - 1) / kAlign * kAlign;
+        if (end > size_bytes) end = size_bytes;
+        if (begin >= end) return;
+        if (!out->empty()) {
+            auto &last = out->back();
+            const uint64_t last_end = last.first + last.second;
+            if (begin <= last_end) {                 /* 겹치거나 맞닿으면 합친다 */
+                last.second = std::max<uint64_t>(last_end, end) - last.first;
+                return;
+            }
+        }
+        out->emplace_back(begin, end - begin);
+    };
+ 
+    uint64_t cursor = 0;                             /* 지금까지 확인한 논리 오프셋 */
+    bool last_seen = false;
+    while (cursor < size_bytes && !last_seen) {
+        const uint64_t before = cursor;
+        std::memset(buf.data(), 0, buf.size());
+        fm->fm_start = cursor;
+        fm->fm_length = size_bytes - cursor;
+        fm->fm_flags = 0;
+        fm->fm_extent_count = kBatch;
+        if (::ioctl(fd, FS_IOC_FIEMAP, fm) < 0) {
+            out->clear();
+            return false;
+        }
+        if (fm->fm_mapped_extents == 0) {
+            break;                                   /* 남은 구간은 hole -> 아래에서 추가 */
+        }
+        for (uint32_t i = 0; i < fm->fm_mapped_extents; i++) {
+            const struct fiemap_extent &e = fm->fm_extents[i];
+            if (e.fe_logical > cursor) {
+                add(cursor, e.fe_logical);           /* extent 사이의 hole */
+            }
+            if (e.fe_flags & (FIEMAP_EXTENT_UNWRITTEN | FIEMAP_EXTENT_DELALLOC)) {
+                add(e.fe_logical, e.fe_logical + e.fe_length);
+            }
+            cursor = std::max<uint64_t>(cursor, e.fe_logical + e.fe_length);
+            if (e.fe_flags & FIEMAP_EXTENT_LAST) {
+                last_seen = true;
+                break;
+            }
+        }
+        if (cursor == before) {
+            break;                                   /* 진전이 없으면 나머지를 안 쓴 것으로 본다 */
+        }
+    }
+    if (cursor < size_bytes) {
+        add(cursor, size_bytes);                     /* 마지막 extent 뒤의 hole */
+    }
+    return true;
+}
+
+uint64_t precondition_ring_file(const std::string &path,
+                                uint64_t size_bytes) {
+    if (size_bytes == 0) {
+        return 0;
+    }
+ 
+    constexpr size_t kIoAlign = blockio::kPageSize;
+    constexpr size_t kChunkBytes = 16ull * 1024 * 1024;
+ 
+    if ((size_bytes % kIoAlign) != 0) {
+        throw std::runtime_error(
+            "precondition_ring_file: size is not page-aligned: " +
+            std::to_string(size_bytes));
+    }
+ 
+    int fd = ::open(path.c_str(), O_RDWR | O_DIRECT);
+    if (fd < 0) {
+        throw std::runtime_error(
+            "precondition_ring_file: open " + path + ": " +
+            strerror(errno));
+    }
+ 
+    /* 아직 쓰지 않은 구간만 쓴다. FIEMAP 을 쓸 수 없으면 전체를 쓴다. */
+    std::vector<std::pair<uint64_t, uint64_t>> ranges;
+    if (!find_unwritten_ranges(fd, size_bytes, &ranges)) {
+        ranges.assign(1, std::pair<uint64_t, uint64_t>(0, size_bytes));
+    }
+    if (ranges.empty()) {
+        ::close(fd);
+        return 0;
+    }
+ 
+    void *buf = nullptr;
+    if (::posix_memalign(&buf, kIoAlign, kChunkBytes) != 0) {
+        ::close(fd);
+        throw std::runtime_error(
+            "precondition_ring_file: posix_memalign failed");
+    }
+ 
+    std::memset(buf, 0, kChunkBytes);
+ 
+    uint64_t written = 0;
+    for (const auto &r : ranges) {
+        uint64_t off = r.first;
+        const uint64_t end = r.first + r.second;
+        while (off < end) {
+            const size_t len = static_cast<size_t>(
+                std::min<uint64_t>(kChunkBytes, end - off));
+ 
+            ssize_t n;
+            do {
+                n = ::pwrite(fd, buf, len, static_cast<off_t>(off));
+            } while (n < 0 && errno == EINTR);
+ 
+            if (n < 0 || static_cast<size_t>(n) != len) {
+                ::free(buf);
+                ::close(fd);
+                throw std::runtime_error(
+                    "precondition_ring_file: pwrite failed");
+            }
+ 
+            off += len;
+            written += len;
+        }
+    }
+ 
+    if (::fdatasync(fd) != 0) {
+        const int e = errno;
+        ::free(buf);
+        ::close(fd);
+        throw std::runtime_error(
+            "precondition_ring_file: fdatasync: " +
+            std::string(strerror(e)));
+    }
+ 
+    ::free(buf);
+    ::close(fd);
+    return written;
 }
 
 /* ============================================================

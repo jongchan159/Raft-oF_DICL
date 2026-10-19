@@ -22,6 +22,18 @@ constexpr int kApplyBatchLimit = 64;
 
 } /* anonymous namespace */
 
+void Server::signal_committed_batch(
+    std::vector<std::shared_ptr<EntryCommitSignal>> &sig) {
+    for (auto &sp : sig) {
+        {
+            std::lock_guard<std::mutex> lk(sp->mu);   // 플래그를 바꿀 때만 잠깐 잠금
+            sp->signaled = true;
+        }
+        sp->cv.notify_all();                          // 락을 푼 뒤에 깨움
+    }
+    sig.clear();
+}
+
 /* ============================================================
  * advanceCommitIndex (raft.go 원본, 로직 그대로 포팅)
  *
@@ -39,12 +51,51 @@ constexpr int kApplyBatchLimit = 64;
 void Server::advance_commit_index() {
     bool profiling = prof.enabled.load() != 0;
     auto t_call = clock_type::now();
+    std::vector<std::shared_ptr<EntryCommitSignal>> sig;
 
     mu.lock();
     int64_t lock_wait_ns = 0;
-    clock_type::time_point t_locked;
     if (profiling) {
         lock_wait_ns = elapsed_ns(t_call);
+    }
+    advance_commit_index_locked(&sig);
+
+    if (raft.state == ServerState::Leader) {
+        /* Slot GC worker 깨우기: ring 사용률 70% 초과 또는 100회마다
+         * (floor). Non-blocking cap=1 채널 -> bool 플래그로 재현 */
+        workers.slot_gc_tick++;
+        uint64_t used_slots = 0;
+        if (!ring.log_slot_map.empty()) {
+            if (ring.tail_slot >= ring.head_slot) {
+                used_slots = ring.tail_slot - ring.head_slot;
+            } else {
+                used_slots = ring.ring_slots - ring.head_slot + ring.tail_slot;
+            }
+        }
+        /* 링 점유율이 kSlotGcTriggerPercent를 넘거나, 점유율과 무관하게
+         * kSlotGcFloorTicks 바퀴마다 한 번은 GC를 깨운다 (후자는 트래픽이
+         * 적어 점유율이 안 오르는 동안에도 floor를 전진시키기 위한 것). */
+        if (used_slots * 100 > ring.ring_slots * kSlotGcTriggerPercent ||
+            workers.slot_gc_tick % kSlotGcFloorTicks == 0) {
+            std::lock_guard<std::mutex> gc_lk(workers.slot_gc_notify_mu);
+            workers.slot_gc_notify_pending = true;
+            workers.slot_gc_notify_cv.notify_one();
+        }
+    }
+
+    if (profiling) {
+        prof.aci_lock_wait_ns.store(lock_wait_ns);
+    }
+    mu.unlock();   /* Go의 defer 위치와 동일 (함수 끝에서 항상 unlock) */
+    signal_committed_batch(sig);
+}
+
+void Server:: advance_commit_index_locked(
+    std::vector<std::shared_ptr<EntryCommitSignal>> *to_signal) {
+    
+    bool profiling = prof.enabled.load() != 0;
+    clock_type::time_point t_locked;
+    if (profiling) {
         t_locked = clock_type::now();
     }
 
@@ -91,10 +142,14 @@ void Server::advance_commit_index() {
                         if (idx >= oldest_c && idx < ring.tail_log_index) {
                             Entry &e = raft.log[log_slice(idx)];
                             if (e.committed) {
-                                /* Go의 non-blocking cap=1 send(select+default)를
-                                 * bool 플래그 signal로 재현 -- 이미 signaled면
-                                 * 그냥 넘어감(default 분기와 동일 의도) */
-                                e.signal_committed();
+                                if (to_signal != nullptr) {
+                                    to_signal->push_back(e.committed);
+                                } else {
+                                    /* Go의 non-blocking cap=1 send(select+default)를
+                                    * bool 플래그 signal로 재현 -- 이미 signaled면
+                                    * 그냥 넘어감(default 분기와 동일 의도) */
+                                    e.signal_committed();
+                                }
                             }
                         }
                     }
@@ -104,32 +159,10 @@ void Server::advance_commit_index() {
                 }
             }
         }
-
-        /* Slot GC worker 깨우기: ring 사용률 70% 초과 또는 100회마다
-         * (floor). Non-blocking cap=1 채널 -> bool 플래그로 재현 */
-        workers.slot_gc_tick++;
-        uint64_t used_slots = 0;
-        if (!ring.log_slot_map.empty()) {
-            if (ring.tail_slot >= ring.head_slot) {
-                used_slots = ring.tail_slot - ring.head_slot;
-            } else {
-                used_slots = ring.ring_slots - ring.head_slot + ring.tail_slot;
-            }
-        }
-        /* 링 점유율이 kSlotGcTriggerPercent를 넘거나, 점유율과 무관하게
-         * kSlotGcFloorTicks 바퀴마다 한 번은 GC를 깨운다 (후자는 트래픽이
-         * 적어 점유율이 안 오르는 동안에도 floor를 전진시키기 위한 것). */
-        if (used_slots * 100 > ring.ring_slots * kSlotGcTriggerPercent ||
-            workers.slot_gc_tick % kSlotGcFloorTicks == 0) {
-            std::lock_guard<std::mutex> gc_lk(workers.slot_gc_notify_mu);
-            workers.slot_gc_notify_pending = true;
-            workers.slot_gc_notify_cv.notify_one();
-        }
     }
 
     if (profiling) {
         quorum_ns = elapsed_ns(t_locked);
-        prof.aci_lock_wait_ns.store(lock_wait_ns);
         prof.aci_quorum_ns.store(quorum_ns);
         prof.aci_sort_ns.store(aci_sort_ns);
         prof.aci_signal_ns.store(aci_signal_ns);
@@ -144,7 +177,6 @@ void Server::advance_commit_index() {
         workers.apply_notify_cv.notify_one();
     }
 
-    mu.unlock();   /* Go의 defer 위치와 동일 (함수 끝에서 항상 unlock) */
 }
 
 /* ============================================================
@@ -155,6 +187,12 @@ void Server::advance_commit_index() {
  *  callers... can interleave mutex use."
  * ============================================================ */
 void Server::apply_pending() {
+    std::vector<std::pair<std::function<void(ApplyResult)>, ApplyResult>> sinks;
+    struct SinkFlusher {
+        decltype(sinks) &v;
+        ~SinkFlusher() { for (auto &p : v) p.first(std::move(p.second)); }
+    } flusher{sinks};
+    
     std::lock_guard<std::mutex> lk(mu);
     if (raft.state != ServerState::Leader) {
         return;
@@ -162,6 +200,26 @@ void Server::apply_pending() {
 
     bool profiling = prof.enabled.load() != 0;
     auto t_apply = clock_type::now();
+
+    struct ApplyStat {
+        clock_type::time_point t0 = clock_type::now();
+        uint64_t n = 0;
+        ~ApplyStat() {
+            static uint64_t calls = 0, entries = 0;
+            static int64_t held_ns = 0;
+            static auto g_t0 = clock_type::now();
+            calls++; entries += n; held_ns += elapsed_ns(t0);
+            const int64_t el = elapsed_ns(g_t0);
+            if (el >= 5'000'000'000LL) {
+                std::fprintf(stderr,
+                    "[APPLY] calls/s=%.0f entries/call=%.1f held/call=%.0fus held/entry=%.1fus util=%.0f%%\n",
+                    calls * 1e9 / el, entries ? (double)entries / calls : 0.0,
+                    held_ns / 1e3 / calls, entries ? held_ns / 1e3 / entries : 0.0,
+                    100.0 * held_ns / el);
+                calls = entries = 0; held_ns = 0; g_t0 = clock_type::now();
+            }
+        }
+    } stat;
 
     int applied = 0;
     uint64_t oldest = oldest_log_index();
@@ -174,7 +232,7 @@ void Server::apply_pending() {
         if (!log_entry.command.empty()) {
             ApplyResult res = statemachine->apply(log_entry.command);
             if (log_entry.result_sink) {
-                log_entry.result_sink(std::move(res));
+                sinks.emplace_back(std::move(log_entry.result_sink), std::move(res));
             }
         }
         log_entry.cmd_len = log_entry.command.size();
@@ -183,8 +241,10 @@ void Server::apply_pending() {
         log_entry.committed = nullptr;   /* Go: logEntry.committed = nil */
         log_entry.ring_slot = 0;
         raft.last_applied++;
+        
         applied++;
-
+        stat.n++;
+        
         if (applied >= kApplyBatchLimit) {
             /* 배치 상한에 닿았다. 원본은 여기서 reset_election_timeout()을
              * 부른 뒤 **락을 놓고 다시 잡아** 다른 대기자에게 양보한다.

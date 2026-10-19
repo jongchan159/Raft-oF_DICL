@@ -37,6 +37,10 @@ struct PBASegment {
  * ============================================================ */
 int64_t create_ring_file(const std::string &path, uint64_t size_bytes);
 
+uint64_t precondition_ring_file(const std::string &path, uint64_t size_bytes);
+bool find_unwritten_ranges(int fd, uint64_t size_bytes,
+                           std::vector<std::pair<uint64_t, uint64_t>> *out);
+
 /* ============================================================
  * extent (raft.go 원본, 소문자 비공개 타입)
  * ============================================================ */
@@ -166,6 +170,7 @@ public:
      *   범위만 쓰기 때문이다. */
     void write(uint64_t pba, const std::vector<uint8_t> &data);
     std::vector<uint8_t> read(uint64_t pba, uint64_t nbytes) const;
+
 
 private:
     CachedFD() = default;

@@ -31,6 +31,8 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <fstream>
+#include <unistd.h>
 
 namespace {
 
@@ -129,6 +131,7 @@ int main(int argc, char **argv) {
     int size = 512;
     int batch = 1;
     uint64_t at_count = 0;
+    std::string start_file;
     int timeout_s = 15;
     std::string transport = "rdma";
 
@@ -148,6 +151,8 @@ int main(int argc, char **argv) {
             at_count = std::strtoull(next_arg_value(argc, argv, i, "-at-count").c_str(), nullptr, 10);
         } else if (arg == "-timeout-s") {
             timeout_s = std::atoi(next_arg_value(argc, argv, i, "-timeout-s").c_str());
+        } else if (arg == "-start-file") {  
+            start_file = next_arg_value(argc, argv, i, "-start-file");
         } else if (arg == "-transport") {
             transport = next_arg_value(argc, argv, i, "-transport");
         } else if (arg == "-h" || arg == "--help") {
@@ -250,6 +255,14 @@ int main(int argc, char **argv) {
         std::string payload(static_cast<size_t>(size), 'x');
         uint64_t applied = leader.probe_commands;
         uint64_t busy_retries = 0;
+
+        if (!start_file.empty()) {
+            { std::ofstream rdy(start_file + ".ready." + std::to_string(getpid())); }
+            while (access(start_file.c_str(), F_OK) != 0) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+        }
+
         auto t0 = clock_type::now();
 
         /* -op apply-timed 요약용 표본 (ns 원시값). 순서는 per-RPC 줄과 같고,
@@ -263,7 +276,7 @@ int main(int argc, char **argv) {
          * 즉 표본 수 = **성공한 RPC 수**이고 n/batch 와 다를 수 있다. */
         static const char *kTimedTerms[] = {
             "Total", "LHandler", "LPersist", "AENet", "FHandler",
-            "ReplNet", "StorageIO", "QuorumWait", "Mutex", "CommitWait", "residual",
+            "ReplNet", "StorageIO", "QuorumWait", "Mutex", "MutexA", "MutexB", "MutexC", "CommitWait", "residual",
         };
         constexpr size_t kNTimedTerms = sizeof(kTimedTerms) / sizeof(kTimedTerms[0]);
         std::vector<int64_t> timed[kNTimedTerms];
@@ -303,7 +316,8 @@ int main(int argc, char **argv) {
                     rsp.total_nanos(),      rsp.l_handler_nanos(), rsp.l_persist_nanos(),
                     rsp.ae_net_nanos(),     rsp.f_handler_nanos(), rsp.repl_net_nanos(),
                     rsp.replication_nanos(), rsp.quorum_wait_nanos(),
-                    rsp.mutex_nanos(),      rsp.commit_wait_nanos(),
+                    rsp.mutex_nanos(), rsp.mutex_a_nanos(), rsp.mutex_b_nanos(), rsp.mutex_c_nanos(),
+                    rsp.commit_wait_nanos(),
                     rsp.total_nanos() - sum7,
                 };
                 for (size_t k = 0; k < kNTimedTerms; k++) {

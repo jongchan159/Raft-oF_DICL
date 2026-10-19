@@ -3,13 +3,15 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RAFT_ROOT="$SCRIPT_DIR"
+source "$SCRIPT_DIR/env.sh"
+build_bc_devices
 
 TRANSPORT="${1:-tcp}"
 
 case "$TRANSPORT" in
-    rdma|tcp|tcp-ipoib) ;;
+    rdma|tcp|tcp-ib) ;;
     *)
-        echo "usage: $0 [rdma|tcp|tcp-ipoib]"
+        echo "usage: $0 [rdma|tcp|tcp-ib]"
         exit 1
         ;;
 esac
@@ -23,14 +25,14 @@ echo "Starting BlockCopy server"
 echo "========================================"
 echo "transport   : $TRANSPORT"
 echo "listen      : 0.0.0.0:5050"
-echo "device[0]   : /dev/nvme1n1  (raft id 4)"
-echo "device[1]   : /dev/nvme3n1  (raft id 5)"
-echo "device[2]   : /dev/nvme5n1  (raft id 6)"
+echo "nodes       : $NODES"
+echo "devices     : $BC_DEVICES   (NODES 순서 = cluster_index 순서)"
 echo "workers     : 8"
 echo "log         : $LOG"
 echo "========================================"
 
-for dev in /dev/nvme3n1 /dev/nvme5n1 /dev/nvme1n1; do
+IFS=',' read -r -a BC_DEV_ARR <<< "$BC_DEVICES"
+for dev in "${BC_DEV_ARR[@]}"; do
     if [[ ! -b "$dev" ]]; then
         echo "ERROR: block device not found: $dev"
         exit 1
@@ -45,7 +47,7 @@ fi
 
 sudo stdbuf -oL -eL ./build/raft_blockcopy_server \
     -addr 0.0.0.0:5050 \
-    -devices /dev/nvme3n1,/dev/nvme5n1,/dev/nvme1n1 \
+    -devices "$BC_DEVICES" \
     -copy-workers 8 \
     -transport "$TRANSPORT" \
     > "$LOG" 2>&1 &

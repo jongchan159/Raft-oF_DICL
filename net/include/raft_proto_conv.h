@@ -258,6 +258,9 @@ inline void client_apply_timed_response_to_proto(const ClientApplyTimedResponse 
     p->set_replication_nanos(g.replication_ns);
     p->set_quorum_wait_nanos(g.quorum_wait_ns);
     p->set_mutex_nanos(g.mutex_ns);
+    p->set_mutex_a_nanos(g.mutex_a_ns);
+    p->set_mutex_b_nanos(g.mutex_b_ns);
+    p->set_mutex_c_nanos(g.mutex_c_ns);
     p->set_total_nanos(g.total_ns);
     p->set_busy(g.busy);
     p->set_retry_after_ms(g.retry_after_ms);
@@ -277,6 +280,9 @@ inline void client_apply_timed_response_from_proto(const rpcproto::ClientApplyTi
     g.replication_ns = p.replication_nanos();
     g.quorum_wait_ns = p.quorum_wait_nanos();
     g.mutex_ns = p.mutex_nanos();
+    g.mutex_a_ns = p.mutex_a_nanos();
+    g.mutex_b_ns = p.mutex_b_nanos();
+    g.mutex_c_ns = p.mutex_c_nanos();
     g.total_ns = p.total_nanos();
     g.busy = p.busy();
     g.retry_after_ms = p.retry_after_ms();

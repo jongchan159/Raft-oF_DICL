@@ -201,6 +201,9 @@ struct ClientApplyTimedResponse {
     int64_t replication_ns = 0;
     int64_t quorum_wait_ns = 0;
     int64_t mutex_ns = 0;
+    int64_t mutex_a_ns = 0;
+    int64_t mutex_b_ns = 0;
+    int64_t mutex_c_ns = 0;
     int64_t total_ns = 0;
     bool busy = false;
     int retry_after_ms = 0;
