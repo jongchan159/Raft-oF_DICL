@@ -75,10 +75,28 @@ void Server::init_storage() {
     std::string meta_path = io.metadata_dir + "/raft-" + std::to_string(raft.id) + ".ring";
 
     uint64_t want = ring.file_size_bytes();
-    int64_t actual = create_ring_file(meta_path, want);
-    if (static_cast<uint64_t>(actual) < want) {
+    /* 기존 링 파일은 재사용하고 이미 있던 구간은 건드리지 않는다. 그래서
+     * 아래 "헤더 복구"가 읽는 헤더가 남아 있다.
+     * [수정-18] 예전에는 매 기동 ZERO_RANGE가 헤더까지 지워 term/votedFor가
+     * 항상 0으로 돌아왔다 -- DECISIONS.md D18 */
+    RingFileResult rf = create_ring_file(meta_path, want);
+    if (static_cast<uint64_t>(rf.size) < want) {
         throw std::runtime_error("init_storage: ring file " + meta_path + " is " +
-            std::to_string(actual) + " bytes, need " + std::to_string(want));
+            std::to_string(rf.size) + " bytes, need " + std::to_string(want));
+    }
+    /* [수정-19] 어떻게 할당됐는지 기동 배너에 남긴다. 폴백이면 새 extent가
+     * unwritten이라 첫 랩 LPersist가 부푼다 (U11) -- DECISIONS.md D19 */
+    switch (rf.alloc) {
+    case RingAlloc::WriteZeroes:
+        io.ring_alloc = "new, FALLOC_FL_WRITE_ZEROES (written extents)";
+        break;
+    case RingAlloc::ZeroRange:
+        io.ring_alloc = std::string("new, ZERO_RANGE fallback (WRITE_ZEROES: ") +
+            strerror(rf.write_zeroes_errno) + ") -- unwritten extents, warm up one lap (U11)";
+        break;
+    case RingAlloc::None:
+        io.ring_alloc = "existing, untouched";
+        break;
     }
 
     /* PBA는 이 디바이스 기준으로 해석된다. 링 파일은 반드시 이 디바이스

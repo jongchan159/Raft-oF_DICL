@@ -146,6 +146,9 @@ Phase 6에서 서술을 정정할 대상. **값 자체는 원본 그대로이므
 
 > 이 결정이 U5(팔로워 재시작 catch-up 불가)의 원인 (a)다. 고치려면 U5를 함께 봐야 한다.
 
+> D18 이전에는 기동 시 ZERO_RANGE가 헤더까지 지워서, 위의 term/votedFor 복구가 실제로는
+> 항상 0을 읽었다.
+
 ## D9. `create_ring_file`은 파일 전체에 `FALLOC_FL_ZERO_RANGE`를 건다
 
 `blockio/cached_fd.cpp` · `create_ring_file`
@@ -157,6 +160,9 @@ Phase 6에서 서술을 정정할 대상. **값 자체는 원본 그대로이므
 
 `identity_pba` 테스트 모드는 FIEMAP을 쓰지 않으므로 미지원 파일시스템에서도 넘어가게
 인자로 분리했다: `create_ring_file(path, size, require_zero_range)`.
+
+> 2026-10-24: 매 기동이 아니라 **새로 할당한 구간에만** 건다 — D18. 그 구간도 먼저
+> `FALLOC_FL_WRITE_ZEROES` 로 할당하고, 지원되지 않을 때만 이 경로로 폴백한다 — D19.
 
 ## D10. 스토리지 클라이언트는 전용 락으로 보호한다 (`s.mu`로는 안 된다)
 
@@ -369,6 +375,73 @@ read 경로로 들어오는 명령은 상태를 바꾸지 않아야 한다 (core
 바꾸고 `append_entries()` 에 가드를 넣었다. `stop()` 은 워커 `mu` 를 잡은 뒤
 notify 한다 (predicate 확인과 wait 사이로 notify 가 지나가는 lost wakeup 방지).
 
+## D18. ZERO_RANGE 는 **새로 할당한 구간에만** 건다 (2026-10-24)
+
+`blockio/cached_fd.cpp` · `create_ring_file` · `core/src/raft_lifecycle.cpp` · `init_storage`
+
+원본(D9)은 매 기동마다 링 파일 전체에 ZERO_RANGE 를 건다. 이 포팅은 fallocate 로
+**방금 늘린 구간**에만 건다. 새 파일이면 그게 파일 전체이고, 크기가 충분한 기존 파일이면
+아무것도 하지 않는다. 이유는 넷이다.
+
+1. **헤더가 지워졌다.** `init_storage` 는 `create_ring_file` 을 부른 **뒤에** 헤더(오프셋 0,
+   512B)에서 term/votedFor 를 읽는다 (D8). 오프셋 0부터 걸면 읽기 직전에 지워져 복구가
+   항상 term=0, votedFor=0 을 읽었다. Raft 는 votedFor 영속을 요구한다 — 잃으면 재시작한
+   노드가 같은 term 에 두 번 투표할 수 있다. 실험에서 드러나지 않은 이유는 E2E §8 이 매
+   실행 전에 링 파일을 지우기 때문이다.
+2. **원래 목적과 반대로 작동한다.** 목적은 extent 를 written 으로 만드는 것인데, ext4 에서
+   ZERO_RANGE 는 extent 를 unwritten 으로 만든다 (U11). 매 기동마다 걸면 이전 실행이 써서
+   written 이 된 extent 를 되돌리므로, 링을 미리 써 두거나 워밍업한 효과가 다음 기동에서
+   사라진다.
+3. **정확성에 기여하는 것이 없다.** 재시작한 노드는 빈 로그로 시작하고 (D8), 링을 읽는
+   `read_entry_direct` 는 디바이스를 PBA 로 직접 읽는다. 파일시스템 메타데이터만 바꾸는
+   ZERO_RANGE 는 디바이스의 이전 바이트를 지우지도 못한다.
+4. **extent 위치가 재시작 전후로 같다는 것을 코드가 보장한다.** 파일시스템이 zero range 를
+   "해제 후 재할당"으로 구현하더라도 이미 있던 구간에는 걸지 않으므로 상관없다. push 모델의
+   "팔로워가 재시작해도 extent map 이 같다" 는 전제가 여기에 기댄다.
+
+측정에 미치는 영향: E2E §8 절차(매 실행 전에 링 파일 삭제)에서는 매번 새 파일이므로
+동작이 같다. 링 파일을 남겨 두고 재시작하면 이전 실행에서 written 이 된 extent 가 그대로
+남아 첫 랩 `LPersist` 가 달라진다 — 그런 실행은 그 조건을 함께 기록할 것.
+
+D8 의 결정(tail/commit/applied 는 복구하지 않음)은 그대로이므로 U5 는 풀리지 않는다.
+
+**실클러스터 검증 전이다.** 링 파일을 지우지 않고 노드를 재시작해 (1) 기동 배너의
+`term/tail : term=` 이 이전 값으로 나오는지, (2) `filefrag -v` 출력이 재시작 전후로
+같은지 확인할 것.
+
+## D19. 새로 할당하는 링 구간은 `FALLOC_FL_WRITE_ZEROES` 로 (2026-10-24)
+
+`blockio/cached_fd.cpp` · `create_ring_file` · `core/src/raft_lifecycle.cpp` · `apps/raft_node_main.cpp`
+
+D9 의 목적은 새 링 파일의 extent 를 written 으로 만들어 첫 쓰기의 unwritten→written
+변환을 없애는 것인데, ZERO_RANGE 로는 이뤄지지 않는다 (U11). Linux 6.17 에 들어간
+`FALLOC_FL_WRITE_ZEROES` 가 바로 그 일을 하는 모드다. 범위를 0 이 쓰인 **written** extent 로
+할당하고, 0 쓰기는 디바이스의 Write Zeroes(+deallocate) 로 처리하므로 데이터를 실제로
+보내지 않는다.
+
+- `create_ring_file` 은 늘린 구간(새 파일이면 전체)을 먼저 WRITE_ZEROES 로 할당한다.
+  KEEP_SIZE 와 함께 쓸 수 없으므로 파일 크기는 이 호출이 늘린다.
+- 파일시스템이나 디바이스가 지원하지 않으면 `EOPNOTSUPP`(또는 `EINVAL`)이 온다. ext4 는
+  디바이스가 빠른 zeroing(unmap write zeroes)을 지원할 때만 이 모드를 받아 준다. 그때는
+  예전 경로(fallocate + ZERO_RANGE, D18)로 폴백한다. 그 밖의 오류(ENOSPC, EIO)는 그대로
+  던진다 — 폴백해도 같은 이유로 실패하거나 문제를 가린다.
+- 어느 쪽으로 할당됐는지 기동 배너의 `ring alloc` 줄에 남는다. **측정 결과와 함께
+  기록할 것** — 폴백이면 U11 워밍업이 여전히 필요하다.
+
+효과: 새 링부터 extent 가 written 이라 첫 랩 `LPersist` 가 부풀지 않고 워밍업이 필요 없다.
+또 unwritten 블록에 4 KiB 미만으로 O_DIRECT 쓰기를 할 때 커널이 블록의 나머지를 0 으로
+채우는 동작이 일어나지 않는다. 그래서 팔로워 시절 raw 로 받은 엔트리가 리더 전환 뒤의
+파일 경유 쓰기에 덮일 수 있는 경로도 막힌다 (커널 동작에 근거한 추론, 미검증).
+
+측정 비교 주의: D19 이전 수치는 unwritten 링에서 첫 랩을 워밍업으로 버린 뒤 잰 것이다.
+워밍업 뒤의 정상 상태 수치는 같아야 하지만, 첫 랩을 포함한 비교는 조건이 다르다.
+
+기존 링 파일은 D18 대로 건드리지 않으므로 written 으로 바뀌지 않는다. 한 번 지우고 다시
+만들 것 (E2E §8 은 어차피 매 실행 전에 지운다).
+
+**실클러스터 검증 전이다.** 기동 배너의 `ring alloc` 이 `FALLOC_FL_WRITE_ZEROES` 로 나오는지,
+`filefrag -v <링 파일>` 에 `unwritten` 플래그가 없는지 확인할 것.
+
 ## U. 미해결 — 리팩토링 중 마주치면 여기를 볼 것
 
 | # | 항목 | 위치 | 상태 |
@@ -383,7 +456,7 @@ notify 한다 (predicate 확인과 wait 사이로 notify 가 지나가는 lost w
 | U8 | **`AlignedBufPool::acquire` 의 use-after-free (2026-09-07 수정).** `if (cap < n) free(p); return {p, cap};` — 풀에서 꺼낸 버퍼가 요청보다 작으면 해제한 뒤 그 **해제된** 포인터를 옛 capacity 와 함께 돌려줬다. 워커는 해제된 메모리에 `n` 바이트를 pread/pwrite 한다. `do_pba_copy` 는 청크 크기가 사실상 균일해서 `cap < n` 분기 자체가 안 잡혔고, 그래서 3노드 e2e·ASan 이 전부 통과하는 동안에도 드러나지 않았다. `raft_blkcopy_bench` 로 청크를 4Ki→64Ki→1Mi 로 키워가며 부르면 **첫 확대에서 바로 터진다** (ASan: `attempting double-free`, 서버 프로세스 사망). U1~U7 에 없던 미기록 버그다 | `storage/raft_blockcopy_server.cpp:96-99` | **수정 완료** — `cap >= n` 이면 재사용, 아니면 free 후 아래에서 새로 `posix_memalign`. 검증: 같은 스윕을 수정 전/후 ASan 빌드로 돌려 전자만 리포트가 나오는 것을 확인했다. storage/ 가 U7 대조군이었으므로 U7 비교 시 이 변경을 밝힐 것. **그 재현 도구 `raft_blkcopy_bench` 는 2026-09-10 에 `raft_blkcopy_scale` 로 교체됐다(D15)** — 같은 스윕은 `scripts/blkcopy_scaling.sh` 로 돌린다 |
 | U9 | **`WritePBABatchResponse` 에 `read_nanos`/`write_nanos` 추가 (2026-09-07, additive).** `copy_nanos` 합계만으로는 로컬 PCIe 복사와 NVMe-oF attach 볼륨 복사의 지연 차이가 pread 쪽인지 pwrite 쪽인지 알 수 없다. 서버는 이미 `total_read_ns`/`total_write_ns` 를 따로 들고 있어 합치기 전 값을 실어 보내는 것뿐이고, 측정 비용은 0이다. proto3 additive 필드(3, 4번)라 이 필드를 모르는 피어는 0으로 읽는다 — `AppendEntriesResponse` 8~12번과 같은 선례 | `proto/rpcproto.proto` · `storage/raft_blockcopy_server.{h,cpp}` · `net/include/raft_proto_conv.h` | 재생성은 `protoc 3.21.12` (커밋된 `.pb.cc` 와 같은 버전, eternity5 의 `/usr/bin/protoc`). CTest 11개 전부 통과 확인 |
 | U10 | **blockcopy 에 노드↔노드 데이터 경로가 없다** (`storage/raft_blockcopy_server.cpp:16-18` 의 `TODO: inter-node storage copy`). `WritePBABatchRequest.src_dev`/`dst_dev` 는 **한 프로세스**가 `-devices` 로 연 fd 배열의 인덱스이고, 복사는 그 두 fd 사이의 pread+pwrite 다. 설계가 말하는 "원격 노드" 는 NVMe-oF 로 attach 되어 로컬 경로처럼 보이는 볼륨이다 (`apps/raft_blockcopy_server_main.cpp` 머리 주석) | `storage/raft_blockcopy_server.cpp` | 미구현 상태 그대로 둔다. 측정 실험(`scripts/blkcopy_scaling.sh`, 2026-09-10 이전에는 `blkcopy_latency.sh`)은 이 정의를 따라 "로컬 PCIe 두 네임스페이스" vs "같은 SSD 의 NVMe-oF attach 뷰 두 개" 로 arm 을 나눈다. **주의: 이 클러스터의 NVMe-oF/TCP 는 1 GbE(eno, MTU 1500) 위에서 돈다** — 상한 ~118 MB/s 라, 이 경로로만 재면 blockcopy 가 아니라 링크 대역폭을 재게 된다. 전송별 arm(`fabric-tcp`/`fabric-ipoib`/`fabric-rdma`) 설정과 RDMA 준비 상태는 `scripts/README.md` 참고. 실측 RTT 는 IPoIB 0.197ms vs 1GbE 0.214ms 로 **사실상 같다**(IPoIB 도 커널 IP 스택을 탄다) — 지연을 줄이려면 IB 로 옮기는 것으로는 부족하고 `trtype=rdma` 여야 한다 |
-| U11 | **`FALLOC_FL_ZERO_RANGE` 가 ext4 에서 extent 를 "written" 으로 만들지 않는다 — D9 의 전제가 성립하지 않는다.** `create_ring_file` 은 매 기동마다 링 파일 전체에 ZERO_RANGE 를 걸고, D9 와 `blockio/cached_fd.h:29-35` 는 그것이 extent 를 전부 written 으로 뒤집어 "이후 첫 쓰기가 파일시스템 저널을 통한 extent 상태 변환으로 직렬화" 되는 것을 막는다고 서술한다. **실측 결과 ZERO_RANGE 후에도 extent 는 unwritten 으로 남는다** — ext4 에서는 범위를 unwritten 으로 두는 것이 가장 싼 zeroing 구현이기 때문으로 보인다. 커널 4.15(eternitymaster)와 6.8(eternitystorage) 양쪽에서 동일했다: `fallocate -l` → unwritten, `fallocate -l` + `fallocate -z` → **여전히 unwritten**, `dd oflag=direct`(실제 쓰기) → written. 라이브 링 파일 `/mnt/raftvol/node5/raft_meta.bin`(32GiB, 3시간 가동)도 **257 extent 중 257 개가 unwritten** 이고 블록 0(헤더 쓰기가 닿은 곳)만 written 이었다 | `blockio/cached_fd.cpp` `create_ring_file` · `DECISIONS.md D9` | **미해결. 이번에는 고치지 않았다** (blockcopy 벤치 교체 작업 범위 밖이고, `blockio`/`storage` 변경은 U7 대조군에 영향을 준다). 확인된 것은 **전제가 틀렸다는 사실**까지다 — 그 결과로 실제 지연이 얼마나 늘어나는지는 측정하지 않았다. U7(StorageIO 격차)과 관련이 있을 수 있으므로 그 조사에서 같이 볼 것. 고치려면 extent 를 실제로 written 으로 만들어야 하는데, 링 파일 전체를 한 번 쓰는 비용(기본 32GiB/노드)이 기동 시간에 그대로 붙는다 — 비용/이득을 따져 결정할 일이다. 새 벤치(`scripts/blkcopy_scaling.sh`)는 이 문제를 피하려고 백킹 파일을 `dd oflag=direct` 로 준비하고 preflight 에서 unwritten extent 를 검사해 거부한다 |
+| U11 | **`FALLOC_FL_ZERO_RANGE` 가 ext4 에서 extent 를 "written" 으로 만들지 않는다 — D9 의 전제가 성립하지 않는다.** `create_ring_file` 은 매 기동마다 링 파일 전체에 ZERO_RANGE 를 걸고, D9 와 `blockio/cached_fd.h:31-36` 는 그것이 extent 를 전부 written 으로 뒤집어 "이후 첫 쓰기가 파일시스템 저널을 통한 extent 상태 변환으로 직렬화" 되는 것을 막는다고 서술한다. **실측 결과 ZERO_RANGE 후에도 extent 는 unwritten 으로 남는다** — ext4 에서는 범위를 unwritten 으로 두는 것이 가장 싼 zeroing 구현이기 때문으로 보인다. 커널 4.15(eternitymaster)와 6.8(eternitystorage) 양쪽에서 동일했다: `fallocate -l` → unwritten, `fallocate -l` + `fallocate -z` → **여전히 unwritten**, `dd oflag=direct`(실제 쓰기) → written. 라이브 링 파일 `/mnt/raftvol/node5/raft_meta.bin`(32GiB, 3시간 가동)도 **257 extent 중 257 개가 unwritten** 이고 블록 0(헤더 쓰기가 닿은 곳)만 written 이었다 | `blockio/cached_fd.cpp` `create_ring_file` · `DECISIONS.md D9` | **미해결. 이번에는 고치지 않았다** (blockcopy 벤치 교체 작업 범위 밖이고, `blockio`/`storage` 변경은 U7 대조군에 영향을 준다). 확인된 것은 **전제가 틀렸다는 사실**까지다 — 그 결과로 실제 지연이 얼마나 늘어나는지는 측정하지 않았다. U7(StorageIO 격차)과 관련이 있을 수 있으므로 그 조사에서 같이 볼 것. 고치려면 extent 를 실제로 written 으로 만들어야 하는데, 링 파일 전체를 한 번 쓰는 비용(기본 32GiB/노드)이 기동 시간에 그대로 붙는다 — 비용/이득을 따져 결정할 일이다. 새 벤치(`scripts/blkcopy_scaling.sh`)는 이 문제를 피하려고 백킹 파일을 `dd oflag=direct` 로 준비하고 preflight 에서 unwritten extent 를 검사해 거부한다. **2026-10-24 (D18):** 이제 기존 링 파일에는 ZERO_RANGE 를 다시 걸지 않으므로, 링 파일을 파일시스템을 통해 한 번 써 두면 그 written 상태가 재시작 후에도 남는다. **2026-10-24 (D19):** `FALLOC_FL_WRITE_ZEROES` 를 지원하는 환경에서는 새 링 파일이 처음부터 written 으로 할당된다 (기동 배너 `ring alloc` 으로 확인) |
 
 | U12 | **`-statemachine kvs` 에서 failover 직후 새 리더의 KVS 가 불완전할 수 있다.** 팔로워는 apply 하지 않고(리더만 `apply_pending`), 승격 시 `become_leader` 가 링에서 명령을 읽어 replay 한다. `read_entry_direct` 실패는 조용히 건너뛰고(`raft_election.cpp`), 링이 한 바퀴 돌았으면 덮어쓴 데이터를 읽을 수도 있다. 그 상태에서 GET(ReadIndex)은 빠진 PUT 을 못 본다 | `core/src/raft_election.cpp` `become_leader` · `core/src/raft_commit.cpp` `apply_pending` | 2026-10-13 결정으로 팔로워 apply 는 현행 유지. **벤치마크에 failover 를 넣지 말 것.** 고치려면 팔로워도 커밋 시 링에서 읽어 apply 해야 한다 |
 | U13 | **`tests/test_apply_timings.cpp` 가 HEAD 에서 컴파일되지 않는다.** `ApplyWalls::replicate_commit_ns` / `ApplyTimings::replicate_commit_corrected_ns` 를 참조하는데 `core/include/raft_timings.h` 에 그 필드가 없다 (persistent worker 계측 변경 이후로 보인다). `raft_unit_tests` 전체가 빌드되지 않는다 | `tests/test_apply_timings.cpp` | 2026-10-13 발견, 미수정 (KVS/ReadIndex 작업 범위 밖). 이 파일을 빼면 나머지 58개 케이스 통과 (macOS, TSan/ASan 포함) |

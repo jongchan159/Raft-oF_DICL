@@ -149,6 +149,9 @@ void Server::apply_read_hb_response(int fi, const ReadIndexHeartbeatRequest &req
         return;
     }
     ClusterMember &m = raft.cluster[static_cast<size_t>(fi)];
+    /* m.read_ack_round = "이 팔로워가 지금까지 확인해 준 최대 read 라운드"
+       req.round        = 방금 그 heartbeat 가 실어 보낸 라운드 */
+    /* 새로운(더 높은) 라운드를 확인받았다 → 지각/중복 응답 → */
     if (req.round > m.read_ack_round) {
         m.read_ack_round = req.round;
         try_advance_read_confirmed_locked();

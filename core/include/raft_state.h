@@ -331,6 +331,11 @@ struct StorageIo {
      * 이걸 통한다. */
     std::shared_ptr<CachedFD> cached_fd;
 
+    /* 이번 기동에서 링 파일을 어떻게 준비했는가 (init_storage가 채우고 기동
+     * 배너가 찍는다). unwritten extent로 할당됐으면 첫 랩의 LPersist가
+     * 부푼다 -- DECISIONS.md U11, D19. */
+    std::string ring_alloc;
+
 };
 
 /* ============================================================

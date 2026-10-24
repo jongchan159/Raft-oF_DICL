@@ -225,6 +225,9 @@ grep -E 'ERROR: AddressSanitizer|runtime error' <노드 로그>
 - `raft_blockcopy_server`가 디바이스를 `O_RDWR|O_DIRECT`로 열어야 하므로
   보통 root 또는 적절한 그룹 권한이 필요하다
 - 파일시스템이 `FALLOC_FL_ZERO_RANGE`를 지원해야 한다 (ext4/xfs/btrfs)
+- `FALLOC_FL_WRITE_ZEROES`(Linux 6.17+, 디바이스의 빠른 zeroing 필요)가 되면 새 링
+  파일을 그걸로 할당한다 — extent가 처음부터 written이라 첫 랩 워밍업이 필요 없다.
+  기동 배너의 `ring alloc` 줄로 확인 (DECISIONS.md D19)
 
 ```bash
 # 노드 i
@@ -317,6 +320,7 @@ HTTP CONNECT + 길이 프레이밍, RDMA 는 SEND 메시지 하나가 프레임 
 | `no leader found within timeout` | 노드 로그에 `[warn]`/`[rpc-error]`가 있는지. `-debug`로 상태 확인 |
 | `init_storage failed: ... fallocate` | 작업 디렉터리가 NFS인지 (`findmnt -no FSTYPE`) |
 | `fallocate(ZERO_RANGE)` 실패 | 파일시스템이 ext4/xfs/btrfs 인지 확인 |
+| 배너 `ring alloc : ... ZERO_RANGE fallback (WRITE_ZEROES: ...)` | 커널·파일시스템·디바이스 중 하나가 `FALLOC_FL_WRITE_ZEROES` 미지원. 새 링이 unwritten이므로 첫 랩 워밍업 필요 (E2E_EXPERIMENT.md §7-1) |
 | `PBA=0 ... hole in ring file` | 링 파일이 sparse. `fallocate`로 미리 만들 것 |
 | `libprotobuf.so.32 => not found` | `/tmp/pb-sysroot`가 사라짐 → §1 재실행 후 재빌드 |
 | 팔로워가 커밋을 안 따라옴 | 리더 로그에 `[SKIP PBA]`가 있는지 (HANDOFF.md §5) |

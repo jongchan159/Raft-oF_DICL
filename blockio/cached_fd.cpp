@@ -151,7 +151,18 @@ std::pair<uint64_t, int> ExtentCache::remaining_at(int64_t logical, int hint) co
  * create_ring_file
  * ============================================================ */
 
-int64_t create_ring_file(const std::string &path, uint64_t size_bytes) {
+#ifndef FALLOC_FL_KEEP_SIZE
+#define FALLOC_FL_KEEP_SIZE 0x01
+#endif
+#ifndef FALLOC_FL_ZERO_RANGE
+#define FALLOC_FL_ZERO_RANGE 0x10
+#endif
+#ifndef FALLOC_FL_WRITE_ZEROES
+#define FALLOC_FL_WRITE_ZEROES 0x80   /* Linux 6.17+ (uapi/linux/falloc.h) */
+#endif
+
+RingFileResult create_ring_file(const std::string &path, uint64_t size_bytes) {
+    RingFileResult res;
     int fd = ::open(path.c_str(), O_RDWR | O_CREAT, kRingFileMode);
     if (fd < 0) {
         throw std::runtime_error("create_ring_file: open " + path + ": " + strerror(errno));
@@ -164,16 +175,62 @@ int64_t create_ring_file(const std::string &path, uint64_t size_bytes) {
         throw std::runtime_error("create_ring_file: fstat " + path + ": " + strerror(e));
     }
 
+    /* 크기가 충분한 기존 파일이면 아무것도 하지 않는다 ([수정-18], 아래) */
     if (static_cast<uint64_t>(st.st_size) < size_bytes) {
-        /* fallocate: FIEMAP이 extent를 돌려주려면 블록이 실제로 할당돼
-         * 있어야 한다 (sparse hole이면 BuildExtentCache가 던진다).
-         * 기존 내용은 보존하면서 뒤쪽만 채운다. */
-        if (::fallocate(fd, 0, static_cast<off_t>(st.st_size),
-                        static_cast<off_t>(size_bytes - static_cast<uint64_t>(st.st_size))) != 0) {
-            int e = errno;
-            ::close(fd);
-            throw std::runtime_error("create_ring_file: fallocate " + path + " to " +
-                std::to_string(size_bytes) + " bytes: " + strerror(e));
+        uint64_t grow_from = static_cast<uint64_t>(st.st_size);   /* 새 파일이면 0 */
+        uint64_t grow_len = size_bytes - grow_from;
+
+        /* [수정-19] 늘린 구간을 FALLOC_FL_WRITE_ZEROES로 할당한다. 할당과 동시에
+         * 0이 쓰인 written extent가 되므로 첫 쓰기의 unwritten->written 변환이
+         * 없다 (U11). 디바이스가 빠른 zeroing(NVMe Write Zeroes + deallocate)을
+         * 지원할 때만 파일시스템이 받아 주고, 아니면 EOPNOTSUPP를 돌려준다.
+         * KEEP_SIZE와 함께 쓸 수 없어서, 파일 크기는 이 호출이 늘린다
+         * -- DECISIONS.md D19 */
+        if (::fallocate(fd, FALLOC_FL_WRITE_ZEROES, static_cast<off_t>(grow_from),
+                        static_cast<off_t>(grow_len)) == 0) {
+            res.alloc = RingAlloc::WriteZeroes;
+        } else {
+            int wz_err = errno;
+            if (wz_err != EOPNOTSUPP && wz_err != EINVAL) {
+                /* 지원은 되는데 실패했다 (ENOSPC, EIO 등) -- 폴백해도 같은 이유로
+                 * 실패하거나 문제를 가리므로 그대로 던진다 */
+                ::close(fd);
+                throw std::runtime_error("create_ring_file: fallocate(WRITE_ZEROES) " + path +
+                    " to " + std::to_string(size_bytes) + " bytes: " + strerror(wz_err));
+            }
+            res.alloc = RingAlloc::ZeroRange;
+            res.write_zeroes_errno = wz_err;
+
+            /* 폴백: 예전 경로. FIEMAP이 extent를 돌려주려면 블록이 실제로
+             * 할당돼 있어야 한다 (sparse hole이면 BuildExtentCache가 던진다).
+             * 기존 내용은 보존하면서 뒤쪽만 채운다. */
+            if (::fallocate(fd, 0, static_cast<off_t>(grow_from),
+                            static_cast<off_t>(grow_len)) != 0) {
+                int e = errno;
+                ::close(fd);
+                throw std::runtime_error("create_ring_file: fallocate " + path + " to " +
+                    std::to_string(size_bytes) + " bytes: " + strerror(e));
+            }
+
+            /* 방금 할당한 구간에 ZERO_RANGE를 걸어 extent를 전부 "written"으로
+             * 만든다.
+             * [수정-9] 이 단계를 빼면 unwritten extent가 남아 첫 쓰기가 파일시스템
+             * 저널을 통한 extent 상태 변환으로 직렬화된다 (실서버 FIEMAP 모드의
+             * 지연에 직접 영향) -- DECISIONS.md D9. 단 ext4에서는 실제로 written이
+             * 되지 않는다 -- U11.
+             * [수정-18] 이미 있던 구간에는 걸지 않는다. 원본처럼 매 기동마다 파일
+             * 전체에 걸면 init_storage가 이 함수 뒤에 읽는 헤더가 지워지고, 이전
+             * 실행이 써서 written이 된 extent도 unwritten으로 되돌아간다
+             * -- DECISIONS.md D18 */
+            if (::fallocate(fd, FALLOC_FL_ZERO_RANGE | FALLOC_FL_KEEP_SIZE,
+                            static_cast<off_t>(grow_from), static_cast<off_t>(grow_len)) != 0) {
+                int e = errno;
+                ::close(fd);
+                throw std::runtime_error(
+                    "create_ring_file: fallocate(ZERO_RANGE) on " + path + ": " +
+                    strerror(e) + " -- the filesystem must support "
+                    "FALLOC_FL_ZERO_RANGE (ext4/xfs/btrfs)");
+            }
         }
         if (::fdatasync(fd) != 0) {
             int e = errno;
@@ -182,38 +239,14 @@ int64_t create_ring_file(const std::string &path, uint64_t size_bytes) {
         }
     }
 
-    /* 파일 전체에 ZERO_RANGE를 걸어 extent를 전부 "written"으로 만든다.
-     * [수정-9] 이 단계를 빼면 unwritten extent가 남아 첫 쓰기가 파일시스템
-     * 저널을 통한 extent 상태 변환으로 직렬화된다 (실서버 FIEMAP 모드의
-     * 지연에 직접 영향) -- DECISIONS.md D9 */
-#ifndef FALLOC_FL_KEEP_SIZE
-#define FALLOC_FL_KEEP_SIZE 0x01
-#endif
-#ifndef FALLOC_FL_ZERO_RANGE
-#define FALLOC_FL_ZERO_RANGE 0x10
-#endif
-    if (::fallocate(fd, FALLOC_FL_ZERO_RANGE | FALLOC_FL_KEEP_SIZE, 0,
-                    static_cast<off_t>(size_bytes)) != 0) {
-        int e = errno;
-        ::close(fd);
-        throw std::runtime_error(
-            "create_ring_file: fallocate(ZERO_RANGE) on " + path + ": " +
-            strerror(e) + " -- the filesystem must support "
-            "FALLOC_FL_ZERO_RANGE (ext4/xfs/btrfs)");
-    } else if (::fdatasync(fd) != 0) {
-        int e = errno;
-        ::close(fd);
-        throw std::runtime_error("create_ring_file: fdatasync after ZERO_RANGE " +
-                                  path + ": " + strerror(e));
-    }
-
     if (::fstat(fd, &st) != 0) {
         int e = errno;
         ::close(fd);
         throw std::runtime_error("create_ring_file: fstat(2) " + path + ": " + strerror(e));
     }
     ::close(fd);
-    return st.st_size;
+    res.size = st.st_size;
+    return res;
 }
 
 /* ============================================================

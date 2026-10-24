@@ -24,7 +24,9 @@ struct PBASegment {
  * (BuildExtentCache가 "PBA=0 ... hole in file"로 던진다) sparse
  * ftruncate로는 안 되고 반드시 fallocate가 필요하다.
  *
- * 이미 존재하고 크기가 충분하면 그대로 둔다 (재시작 시 헤더/링 보존).
+ * 이미 존재하면 파일을 재사용하고 이미 있던 구간은 **건드리지 않는다**
+ * (헤더, 링 내용, extent 위치와 written/unwritten 상태가 그대로 남는다).
+ * 크기가 모자라면 모자란 뒤쪽만 fallocate로 늘린다.
  *
  * 원본 restoreCircular은 매 기동마다 파일 전체에 FALLOC_FL_ZERO_RANGE를
  * 걸어 모든 extent를 "written" 상태로 뒤집는다. 원본 주석: "unwritten
@@ -33,9 +35,33 @@ struct PBASegment {
  * Metadata-only on ext4/xfs/btrfs, idempotent, so safe to run on every
  * startup." 실패하면 예외를 낸다 -- FIEMAP 경로에서 성능/정확성에 직결된다.
  *
- * 반환: 파일 크기(바이트).
+ * [수정-18] 이 포팅은 **방금 늘린 구간에만** 손댄다 (새 파일이면 전체).
+ * ext4에서 ZERO_RANGE는 extent를 written이 아니라 unwritten으로 만들기
+ * 때문에(DECISIONS.md U11), 매 기동마다 전체에 걸면 헤더를 지우고 이전
+ * 실행이 써서 written이 된 extent도 되돌린다 -- DECISIONS.md D18
+ *
+ * [수정-19] 늘린 구간은 먼저 FALLOC_FL_WRITE_ZEROES로 할당한다. 0이 쓰인
+ * **written** extent가 되므로 원본이 ZERO_RANGE로 얻으려던 상태를 실제로
+ * 얻는다. 파일시스템이나 디바이스가 지원하지 않으면(EOPNOTSUPP/EINVAL)
+ * 예전 경로(fallocate + ZERO_RANGE)로 폴백한다 -- DECISIONS.md D19
+ *
+ * 반환: RingFileResult (파일 크기와, 늘린 구간을 어떻게 할당했는지).
  * ============================================================ */
-int64_t create_ring_file(const std::string &path, uint64_t size_bytes);
+
+/* create_ring_file이 이번 호출에서 늘린 구간을 어떻게 할당했는가 */
+enum class RingAlloc {
+    None,          /* 크기가 충분한 기존 파일 -- 아무것도 하지 않았다 */
+    WriteZeroes,   /* FALLOC_FL_WRITE_ZEROES -- written extent */
+    ZeroRange,     /* WRITE_ZEROES 미지원 -> fallocate + ZERO_RANGE (ext4에선 unwritten, U11) */
+};
+
+struct RingFileResult {
+    int64_t size = 0;                  /* 파일 크기(바이트) */
+    RingAlloc alloc = RingAlloc::None;
+    int write_zeroes_errno = 0;        /* alloc == ZeroRange일 때 WRITE_ZEROES가 돌려준 errno */
+};
+
+RingFileResult create_ring_file(const std::string &path, uint64_t size_bytes);
 
 /* ============================================================
  * extent (raft.go 원본, 소문자 비공개 타입)

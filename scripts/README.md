@@ -65,7 +65,7 @@ Raft 경로도 팔로워 핸들러들이 클라이언트 하나를 공유하므�
 **`fallocate -z`(ZERO_RANGE)로는 해결되지 않는다.** ext4 에서 ZERO_RANGE 는 범위를
 unwritten 으로 두는 것이 가장 싼 zeroing 구현이라, extent 를 written 으로
 뒤집지 않는다. 커널 4.15 와 6.8 양쪽에서 실측 확인했다 (2026-09-10).
-`blockio/cached_fd.h:29-35` 와 `DECISIONS.md D9` 는 ZERO_RANGE 가 written 으로
+`blockio/cached_fd.h:31-36` 와 `DECISIONS.md D9` 는 ZERO_RANGE 가 written 으로
 만든다고 서술하는데 **그 전제가 성립하지 않는다** — `DECISIONS.md U11` 참조.
 
 **0 으로 채우는 것으로도 부족하다.** 미기록/전부-0 LBA 의 pread 는 SSD FTL 이

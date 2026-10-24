@@ -316,6 +316,9 @@ int main(int argc, char **argv) {
                 metadata_dir.c_str(), static_cast<unsigned long long>(my_id),
                 static_cast<unsigned long long>(server->ring.file_size_bytes()),
                 static_cast<unsigned long long>(server->ring.num_pages));
+    /* 첫 랩 LPersist 가 extent 상태 변환 비용을 내는지가 이 줄로 갈린다 (U11, D19).
+     * 측정 결과와 함께 남길 것. */
+    std::printf("  ring alloc   : %s\n", server->io.ring_alloc.c_str());
     std::printf("  ring slots   : %llu\n", static_cast<unsigned long long>(server->ring.ring_slots));
     std::printf("  storage host : %s\n",
                 members[static_cast<size_t>(my_index)].storage_host.c_str());

@@ -372,8 +372,12 @@ ssh eternitystorage 'sudo dd if=/dev/nvme3n1 bs=512 skip=267485185 count=2047 if
 
 ### 7-1. 먼저 링을 한 바퀴 워밍업한다 — U11
 
-**측정 전에 반드시 해야 한다.** `create_ring_file` 은 기동할 때마다 링 전체에
-`FALLOC_FL_ZERO_RANGE` 를 건다 (`blockio/cached_fd.cpp:202`). D9 는 그것이 extent 를
+**먼저 각 노드 기동 배너의 `ring alloc` 줄을 본다 (D19).** `new, FALLOC_FL_WRITE_ZEROES`
+이면 새 링부터 extent 가 written 이라 이 절의 워밍업이 필요 없다. `ZERO_RANGE fallback` 이거나
+`existing` (D19 이전에 만든 파일) 이면 아래대로 **측정 전에 반드시 워밍업한다.**
+
+`create_ring_file` 은 (WRITE_ZEROES 를 못 쓸 때) 링 파일을 새로 만들면서
+`FALLOC_FL_ZERO_RANGE` 를 건다 (`blockio/cached_fd.cpp`, D18 이후로는 새로 할당한 구간에만). D9 는 그것이 extent 를
 전부 written 으로 만든다고 전제하지만, **DECISIONS.md U11 의 실측은 그 전제가
 틀렸다는 것을 보여준다** — ext4 에서 ZERO_RANGE 후에도 extent 는 unwritten 으로
 남는다 (라이브 링 파일에서 257 extent 중 257 개가 unwritten 이었다).
@@ -382,9 +386,11 @@ ssh eternitystorage 'sudo dd if=/dev/nvme3n1 bs=512 skip=267485185 count=2047 if
 직렬화된다.** 그냥 측정을 시작하면 첫 랩의 `LPersist` 가 그 비용까지 포함해
 부풀어 오른다.
 
-`dd` 로 미리 써 두는 방법은 **통하지 않는다** — 노드가 다음 기동 때 다시
-ZERO_RANGE 를 걸어 되돌린다. 링이 원형이므로 **한 바퀴 돌려 워밍업**하는 것이
-지금 쓸 수 있는 유일한 방법이다.
+§8 처럼 매 실행 전에 링 파일을 지우면 매번 새 파일이므로 **한 바퀴 돌려 워밍업**해야
+한다 (링이 원형이므로 한 바퀴면 된다). D18 이후로는 기존 링 파일에 ZERO_RANGE 를 다시
+걸지 않는다. 그래서 링 파일을 파일시스템을 통해 한 번 써 두고(`dd oflag=direct`)
+지우지 않고 재사용하면 written 상태가 남아 이 워밍업이 필요 없다. 그렇게 할 때는
+클러스터 전체를 함께 재시작할 것 — 리더가 살아 있는 동안 팔로워만 재시작하면 U5 에 걸린다.
 
 16 MiB 링 = 32,768 슬롯(512B)이고 4064B 명령은 8슬롯을 쓰므로 **한 바퀴 ≈ 4,100
 명령**이다. 넉넉히 넘겨 돌린다:
