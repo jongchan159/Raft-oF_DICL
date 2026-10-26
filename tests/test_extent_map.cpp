@@ -153,3 +153,45 @@ TEST_CASE("링 슬롯 오프셋이 실제 extent 경계와 맞물린다") {
     CHECK(r7.second == 1);
     CHECK(r7.first == 4096);
 }
+
+/* push 모드에서 리더가 받아 둔 팔로워 맵이 아직 유효한지 이 해시로 본다
+ * (DECISIONS.md D20). extent 레코드가 쪼개지기만 하고 매핑이 같으면 같은
+ * 해시여야 하고 -- 아니면 멀쩡한 맵을 매번 다시 받는다 -- 물리 주소가
+ * 하나라도 다르면 달라야 한다 -- 아니면 낡은 맵으로 남의 블록에 쓴다. */
+TEST_CASE("mapping_hash: 쪼개진 레코드와 합친 레코드는 같은 매핑이면 같은 해시다") {
+    ExtentCache merged = ExtentCache::from_extents({
+        Extent{0,    100000, 8192},
+        Extent{8192, 900000, 4096},
+    });
+    ExtentCache split = ExtentCache::from_extents({
+        Extent{0,    100000, 4096},
+        Extent{4096, 104096, 4096},   /* 논리·물리 둘 다 이어진다 -> 합쳐진다 */
+        Extent{8192, 900000, 4096},
+    });
+    CHECK(merged.mapping_hash() == split.mapping_hash());
+}
+
+TEST_CASE("mapping_hash: 물리 주소가 다르면 해시가 다르다") {
+    ExtentCache a = ExtentCache::from_extents({
+        Extent{0,    100000, 4096},
+        Extent{4096, 900000, 4096},
+    });
+    ExtentCache b = ExtentCache::from_extents({
+        Extent{0,    100000, 4096},
+        Extent{4096, 900512, 4096},
+    });
+    CHECK(a.mapping_hash() != b.mapping_hash());
+}
+
+TEST_CASE("mapping_hash: 논리로만 이어지고 물리로 떨어진 extent는 합치지 않는다") {
+    /* 논리 0..8191 이 한 덩어리처럼 보여도 물리로는 떨어져 있다 --
+     * 하나의 연속 extent{0, 100000, 8192} 와는 다른 매핑이다. */
+    ExtentCache gap = ExtentCache::from_extents({
+        Extent{0,    100000, 4096},
+        Extent{4096, 500000, 4096},
+    });
+    ExtentCache contiguous = ExtentCache::from_extents({
+        Extent{0, 100000, 8192},
+    });
+    CHECK(gap.mapping_hash() != contiguous.mapping_hash());
+}

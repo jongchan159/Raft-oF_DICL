@@ -48,6 +48,17 @@ inline EntryMeta entry_meta_from_proto(const rpcproto::EntryMeta &p) {
     return EntryMeta{p.term(), p.cmd_len()};
 }
 
+/* push 모드 링 extent (blockio/extent.h, DECISIONS.md D20) */
+inline void ring_extent_to_proto(const Extent &g, rpcproto::RingExtent *p) {
+    p->set_logical(g.logical);
+    p->set_physical(g.physical);
+    p->set_length(g.length);
+}
+
+inline Extent ring_extent_from_proto(const rpcproto::RingExtent &p) {
+    return Extent{p.logical(), p.physical(), p.length()};
+}
+
 /* ============================================================
  * Conversions: WritePBABatch (rpc_rdma.go 원본 그대로.
  * follower -> storage node, destination-side block copy)
@@ -175,6 +186,7 @@ inline void append_entries_request_to_proto(const AppendEntriesRequest &g,
     p->set_start_slot(g.start_slot);
     p->set_leader_dev_index(g.leader_dev_index);
     p->set_data_already_copied(g.data_already_copied);
+    p->set_need_extent_map(g.need_extent_map);
 
     p->clear_entry_metas();
     for (const auto &m : g.entry_metas) {
@@ -196,6 +208,7 @@ inline void append_entries_request_from_proto(const rpcproto::AppendEntriesReque
     g.start_slot = p.start_slot();
     g.leader_dev_index = p.leader_dev_index();
     g.data_already_copied = p.data_already_copied();
+    g.need_extent_map = p.need_extent_map();
 
     g.entry_metas.clear();
     g.entry_metas.reserve(static_cast<size_t>(p.entry_metas_size()));
@@ -220,6 +233,12 @@ inline void append_entries_response_to_proto(const AppendEntriesResponse &g,
     p->set_handle_ae_lock_wait2_nanos(g.handle_ae_lock_wait2_ns);
     p->set_handle_ae_post_nanos(g.handle_ae_post_ns);
     p->set_handle_ae_persist_nanos(g.handle_ae_persist_ns);
+    p->set_push_map_hash(g.push_map_hash);
+    p->clear_extent_map();
+    for (const auto &e : g.extent_map) {
+        ring_extent_to_proto(e, p->add_extent_map());
+    }
+    p->set_volume_wwid(g.volume_wwid);
 }
 
 inline void append_entries_response_from_proto(const rpcproto::AppendEntriesResponse &p,
@@ -236,6 +255,13 @@ inline void append_entries_response_from_proto(const rpcproto::AppendEntriesResp
     g.handle_ae_lock_wait2_ns = p.handle_ae_lock_wait2_nanos();
     g.handle_ae_post_ns = p.handle_ae_post_nanos();
     g.handle_ae_persist_ns = p.handle_ae_persist_nanos();
+    g.push_map_hash = p.push_map_hash();
+    g.extent_map.clear();
+    g.extent_map.reserve(static_cast<size_t>(p.extent_map_size()));
+    for (const auto &pe : p.extent_map()) {
+        g.extent_map.push_back(ring_extent_from_proto(pe));
+    }
+    g.volume_wwid = p.volume_wwid();
 }
 
 /* ============================================================

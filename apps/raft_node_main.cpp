@@ -36,6 +36,7 @@
 #include "raft_cli.h"
 
 #include <atomic>
+#include <map>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
@@ -98,9 +99,18 @@ void usage(const char *prog) {
       "  -transport KIND    rdma (default) | tcp. RDMA uses rdma_cm over the\n"
       "                     IPoIB addresses given in -cluster; tcp is the\n"
       "                     fallback for hosts without an IB link.\n"
-      "  -mode MODE         destination (default) | leader\n"
+      "  -mode MODE         destination (default) | leader | push\n"
       "                     replication policy; 'leader' is the DARE-style\n"
-      "                     policy for comparison (hpdc15dare 3.1.2)\n"
+      "                     policy for comparison (hpdc15dare 3.1.2).\n"
+      "                     'push' (in progress, DECISIONS.md D20): as leader,\n"
+      "                     write the log into push followers' volumes too.\n"
+      "                     For now followers still pull as well, so each\n"
+      "                     pushed byte is also copied destination-side.\n"
+      "  -push-devices MAP  push mode only. ID=PATH[,ID=PATH...]: the block\n"
+      "                     device ON THIS HOST that holds member ID's volume\n"
+      "                     (attached over NVMe-oF, never mounted here). Names\n"
+      "                     differ per host, so check with `nvme list-subsys`\n"
+      "                     and compare the wwid printed at startup.\n"
       "  -statemachine KIND noop (default) | hash | kvs. noop costs nothing, so the\n"
       "                     numbers assume a zero-cost application. Use hash\n"
       "                     when you need -op hash to verify that every node\n"
@@ -130,6 +140,7 @@ int main(int argc, char **argv) {
     std::string metadata_dir = ".";
     int heartbeat_ms = 300;
     std::string mode = "destination";
+    std::string push_devices_str;
     std::string transport = "rdma";
     std::string statemachine = "noop";
     uint64_t ring_pages = DEFAULT_NUM_PAGES;
@@ -156,6 +167,8 @@ int main(int argc, char **argv) {
             statemachine = next_arg_value(argc, argv, i, "-statemachine");
         } else if (arg == "-mode") {
             mode = next_arg_value(argc, argv, i, "-mode");
+        } else if (arg == "-push-devices") {
+            push_devices_str = next_arg_value(argc, argv, i, "-push-devices");
         } else if (arg == "-ring-pages") {
             ring_pages = std::strtoull(next_arg_value(argc, argv, i, "-ring-pages").c_str(), nullptr, 10);
                 } else if (arg == "-profile") {
@@ -259,9 +272,53 @@ int main(int argc, char **argv) {
         server->replication_mode = Server::ReplicationMode::LeaderSide;
     } else if (mode == "destination") {
         server->replication_mode = Server::ReplicationMode::DestinationSide;
+    } else if (mode == "push") {
+        server->replication_mode = Server::ReplicationMode::Push;
     } else {
-        std::fprintf(stderr, "-mode must be 'destination' or 'leader'\n");
+        std::fprintf(stderr, "-mode must be 'destination', 'leader' or 'push'\n");
         return 1;
+    }
+
+    /* -push-devices: "ID=PATH,..." -> 멤버 id별 이 호스트의 장치 경로.
+     * 위치 기반 목록이 아니라 id=path로 받는다 -- 순서를 잘못 주면 다른
+     * 멤버의 볼륨(실사용 ext4)을 조용히 덮어쓰게 된다 (E2E_EXPERIMENT.md §1). */
+    std::map<uint64_t, std::string> push_devices;
+    if (!push_devices_str.empty()) {
+        if (mode != "push") {
+            std::fprintf(stderr, "-push-devices requires -mode push\n");
+            return 1;
+        }
+        for (const auto &item : split(push_devices_str, ',', /*skip_empty=*/true)) {
+            size_t eq = item.find('=');
+            uint64_t pid = (eq == std::string::npos)
+                ? 0 : std::strtoull(item.substr(0, eq).c_str(), nullptr, 10);
+            std::string path = (eq == std::string::npos) ? "" : item.substr(eq + 1);
+            if (pid == 0 || path.empty()) {
+                std::fprintf(stderr, "invalid -push-devices entry '%s' (expected ID=PATH)\n",
+                             item.c_str());
+                return 1;
+            }
+            bool known = false;
+            for (const auto &m : members) {
+                known = known || (m.id == pid);
+            }
+            if (!known) {
+                std::fprintf(stderr, "-push-devices: member id %llu is not in -cluster\n",
+                             static_cast<unsigned long long>(pid));
+                return 1;
+            }
+            if (pid == my_id) {
+                std::fprintf(stderr, "-push-devices: id %llu is this node -- its own volume "
+                             "comes from -cluster, do not map it here\n",
+                             static_cast<unsigned long long>(pid));
+                return 1;
+            }
+            if (!push_devices.emplace(pid, path).second) {
+                std::fprintf(stderr, "-push-devices: member id %llu is mapped twice\n",
+                             static_cast<unsigned long long>(pid));
+                return 1;
+            }
+        }
     }
 
     TransportKind transport_kind = TransportKind::Rdma;
@@ -282,6 +339,10 @@ int main(int argc, char **argv) {
         server->raft.cluster[i].address = members[i].address;
         server->raft.cluster[i].device_path = members[i].device_path;
         server->raft.cluster[i].storage_host = members[i].storage_host;
+        auto pd = push_devices.find(members[i].id);
+        if (pd != push_devices.end()) {
+            server->raft.cluster[i].push_device_path = pd->second;
+        }
     }
 
     // 2. 네트워크
@@ -325,6 +386,32 @@ int main(int argc, char **argv) {
     std::printf("  device       : %s\n",
                 server->io.device_path.c_str());
     std::printf("  replication  : %s-side\n", mode.c_str());
+    /* push 모드: 매핑한 장치가 정말 그 멤버의 볼륨인지 사람도 확인할 수 있게
+     * wwid를 찍는다. 호스트 A의 "5 -> ..." wwid와 호스트 5의 "own volume"
+     * wwid가 같아야 한다 (장치 이름은 호스트마다 다르다). 리더는 맵을 받을 때
+     * 같은 대조를 자동으로 하고, 다르면 그 맵을 거절한다. map 해시는 AE
+     * 응답의 push_map_hash로 리더에게 가는 값이다 (DECISIONS.md D20).
+     * wwid는 init_storage가 읽어 둔 값이다. */
+    if (server->replication_mode == Server::ReplicationMode::Push) {
+        bool any = false;
+        for (const auto &m : server->raft.cluster) {
+            if (m.push_device_path.empty()) {
+                continue;
+            }
+            any = true;
+            std::printf("  push device  : %llu -> %s (wwid %s)\n",
+                        static_cast<unsigned long long>(m.id), m.push_device_path.c_str(),
+                        m.push_device_wwid.empty() ? "?" : m.push_device_wwid.c_str());
+        }
+        if (!any) {
+            std::printf("  push device  : (none -- as leader this node pushes to no one)\n");
+        }
+        std::printf("  own volume   : %s (wwid %s, map 0x%016llx, %zu extents)\n",
+                    server->io.device_path.c_str(),
+                    server->io.own_wwid.empty() ? "?" : server->io.own_wwid.c_str(),
+                    static_cast<unsigned long long>(server->io.ring_map_hash),
+                    server->io.ring_extents.size());
+    }
     std::printf("  transport    : %s\n", transport_kind_name(transport_kind));
     /* 이 줄이 "그 수치는 어느 상태머신으로 잰 것인가" 의 근거다. 측정 결과와
      * 함께 남길 것 -- noop 이면 애플리케이션 비용 0 을 가정한 수치다. */
@@ -388,6 +475,26 @@ int main(int argc, char **argv) {
                         " vf=" + std::to_string(server->raft.cluster[i].voted_for) +
                         " next=" + std::to_string(server->raft.cluster[i].next_index) +
                         " match=" + std::to_string(server->raft.cluster[i].match_index);
+                /* push 모드 리더: 이 팔로워에게 push하는가 (DECISIONS.md D20).
+                 *   target = 대상 (pushed=[from..to]: 쓰고 flush까지 마친 연속 구간)
+                 *   nomap  = push 모드이고 장치도 있지만 맵이 아직 없거나 맞지 않음
+                 *   nodev  = push 모드인데 이 호스트에 장치 매핑 없음
+                 *   pull   = push 모드가 아니거나 이번 term 에 아직 응답이 없음 */
+                if (server->replication_mode == Server::ReplicationMode::Push &&
+                    server->raft.state == ServerState::Leader &&
+                    static_cast<int>(i) != server->raft.cluster_index) {
+                    const ClusterMember &pm = server->raft.cluster[i];
+                    if (server->is_push_target(static_cast<int>(i))) {
+                        line += " push=target pushed=[" + std::to_string(pm.push_from) + ".." +
+                                std::to_string(pm.push_upto) + "]";
+                    } else if (pm.push_map_hash == 0) {
+                        line += " push=pull";
+                    } else if (pm.push_device_path.empty()) {
+                        line += " push=nodev";
+                    } else {
+                        line += " push=nomap";
+                    }
+                }
             }
         }
         std::fprintf(stderr, "%s\n", line.c_str());

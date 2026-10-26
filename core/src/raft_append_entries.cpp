@@ -278,6 +278,10 @@ void Server::append_entries_worker(int fi, ReplSink *sink) {
         req.start_slot = start_slot;
         req.leader_dev_index = raft.cluster_index;
         req.entry_metas = std::move(metas);
+        /* push 모드: 이 팔로워의 맵을 아직 안 받았거나 팔로워가 알린 해시가
+         * 받아 둔 맵과 다르면 응답에 맵을 실어 달라고 한다 (DECISIONS.md D20).
+         * heartbeat에도 실린다 -- 맵은 엔트리와 무관하다. */
+        req.need_extent_map = needs_extent_map(fi);
 
         int64_t ae_lock_b_held = elapsed_ns(t_b_held_start);
         mu.unlock();   /* "lockB Finish" */
@@ -342,6 +346,10 @@ void Server::append_entries_worker(int fi, ReplSink *sink) {
             mu.unlock();
             return;
         }
+
+        /* push 후보 기록과 맵 설치 (DECISIONS.md D20). term 검사보다 앞에
+         * 둔다 -- 거절 응답이어도 그 팔로워의 모드, 맵 해시, 맵은 유효하다. */
+        note_push_response(fi, rsp);
 
         /* 응답의 term이 더 높으면 이 라운드를 버린다.
          *

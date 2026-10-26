@@ -442,6 +442,100 @@ D9 의 목적은 새 링 파일의 extent 를 written 으로 만들어 첫 쓰�
 **실클러스터 검증 전이다.** 기동 배너의 `ring alloc` 이 `FALLOC_FL_WRITE_ZEROES` 로 나오는지,
 `filefrag -v <링 파일>` 에 `unwritten` 플래그가 없는지 확인할 것.
 
+## D20. push 복제 모드 (진행 중, 2026-10-25 ~ 2026-10-26)
+
+`core/src/raft_push.cpp` · `-mode push` · `-push-devices` · `AppendEntriesResponse.push_map_hash` ·
+`AppendEntriesRequest.need_extent_map` · `CachedFD::open_device` / `write_at_logical` · `persist_circular`
+
+원본에 없는 세 번째 복제 정책이다. 리더가 자기 볼륨에 로그를 쓸 때 push 팔로워의
+볼륨에도 직접 쓰고, AE 를 병렬로 보낸다. 팔로워는 리더의 쓰기 완료(OK)를 받은 뒤
+AE 에 성공으로 응답한다. 여러 단계로 나눠 들어오고 있다. **지금은 대상 인식, 맵 받기,
+리더의 push 쓰기까지 있다.** 팔로워 쪽은 아직 바뀌지 않았다 — AE 쪽 분기가 전부
+`== LeaderSide` 비교라 `Push` 는 기본(destination) 분기를 타고, push 된 바이트를 팔로워가
+pull 로 한 번 더 쓴다(같은 바이트라 무해하다). push 된 배치에서 pull 을 건너뛰는 것
+(`data_already_copied` + 아래 push 구간)은 다음 단계다.
+
+**누가 push 대상인가.** 각 노드의 `-mode push` 가 후보 자격이다. 정적 목록은 없다.
+- 팔로워는 모든 AE 응답(거절 포함)에 `push_map_hash` 를 싣는다. 0 이면 push 모드가 아니고,
+  그 밖의 값이면 push 모드이면서 그 값이 자기 링의 extent 맵 해시다
+  (`ExtentCache::mapping_hash`, 인접 extent 를 합친 뒤 FNV-1a).
+- 리더는 이 값을 `cluster[fi].push_map_hash` 에 기록한다(`note_push_response`).
+  `become_leader` 에서 0 으로 리셋해 이번 term 의 응답으로 다시 알게 한다. 이 리셋은
+  **no-op 을 쓰기 전에** 해야 한다 — 이전 리더십 때의 낡은 정보로 no-op 이 push 되지 않게
+  하기 위해서다(no-op 은 pull 로 간다).
+- push 모드 리더는 조건을 만족하는 팔로워 **전원**에게 push 한다(`is_push_target`).
+  조건은 팔로워가 push 모드라고 알렸고, 이 호스트에 그 볼륨 장치가 매핑돼 있고, 받아서
+  설치한 맵의 해시가 지금 알린 해시와 같은 것이다. 매핑이 없으면 한 번 경고하고 pull 로
+  남긴다.
+
+**왜 해시인가.** D18 이후로 링 파일은 재시작해도 그대로라 맵이 바뀌지 않지만, 링 파일을
+지우고 다시 만들면 바뀐다. 해시 하나로 "push 후보인가" 와 "받아 둔 맵이 아직 맞는가" 를
+함께 알린다. 정규화하므로 extent 레코드가 쪼개지기만 하면 해시는 그대로다.
+
+**맵은 한 번만 받는다 (`need_extent_map`).** 리더는 팔로워가 알린 해시가 설치한 맵과 다를 때만
+AE 요청에 `need_extent_map` 을 싣는다(heartbeat 포함). 팔로워는 자기 링의 extent 목록과 볼륨
+wwid 를 응답에 싣는다. 리더는 설치 전에 세 가지를 대조한다(`push_map_reject_reason`).
+- 받은 맵으로 계산한 해시가 알린 해시와 같은가
+- 맵이 덮는 끝이 자기 링 파일 크기와 같은가(`-ring-pages` 가 노드마다 다르면 깨진다)
+- **자기 호스트에서 매핑한 장치의 wwid 가 팔로워 볼륨의 wwid 와 같은가.** 해시 검사로는
+  잡지 못한다 — 맵은 팔로워가 보낸 진짜 맵이라 해시가 맞는다. `-push-devices` 의 경로가
+  엇갈렸을 때 다른 멤버의 볼륨에 쓰는 것을 이 대조가 막는다. 기동 배너의 수동 대조를
+  자동으로 하는 것이다.
+
+통과하면 그 팔로워의 `open_device` 핸들에 `set_extents` 로 설치하고, 캐시 해시
+(`push_map_cached_hash`)를 **선거가 바뀌어도 유지**한다 — 같은 해시를 다시 알리면 받지
+않는다. 실패하면 `push_map_rejected_hash` 를 기록해, 같은 맵을 매 AE 마다 다시 요청하지
+않게 한다. 메시지에는 blockio `Extent` 를 그대로 싣는다. `raft_entry.h` 가 `cached_fd.h`
+전체를 끌어오지 않도록 그 구조체만 `blockio/extent.h` 로 떼어 냈다.
+
+**push 쓰기 (`persist_circular`).** 엔트리를 쓰는 호출에서만, 엔트리 루프 앞에서 대상을 한 번
+정한다(`push_write_targets`). `flush_run` 이 자기 링에 `write_at_file` 한 바로 뒤에, 같은 바이트를
+같은 논리 오프셋으로 대상 장치에 쓴다(`write_at_logical` — 팔로워 맵으로 PBA 를 구하고 팔로워
+extent 경계에서 쪼갠다). 자기 fdatasync 뒤에 대상 장치도 flush(`fdatasync_device`)한다.
+- **헤더는 push 하지 않는다.** term/votedFor 등 그 노드 자신의 영속 상태라, 팔로워 링에
+  쓰면 그 팔로워의 투표 기록을 덮어 재시작 후 같은 term 에 두 번 투표하게 만든다.
+- push 쓰기와 flush 시간은 `nvme_ns`(= `LPersist`)에 들어간다. 넣지 않으면 `LHandler`
+  (= Lock A 보유 시간 − nvme_ns)로 잘못 잡힌다. 따라서 push 모드의 `LPersist` 는
+  "자기 링 + push 대상 장치" 쓰기 시간이다. 병렬화 단계에서 다시 나눈다.
+- 대상 하나가 실패해도 리더 자신의 persist 는 실패시키지 않는다. 그 대상은 1 초 동안 push 를
+  쉬고 pull 로 간다(`note_push_failure`). 경로가 끊긴 볼륨에 매 Apply 마다 쓰다가 `mu` 를 오래
+  잡는 것을 막기 위해서다.
+
+**push 구간 (`push_from` / `push_upto`).** 이 리더가 이 팔로워 장치에 쓰고 flush 까지 마친 **연속**
+로그 인덱스 구간이다(0 = 없음). 다음 단계에서 AE 배치 `[next, next+len-1]` 가 이 구간에 통째로
+들어갈 때만 `data_already_copied` 를 세운다. 시작값이 필요한 이유는 push 가 로그 중간부터
+시작하기 때문이다(맵 전의 no-op 등은 push 되지 않았다). Apply 가 이어지면 이어 붙이고, 중간에
+이 팔로워에게 쓰지 않은 호출이 있었으면 새로 시작한다(`note_pushed`). 팔로워 링이 바뀌었을 수
+있는 순간에는 반드시 비운다 — 새 term(`become_leader`), 알린 해시 변화, 맵 (재)설치, 쓰기 실패.
+
+**왜 파일이 아니라 장치에 쓰나.** 팔로워 링 파일은 팔로워 호스트의 ext4 위에 있다. 리더
+호스트가 그 ext4 를 같이 마운트하면 두 커널의 메타데이터 캐시가 어긋나 파일시스템이 깨진다.
+그래서 리더는 같은 바이트를 같은 논리 오프셋에 쓰되, 팔로워 맵으로 구한 PBA 로 팔로워
+**장치**에 직접 쓴다. 스토리지 노드 blockcopy 가 하는 것과 같은 방식이다. 핸들은 리더가 자기
+로그에 쓰는 `CachedFD` 를 재사용한다. `CachedFD::open_device` 는 `dev_wr_fd_` 하나만 열고,
+블록 장치(`S_ISBLK`)가 아니면 거절한다. 팔로워의 맵은 팔로워만 만들 수 있다 — FIEMAP 은 그
+파일이 마운트된 호스트에서만 걸린다.
+
+**장치 매핑.** `-push-devices ID=PATH,...` 로 받는다. 위치 기반 목록이 아닌 이유는, 순서를
+잘못 주면 다른 멤버의 볼륨(실사용 ext4)을 조용히 덮어쓰기 때문이다. 같은 볼륨이라도
+호스트마다 장치 이름이 달라서, 기동 배너에 각 장치의 wwid 와 자기 볼륨의 wwid 를 찍는다.
+호스트 A 의 `5 -> ...` wwid 와 호스트 5 의 `own volume` wwid 가 같아야 한다.
+
+**데이터 경로.** push 쓰기는 보통의 NVMe-oF Write 다. 리더 메모리 → (타깃의 RDMA READ) →
+스토리지 노드 DRAM → 팔로워 SSD 순서로 간다. 리더가 자기 로그를 쓸 때와 같다. 그래서 push 는
+대상마다 "리더→스토리지 전송 1번 + 스토리지 DRAM 경유 1번" 이 늘어난다. 이 경유를 없애려면
+nvmet `p2pmem`(SSD CMB + PCIe P2P)이나 RNIC 의 NVMe-oF 타깃 오프로드가 필요하다.
+
+**blockcopy RPC 는 남는다.** push 된 배치에서만 팔로워가 `do_pba_copy` 를 건너뛴다. 맵을
+받기 전의 no-op, 리더 교체 뒤 catch-up, 해시 불일치·장치 미매핑으로 push 를 멈춘 범위는
+fallback 으로 pull 한다.
+
+**한계 — 펜싱 없음 (2026-10-26 결정).** 리더가 바뀔 때 옛 리더의 push 쓰기가 이니시에이터 큐에
+묶였다가 늦게 도착하면, 새 리더가 쓴 슬롯을 덮을 수 있다. NVMe Reservation(새 리더가 첫 쓰기
+전에 옛 리더의 등록을 preempt)으로 막을 수 있지만, nvmet 지원이 확인되지 않아 넣지 않았다.
+SETUP.md 의 `--fast_io_fail_tmo` 로 지연 창을 줄이는 것이 완화책이다. 리더가 바뀌지 않는
+측정에는 영향이 없다. 인프라 준비 절차는 SETUP.md "PUSH MODE".
+
 ## U. 미해결 — 리팩토링 중 마주치면 여기를 볼 것
 
 | # | 항목 | 위치 | 상태 |

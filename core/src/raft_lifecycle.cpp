@@ -120,6 +120,36 @@ void Server::init_storage() {
      * 그 필드를 읽는 코드가 하나도 없었다.) */
     (void)io.cached_fd->get_pba(0, HEADER_SIZE);
 
+    /* ---- push 모드 (DECISIONS.md D20) ----
+     * 팔로워 역할 준비: 자기 링의 맵 해시(AE 응답의 push_map_hash로 리더에게
+     * 알린다), extent 목록과 볼륨 wwid(리더가 need_extent_map으로 요청하면
+     * 응답에 싣는다)를 만들어 둔다. 링 파일은 기동 후 바뀌지 않으므로 한 번만.
+     * 리더 역할 준비: 이 호스트에 매핑된 다른 멤버 볼륨을 열고 wwid를 읽는다.
+     * 하나라도 못 열면 기동을 멈춘다 -- 그 팔로워가 조용히 pull로 떨어지는
+     * 것보다 설정 실수를 바로 드러내는 편이 낫다. */
+    if (replication_mode == ReplicationMode::Push) {
+        io.ring_map_hash = io.cached_fd->extent_map_hash();
+        if (io.ring_map_hash == 0) {
+            io.ring_map_hash = 1;   /* 0은 "push 모드가 아니다"라는 뜻이라 피한다 */
+        }
+        io.ring_extents = io.cached_fd->extents();
+        io.own_wwid = block_device_wwid(io.device_path);
+        io.push_fds.assign(raft.cluster.size(), nullptr);
+        for (size_t i = 0; i < raft.cluster.size(); i++) {
+            const std::string &dev = raft.cluster[i].push_device_path;
+            if (static_cast<int>(i) == raft.cluster_index || dev.empty()) {
+                continue;
+            }
+            try {
+                io.push_fds[i] = std::make_shared<CachedFD>(CachedFD::open_device(dev));
+            } catch (const std::exception &e) {
+                throw std::runtime_error("init_storage: -push-devices entry for member id=" +
+                    std::to_string(raft.cluster[i].id) + ": " + e.what());
+            }
+            raft.cluster[i].push_device_wwid = block_device_wwid(dev);
+        }
+    }
+
     /* ---- 로그/슬롯 초기화 ---- */
     raft.log.clear();
     raft.log.push_back(Entry{});   /* sentinel: term 0, command 비어있음 */

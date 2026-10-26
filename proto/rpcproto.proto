@@ -8,6 +8,14 @@ option go_package = "nvmeof_raft/rpcproto";
 // Command bytes do NOT travel over this wire — they are block-copied
 // through the blockcopy RPC path based on the PBA pointers in
 // AppendEntriesRequest below.
+// Push mode (DECISIONS.md D20): one extent of a ring file's
+// logical -> physical map (blockio/extent.h).
+message RingExtent {
+  int64 logical = 1;
+  uint64 physical = 2;
+  uint64 length = 3;
+}
+
 message EntryMeta {
   uint64 term = 1;
   uint64 cmd_len = 2;
@@ -45,6 +53,9 @@ message AppendEntriesRequest {
   // storage node already pushed this batch's data into the follower's
   // volume before sending this RPC, so the follower skips do_pba_copy.
   bool data_already_copied = 13;
+  // Push mode (DECISIONS.md D20): the leader asks this follower to send its
+  // ring extent map back (extent_map / volume_wwid in the response).
+  bool need_extent_map = 14;
   // Inline entry metadata — follower builds its in-memory log from these
   // without carrying command payload. Command bytes are loaded lazily from
   // the ring device at apply time.
@@ -73,6 +84,15 @@ message AppendEntriesResponse {
   int64 handle_ae_lock_wait2_nanos = 10; // doPBACopy returned -> re-lock acquired
   int64 handle_ae_post_nanos = 11;       // re-lock -> return, excluding persist
   int64 handle_ae_persist_nanos = 12;    // persistCircular (header-only)
+  // Push mode (DECISIONS.md D20): the follower's ring extent-map hash when it
+  // runs with -mode push, 0 otherwise. Sent on every response, success or not.
+  // Additive, so peers that predate it report 0 (= not a push follower).
+  uint64 push_map_hash = 13;
+  // Push mode: filled only when the request had need_extent_map and this
+  // follower runs with -mode push. volume_wwid identifies the follower's own
+  // volume so the leader can check its -push-devices mapping.
+  repeated RingExtent extent_map = 14;
+  string volume_wwid = 15;
 }
 
 // ---- Blockcopy RPCs (rpc_rdma.go WritePBABatchRequest/Response 대응) ----

@@ -119,6 +119,7 @@ set(CORE_SRCS
     core/src/raft_lifecycle.cpp
     core/src/raft_types.cpp
     core/src/raft_read.cpp
+    core/src/raft_push.cpp
 )
 
 # net/의 이 두 파일만 RDMA 버전으로 교체하면 core/는 안 건드려도 된다
@@ -276,6 +277,7 @@ add_executable(raft_unit_tests
     tests/test_election.cpp
     tests/test_kvs_sm.cpp
     tests/test_read_index.cpp
+    tests/test_push_targets.cpp
 )
 target_include_directories(raft_unit_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 target_link_libraries(raft_unit_tests PRIVATE

@@ -140,6 +140,16 @@ void Server::handle_append_entries_request(const AppendEntriesRequest &req,
         rsp.handle_ae_lock_wait2_ns = handle_ae_lock_wait2;
         rsp.handle_ae_post_ns = handle_ae_post;
         rsp.handle_ae_persist_ns = handle_ae_persist;
+        /* push 후보 알림 -- 모든 반환 경로(거절 포함)가 여기를 지난다
+         * (DECISIONS.md D20). io.ring_map_hash는 init_storage 이후 바뀌지
+         * 않으므로 mu 밖에서 읽어도 된다. */
+        rsp.push_map_hash = (replication_mode == ReplicationMode::Push) ? io.ring_map_hash : 0;
+        /* 리더가 맵을 달라고 했으면 자기 링 extent 목록과 볼륨 wwid를 싣는다.
+         * 둘 다 init_storage 이후 바뀌지 않는다. */
+        if (req.need_extent_map && replication_mode == ReplicationMode::Push) {
+            rsp.extent_map = io.ring_extents;
+            rsp.volume_wwid = io.own_wwid;
+        }
     };
 
     update_term(req.rpc.term);

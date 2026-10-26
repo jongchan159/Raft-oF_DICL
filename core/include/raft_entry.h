@@ -1,6 +1,8 @@
 #ifndef RAFT_ENTRY_HPP
 #define RAFT_ENTRY_HPP
 
+#include "extent.h"   /* Extent (blockio/extent.h) -- push 모드 AE 응답이 싣는다 */
+
 #include <cstdint>
 #include <vector>
 #include <string>
@@ -128,6 +130,12 @@ struct AppendEntriesRequest {
      * follower 자신이 do_pba_copy로 복사를 수행). */
     bool data_already_copied = false;
 
+    /* need_extent_map: push 모드 리더가 이 팔로워의 링 extent 맵을 응답에
+     * 실어 달라고 요청한다 (DECISIONS.md D20). 리더가 맵을 아직 갖고 있지
+     * 않거나 팔로워가 알린 해시가 받아 둔 맵과 다를 때만 true다
+     * (Server::needs_extent_map). */
+    bool need_extent_map = false;
+
     /* Inline entry metadata: follower builds in-memory log from these
      * (Term + CmdLen only, no command payload). Command is loaded lazily
      * from the device at apply time. Avoids O_DIRECT readback on
@@ -166,6 +174,18 @@ struct AppendEntriesResponse {
     int64_t handle_ae_lock_wait2_ns = 0;  /* doPBACopy 반환 후 재lock 대기 */
     int64_t handle_ae_post_ns = 0;        /* 재lock -> 반환, persistCircular 제외 */
     int64_t handle_ae_persist_ns = 0;     /* persistCircular (header-only) 시간 */
+
+    /* push_map_hash: 팔로워가 push 모드면 자기 링의 extent 맵 해시, 아니면 0.
+     * 리더는 이 값으로 push 후보를 알아보고, 나중에 받아 둔 맵이 아직
+     * 유효한지 확인한다 (DECISIONS.md D20). 성공/거절과 무관하게 실린다. */
+    uint64_t push_map_hash = 0;
+
+    /* extent_map / volume_wwid: 요청에 need_extent_map이 있고 이 팔로워가
+     * push 모드일 때만 채운다. 리더는 맵을 이 팔로워 장치 핸들에 설치하기
+     * 전에, volume_wwid를 자기 호스트에서 매핑한 장치의 wwid와 대조해
+     * -push-devices가 엉뚱한 볼륨을 가리키지 않는지 확인한다. */
+    std::vector<Extent> extent_map;
+    std::string volume_wwid;
 };
 
 /* ============================================================

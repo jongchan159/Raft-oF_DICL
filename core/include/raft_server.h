@@ -139,8 +139,15 @@ public:
      *   상태를 가정한다 (DARE의 모든 서버 쌍이 RC log QP로 연결되어
      *   서로의 로그를 MR로 노출해두는 것과 동일한 토폴로지 가정,
      *   hpdc15dare §3.1.2 "any pair of servers is connected by ... a log
-     *   QP that grants remote access to the local log"). */
-    enum class ReplicationMode { DestinationSide, LeaderSide };
+     *   QP that grants remote access to the local log").
+     * Push (진행 중, DECISIONS.md D20): 리더가 자기 로그를 쓸 때 push 모드
+     *   팔로워의 볼륨에도 직접 쓴다 (리더 호스트가 그 볼륨을 NVMe-oF로
+     *   attach하고 팔로워 extent 맵으로 구한 PBA에 쓴다 --
+     *   persist_circular). **팔로워는 아직 pull도 한다** -- AE 쪽 분기는
+     *   전부 == LeaderSide 비교라 Push는 기본(destination) 분기를 타고,
+     *   같은 바이트가 push와 pull로 두 번 쓰인다. push된 배치에서 pull을
+     *   건너뛰는 것은 다음 단계(data_already_copied + 범위 확인)다. */
+    enum class ReplicationMode { DestinationSide, LeaderSide, Push };
     ReplicationMode replication_mode = ReplicationMode::DestinationSide;
 
     /* --- NVMe-oF Setting --- */
@@ -335,6 +342,44 @@ public:
                                 uint64_t dst_slot, int src_dev, int dst_dev);
     void handle_append_entries_request(const AppendEntriesRequest &req,
                                         AppendEntriesResponse &rsp);
+
+    /* ---- push 모드 (raft_push.cpp, DECISIONS.md D20) ----
+     * is_push_target: 리더가 팔로워 fi의 볼륨에 직접 쓸 대상인가.
+     *   이 노드가 push 모드의 리더이고, fi가 AE 응답에서 push 모드라고
+     *   알렸고(push_map_hash != 0), 이 호스트에 fi 볼륨 장치가 매핑돼
+     *   있고(push_device_path), 받아서 설치한 맵의 해시가 지금 알린 해시와
+     *   같으면 대상이다. 순수 판정이라 단위 테스트가 붙는다
+     *   (tests/test_push_targets.cpp).
+     * push_targets: 대상 전부 (클러스터 인덱스 오름차순).
+     * push_write_targets: 그중 쓰기 실패 후 쉬는 중이 아닌 대상.
+     *   persist_circular가 엔트리를 쓸 때 부른다.
+     * needs_extent_map: fi에게 보내는 AE에 need_extent_map을 실을지.
+     *   맵이 없거나 알린 해시가 설치한 맵과 다르고, 그 해시를 이미
+     *   거절한 적이 없으면 true.
+     * note_push_response: AE 응답의 push_map_hash를 기록하고, 맵이 실려
+     *   왔으면 검증해서 설치한다. append_entries_worker의 Lock C가 부른다.
+     * note_pushed / note_push_failure: persist_circular의 push 쓰기 결과를
+     *   push 범위([push_from, push_upto])와 실패 후 쉬는 시각에 반영한다.
+     * 정적 함수인 push_map_reject_reason을 뺀 나머지는 전부 **호출자가 mu를
+     * 보유**해야 한다. */
+    bool is_push_target(int fi) const;
+    std::vector<int> push_targets() const;
+    std::vector<int> push_write_targets(clock_type::time_point now) const;
+    bool needs_extent_map(int fi) const;
+    void note_push_response(int fi, const AppendEntriesResponse &rsp);
+    void note_pushed(int fi, uint64_t first, uint64_t last);
+    void note_push_failure(int fi, const std::string &what);
+
+    /* push_map_reject_reason: 팔로워에게서 받은 맵을 설치해도 되는가.
+     * 되면 빈 문자열, 아니면 거절 이유. 조건은 (1) 계산한 해시가 팔로워가
+     * 알린 해시와 같고, (2) 맵이 덮는 끝이 이 노드의 링 파일 크기와 같고
+     * (-ring-pages가 다르면 깨진다), (3) 이 호스트에서 매핑한 장치의 wwid와
+     * 팔로워가 보낸 자기 볼륨 wwid가 둘 다 있고 같아야 한다 -- 다르면
+     * -push-devices가 다른 멤버의 볼륨을 가리키고 있는 것이다. 순수 함수다. */
+    static std::string push_map_reject_reason(uint64_t advertised_hash, uint64_t computed_hash,
+                                              uint64_t map_end_bytes, uint64_t ring_file_bytes,
+                                              const std::string &mapped_wwid,
+                                              const std::string &follower_wwid);
 
     /* update_term (raft.go의 updateTerm): msg_term이 우리 term보다 크면
      * 팔로워로 강등하고 term/투표를 갱신한 뒤 헤더를 persist한다.

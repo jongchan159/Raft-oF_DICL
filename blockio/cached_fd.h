@@ -1,11 +1,14 @@
 #ifndef BLOCKIO_CACHED_FD_H
 #define BLOCKIO_CACHED_FD_H
 
+#include "extent.h"
+
 #include <cstdint>
 #include <cstddef>
 #include <vector>
 #include <string>
 #include <stdexcept>
+#include <utility>
 
 namespace nvmeof_raft {
 
@@ -63,14 +66,8 @@ struct RingFileResult {
 
 RingFileResult create_ring_file(const std::string &path, uint64_t size_bytes);
 
-/* ============================================================
- * extent (raft.go 원본, 소문자 비공개 타입)
- * ============================================================ */
-struct Extent {
-    int64_t logical = 0;     /* logical byte offset in the file */
-    uint64_t physical = 0;   /* physical byte offset on the device */
-    uint64_t length = 0;     /* bytes */
-};
+/* Extent(논리 -> 물리 구간 하나)는 blockio/extent.h에 있다 -- AE 응답이
+ * 이 구조체를 싣기 때문에 따로 떼어 두었다 (그 파일 주석 참고). */
 
 /* ============================================================
  * ExtentCache (raft.go 원본)
@@ -112,6 +109,18 @@ public:
      *  when offsets advance sequentially." */
     std::pair<uint64_t, int> remaining_at(int64_t logical, int hint) const;
 
+    /* mapping_hash: "논리 오프셋 -> 물리 주소" 매핑 자체의 해시 (FNV-1a 64).
+     *
+     * 원본에는 없다. push 모드에서 리더가 받아 둔 팔로워 맵이 아직 유효한지
+     * 확인하는 데 쓴다 (DECISIONS.md D20). 논리·물리 주소가 둘 다 이어지는
+     * 인접 extent를 합친 뒤 해시하므로, extent 상태 변환 등으로 레코드만
+     * 쪼개지고 매핑이 같으면 해시도 같다. */
+    uint64_t mapping_hash() const;
+
+    /* 담고 있는 extent 목록 (logical 오름차순). push 모드 팔로워가 자기
+     * 맵을 리더에게 보낼 때 쓴다. */
+    const std::vector<Extent> &extents() const { return extents_; }
+
 private:
     std::vector<Extent> extents_;   /* logical 오름차순 정렬됨 */
 };
@@ -130,6 +139,20 @@ private:
 class CachedFD {
 public:
     static CachedFD open(const std::string &meta_path, const std::string &device_path);
+
+    /* open_device: 링 파일 없이 **장치만** 연다 (push 모드, DECISIONS.md D20).
+     *
+     * 리더가 push 대상 팔로워의 볼륨에 쓸 때 쓴다. 팔로워의 링 파일은 팔로워
+     * 호스트의 ext4 위에 있고, 리더 호스트가 그 ext4를 같이 마운트할 수는
+     * 없다. 그래서 파일이 아니라 장치에 팔로워 맵으로 구한 PBA로 쓴다.
+     *
+     * dev_wr_fd_ 하나만 연다. 메타 파일 fd 둘과 dev_rd_fd_는 -1로 남으므로
+     * write_at_file / read_at_file / fdatasync / cache_extents / read는
+     * 예외를 던진다. get_pba는 팔로워 맵을 넣은 뒤에만 쓸 수 있다.
+     * 블록 장치가 아니면(S_ISBLK) 거절한다 -- 경로를 잘못 주면 다른 파일을
+     * 조용히 덮어쓰게 되기 때문이다. */
+    static CachedFD open_device(const std::string &device_path);
+
     ~CachedFD();
 
     CachedFD(const CachedFD &) = delete;
@@ -177,6 +200,21 @@ public:
         }
         return extent_cache_.remaining_at(logical, hint);
     }
+    /* 캐시한 extent 맵의 mapping_hash. 캐시가 없으면 0. */
+    uint64_t extent_map_hash() const {
+        return has_extent_cache_ ? extent_cache_.mapping_hash() : 0;
+    }
+    /* 캐시한 extent 목록의 사본. 캐시가 없으면 빈 목록. */
+    std::vector<Extent> extents() const {
+        return has_extent_cache_ ? extent_cache_.extents() : std::vector<Extent>{};
+    }
+    /* set_extents: FIEMAP 대신 주어진 맵을 쓴다. push 모드 리더가 팔로워에게서
+     * 받아 검증한 맵을 그 팔로워의 open_device 인스턴스에 넣는다 -- 이후
+     * get_pba와 write_at_logical이 이 맵을 쓴다 (DECISIONS.md D20). */
+    void set_extents(ExtentCache cache) {
+        extent_cache_ = std::move(cache);
+        has_extent_cache_ = true;
+    }
 
     /* GetPBA (raft.go 원본)
      * "retrieves the physical block address for a logical offset. Uses
@@ -193,12 +231,23 @@ public:
     void write(uint64_t pba, const std::vector<uint8_t> &data);
     std::vector<uint8_t> read(uint64_t pba, uint64_t nbytes) const;
 
+    /* write_at_logical: 링 파일의 논리 오프셋을 이 인스턴스의 extent 맵으로
+     * PBA로 바꿔 장치(dev_wr_fd_)에 직접 쓴다. extent 경계에서 쪼갠다.
+     * push 모드 리더가 팔로워 링에 쓰는 경로다 -- 자기 링에 쓰는
+     * write_at_file과 같은 (buf, len, 논리 오프셋) 모양이다 (DECISIONS.md D20).
+     * O_DIRECT라 data/offset/len이 512B 정렬이어야 한다. extent 맵이 없거나
+     * 범위가 맵 밖이면 예외를 던진다. */
+    void write_at_logical(const void *data, size_t len, int64_t offset);
+    /* fdatasync_device: dev_wr_fd_를 flush한다 (블록 장치의 캐시 flush). */
+    void fdatasync_device();
+
 private:
     CachedFD() = default;
 
     int meta_fd_ = -1;      /* metadata file fd (O_RDONLY), FIEMAP ioctl용 */
     int meta_wr_fd_ = -1;   /* metadata file fd (O_RDWR|O_DIRECT), WriteAtFile용 */
-    int dev_wr_fd_ = -1;    /* device fd (O_RDWR|O_DIRECT), legacy direct-PBA write */
+    int dev_wr_fd_ = -1;    /* device fd (O_RDWR|O_DIRECT), direct-PBA write
+                               (open_device 인스턴스는 이것만 연다) */
     int dev_rd_fd_ = -1;    /* device fd (O_RDONLY|O_DIRECT) */
 
     bool has_extent_cache_ = false;
@@ -209,6 +258,18 @@ private:
 
     void close_all();
 };
+
+/* ============================================================
+ * block_device_wwid: 블록 장치의 namespace 식별자
+ * (/sys/class/block/<name>/wwid). 읽을 수 없으면 빈 문자열.
+ *
+ * 같은 NVMe-oF namespace는 어느 호스트에서 attach해도 wwid가 같다.
+ * 그래서 리더 호스트에서 "멤버 5의 볼륨"으로 매핑한 장치가 정말 그
+ * 볼륨인지, 호스트 5가 자기 볼륨에 대해 보고하는 wwid와 비교해 확인할
+ * 수 있다 (push 모드, DECISIONS.md D20). 장치 이름(/dev/nvmeXnY)은
+ * 호스트마다 달라서 그걸로는 확인할 수 없다.
+ * ============================================================ */
+std::string block_device_wwid(const std::string &dev_path);
 
 } /* namespace nvmeof_raft */
 

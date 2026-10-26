@@ -26,11 +26,34 @@ int64_t Server::persist_circular(bool write_log, int n_new_entries) {
     int64_t nvme_ns = 0;
     int flush_count = 0;
 
+    /* ---- push 모드 (DECISIONS.md D20) ----
+     * 이번 호출이 쓰는 엔트리를 push 대상 팔로워의 장치에도 같은 논리
+     * 오프셋으로 쓴다. 대상은 엔트리를 쓰는 호출에서만, 엔트리 루프 앞에서
+     * 한 번 정한다 -- 한 호출 안에서 flush_run이 여러 번 불려도(링 wrap,
+     * extent-skip) 같은 대상에 쓰기 위해서다. 헤더만 쓰는 호출(false, 0)과
+     * 리더가 아닐 때는 대상이 없다 (push_write_targets가 리더만 본다).
+     * push_ok[k]: 이번 호출에서 대상 k에 쓰기가 아직 다 성공했는가. */
+    std::vector<int> push_fis;
+    std::vector<char> push_ok;
+    uint64_t push_first = 0;
+    uint64_t push_last = 0;
+    auto push_fd = [this](int fi) -> CachedFD * {
+        size_t i = static_cast<size_t>(fi);
+        return (i < io.push_fds.size()) ? io.push_fds[i].get() : nullptr;
+    };
+
     if (write_log && n_new_entries > 0) {
         int start = static_cast<int>(raft.log.size()) - n_new_entries;
         if (start < 1) {
             start = 1;
         }
+
+        push_fis = push_write_targets(clock_type::now());
+        push_ok.assign(push_fis.size(), 1);
+        /* 이번 호출이 쓰는 엔트리의 로그 인덱스 구간 (아래 루프의 log_idx와 같은 식) */
+        push_first = ring.tail_log_index -
+                     static_cast<uint64_t>(raft.log.size() - static_cast<size_t>(start));
+        push_last = ring.tail_log_index - 1;
 
         size_t est_size = 0;
         for (int k = start; k < static_cast<int>(raft.log.size()); k++) {
@@ -60,6 +83,25 @@ int64_t Server::persist_circular(bool write_log, int n_new_entries) {
             auto t_io = clock_type::now();
             flush_count++;
             io.cached_fd->write_at_file(run_buffer.data(), run_buffer.size(), run_off);
+            /* push: 같은 바이트를 같은 논리 오프셋으로 대상 팔로워 장치에 쓴다
+             * (팔로워 맵으로 PBA를 구해 장치에 직접). 실패해도 리더 자신의
+             * persist는 실패시키지 않는다 -- 그 팔로워만 이번 호출에서 빠지고
+             * 잠시 pull로 간다. 시간은 nvme_ns(= LPersist)에 포함된다. */
+            for (size_t k = 0; k < push_fis.size(); k++) {
+                if (!push_ok[k]) {
+                    continue;
+                }
+                CachedFD *pfd = push_fd(push_fis[k]);
+                try {
+                    if (pfd == nullptr) {
+                        throw std::runtime_error("no device handle");
+                    }
+                    pfd->write_at_logical(run_buffer.data(), run_buffer.size(), run_off);
+                } catch (const std::exception &e) {
+                    push_ok[k] = 0;
+                    note_push_failure(push_fis[k], e.what());
+                }
+            }
             nvme_ns += elapsed_ns(t_io);
             run_off += static_cast<int64_t>(run_buffer.size());
             run_buffer.clear();
@@ -188,6 +230,10 @@ int64_t Server::persist_circular(bool write_log, int n_new_entries) {
 
         /* Header lives at logical offset 0 (RING_OFFSET == HEADER_SIZE
          * -- ring slot 0은 헤더 다음부터 시작, 원본 주석 그대로) */
+        /* 헤더는 push하지 않는다 (flush_run을 타지 않는다). term/votedFor
+         * 등 **이 노드 자신의** 영속 상태라, 팔로워 링에 쓰면 그 팔로워의
+         * 투표 기록을 덮어 재시작 후 같은 term에 두 번 투표하게 만든다
+         * (D18, DECISIONS.md D20). */
         auto t_hdr_io = clock_type::now();
         io.cached_fd->write_at_file(header.data(), header.size(), 0);
         nvme_ns += elapsed_ns(t_hdr_io);   /* header 작성 시 writeI/O에 추가 */
@@ -201,7 +247,28 @@ int64_t Server::persist_circular(bool write_log, int n_new_entries) {
         /* 3-2. fdatasync */
         auto t_sync_io = clock_type::now();
         io.cached_fd->fdatasync();
+        /* push 대상 장치도 flush해야 "팔로워 볼륨에 내구성 있게 있다"고
+         * 말할 수 있다 (블록 장치 fdatasync = 디바이스 캐시 flush) */
+        for (size_t k = 0; k < push_fis.size(); k++) {
+            if (!push_ok[k]) {
+                continue;
+            }
+            try {
+                push_fd(push_fis[k])->fdatasync_device();
+            } catch (const std::exception &e) {
+                push_ok[k] = 0;
+                note_push_failure(push_fis[k], e.what());
+            }
+        }
         nvme_ns += elapsed_ns(t_sync_io);
+    }
+
+    /* 쓰고 flush까지 마친 대상에 이번 구간을 기록한다 -- 다음 단계에서
+     * 이 구간에 통째로 든 AE 배치는 팔로워가 pull을 건너뛴다 */
+    for (size_t k = 0; k < push_fis.size(); k++) {
+        if (push_ok[k]) {
+            note_pushed(push_fis[k], push_first, push_last);
+        }
     }
 
     return nvme_ns;
