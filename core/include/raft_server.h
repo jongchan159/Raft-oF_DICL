@@ -143,10 +143,11 @@ public:
      * Push (진행 중, DECISIONS.md D20): 리더가 자기 로그를 쓸 때 push 모드
      *   팔로워의 볼륨에도 직접 쓴다 (리더 호스트가 그 볼륨을 NVMe-oF로
      *   attach하고 팔로워 extent 맵으로 구한 PBA에 쓴다 --
-     *   persist_circular). **팔로워는 아직 pull도 한다** -- AE 쪽 분기는
-     *   전부 == LeaderSide 비교라 Push는 기본(destination) 분기를 타고,
-     *   같은 바이트가 push와 pull로 두 번 쓰인다. push된 배치에서 pull을
-     *   건너뛰는 것은 다음 단계(data_already_copied + 범위 확인)다. */
+     *   persist_circular). AE 배치가 그 팔로워의 push 구간에 통째로 들면
+     *   data_already_copied를 실어 팔로워가 pull을 건너뛴다(push_covers).
+     *   AE는 push 쓰기와 flush가 끝난 뒤에 나가므로 AE 자체가 "썼다"는
+     *   알림이다 -- 따로 OK를 보내지 않는다. 구간 밖의 배치(맵 받기 전의
+     *   no-op, catch-up, push 실패 뒤)는 기본(destination) 경로로 pull한다. */
     enum class ReplicationMode { DestinationSide, LeaderSide, Push };
     ReplicationMode replication_mode = ReplicationMode::DestinationSide;
 
@@ -360,12 +361,16 @@ public:
      *   왔으면 검증해서 설치한다. append_entries_worker의 Lock C가 부른다.
      * note_pushed / note_push_failure: persist_circular의 push 쓰기 결과를
      *   push 범위([push_from, push_upto])와 실패 후 쉬는 시각에 반영한다.
+     * push_covers: 로그 인덱스 [first, last]가 fi의 push 범위에 통째로
+     *   드는가. append_entries_worker가 이 값으로 data_already_copied를
+     *   세운다 -- 하나라도 밖이면 그 배치는 pull한다.
      * 정적 함수인 push_map_reject_reason을 뺀 나머지는 전부 **호출자가 mu를
      * 보유**해야 한다. */
     bool is_push_target(int fi) const;
     std::vector<int> push_targets() const;
     std::vector<int> push_write_targets(clock_type::time_point now) const;
     bool needs_extent_map(int fi) const;
+    bool push_covers(int fi, uint64_t first, uint64_t last) const;
     void note_push_response(int fi, const AppendEntriesResponse &rsp);
     void note_pushed(int fi, uint64_t first, uint64_t last);
     void note_push_failure(int fi, const std::string &what);

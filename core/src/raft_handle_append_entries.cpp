@@ -230,10 +230,12 @@ void Server::handle_append_entries_request(const AppendEntriesRequest &req,
 
         handle_ae_pre = elapsed_ns(t_after_lock);
 
-        /* Leader-Side(Server::ReplicationMode::LeaderSide)에서는
-         * req.data_already_copied가 true -- leader의 storage node가
-         * AppendEntries를 보내기 전에 이미 이 데이터를 우리 볼륨에
-         * 직접 써놨으므로 do_pba_copy를 다시 돌릴 필요가 없다
+        /* req.data_already_copied가 true면 이 데이터는 AppendEntries가 오기
+         * 전에 이미 우리 볼륨에 있으므로 do_pba_copy를 다시 돌릴 필요가 없다.
+         *   - Leader-Side: leader의 storage node가 우리 볼륨에 복사해 뒀다.
+         *   - Push: 리더 호스트가 우리 볼륨 장치에 직접 쓰고 flush까지
+         *     마쳤다 (DECISIONS.md D20). 응답의 write_pba_rt_ns /
+         *     storage_copy_ns는 0이고, 그 비용은 리더의 LPersist에 있다.
          * (Destination-Side의 기본 동작만 아래 do_pba_copy 실행). */
         DoPbaCopyResult copy_result{};
         bool copy_failed = false;

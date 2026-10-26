@@ -20,6 +20,15 @@
  *
  * 맵은 **한 번만** 받는다. 리더는 알린 해시가 설치한 맵과 다를 때만
  * need_extent_map으로 요청하고, 설치한 맵은 선거가 바뀌어도 유지한다.
+ *
+ * pull 건너뛰기 (push_covers): AE 배치가 그 팔로워의 push 구간에 통째로
+ * 들면 append_entries_worker가 data_already_copied를 세우고, 팔로워는
+ * do_pba_copy 없이 메타데이터로만 로그를 잇는다.
+ *
+ * OK는 AE가 대신한다 (A안, DECISIONS.md D20): 처음 설계는 AE를 push와
+ * 병렬로 보내고 쓰기가 끝나면 RDMA로 OK를 따로 보내는 것이었다. 지금은
+ * AE가 push 쓰기와 flush가 끝난 뒤(Lock A 뒤)에만 나가므로 AE를 받았다는
+ * 것 자체가 "네 볼륨에 내구성 있게 있다"는 뜻이다. 그래서 OK 채널이 없다.
  * ============================================================ */
 #include "raft_server.h"
 #include "cached_fd.h"   /* ExtentCache, CachedFD::set_extents */
@@ -99,6 +108,18 @@ bool Server::needs_extent_map(int fi) const {
     return !m.push_device_path.empty() && m.push_map_hash != 0 &&
            m.push_map_hash != m.push_map_cached_hash &&
            m.push_map_hash != m.push_map_rejected_hash;
+}
+
+bool Server::push_covers(int fi, uint64_t first, uint64_t last) const {
+    if (!is_push_target(fi) || first > last) {
+        return false;
+    }
+    /* 구간은 note_pushed가 쓰고 flush까지 마친 뒤에만 넓히고, 팔로워 링이
+     * 바뀌었을 수 있으면 비운다 -- 그래서 안에 든 배치는 지금 맵 기준으로
+     * 팔로워 장치에 내구성 있게 있다. 일부만 걸쳐도 pull한다 (배치를
+     * 쪼개 보내지 않는다). */
+    const ClusterMember &m = raft.cluster[static_cast<size_t>(fi)];
+    return m.push_upto != 0 && m.push_from <= first && last <= m.push_upto;
 }
 
 std::string Server::push_map_reject_reason(uint64_t advertised_hash, uint64_t computed_hash,

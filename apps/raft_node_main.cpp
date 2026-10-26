@@ -476,7 +476,9 @@ int main(int argc, char **argv) {
                         " next=" + std::to_string(server->raft.cluster[i].next_index) +
                         " match=" + std::to_string(server->raft.cluster[i].match_index);
                 /* push 모드 리더: 이 팔로워에게 push하는가 (DECISIONS.md D20).
-                 *   target = 대상 (pushed=[from..to]: 쓰고 flush까지 마친 연속 구간)
+                 *   target = 대상 (pushed=[from..to]: 쓰고 flush까지 마친 연속 구간,
+                 *            skip/pull: 대상일 때 보낸 엔트리 배치 중 push 구간에
+                 *            들어 pull을 건너뛰게 한 수 / 구간 밖이라 pull한 수. 누적)
                  *   nomap  = push 모드이고 장치도 있지만 맵이 아직 없거나 맞지 않음
                  *   nodev  = push 모드인데 이 호스트에 장치 매핑 없음
                  *   pull   = push 모드가 아니거나 이번 term 에 아직 응답이 없음 */
@@ -486,7 +488,9 @@ int main(int argc, char **argv) {
                     const ClusterMember &pm = server->raft.cluster[i];
                     if (server->is_push_target(static_cast<int>(i))) {
                         line += " push=target pushed=[" + std::to_string(pm.push_from) + ".." +
-                                std::to_string(pm.push_upto) + "]";
+                                std::to_string(pm.push_upto) + "]" +
+                                " skip=" + std::to_string(pm.push_ae_skipped) +
+                                " pull=" + std::to_string(pm.push_ae_pulled);
                     } else if (pm.push_map_hash == 0) {
                         line += " push=pull";
                     } else if (pm.push_device_path.empty()) {

@@ -295,7 +295,7 @@ HTTP CONNECT + 길이 프레이밍, RDMA 는 SEND 메시지 하나가 프레임 
 | `-heartbeat-ms N` | 300 | 하트비트 주기. election timeout은 이것의 20~30배 |
 | `-transport rdma\|tcp` | **rdma** | Raft/blockcopy RPC 전송. rdma는 `-cluster`의 주소를 **IPoIB 주소**로 해석한다 |
 | `-statemachine noop\|hash` | **noop** | noop은 명령 바이트를 읽지 않는다 = 애플리케이션 비용 0. `-op hash`로 정합성을 확인하려면 `hash`로 띄워야 하고, 그 해시는 1 MiB 명령당 ~2ms를 먹는다 |
-| `-mode destination\|leader\|push` | destination | 복제 정책. `push`는 진행 중이다 -- 리더가 push 팔로워 장치에도 쓰지만 팔로워는 아직 pull도 한다 (DECISIONS.md D20) |
+| `-mode destination\|leader\|push` | destination | 복제 정책. `push`는 진행 중이다(병렬화 전) -- 리더가 push 팔로워 장치에도 쓰고, push된 배치는 팔로워가 pull을 건너뛴다(그 밖은 pull). 검증은 E2E_EXPERIMENT.md §6-4 (DECISIONS.md D20) |
 | `-push-devices ID=PATH,...` | (없음) | `push` 전용. 멤버 ID의 볼륨이 **이 호스트에서** 보이는 블록 장치 경로. 마운트하지 않는다. 준비 절차는 SETUP.md "PUSH MODE" |
 | `-ring-pages N` | 8388608 (32GiB) | 링 크기 (4KiB 페이지) |
 | `-profile` | off | 서브스테이지 프로파일링 (apply-timed에 필요) |

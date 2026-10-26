@@ -366,6 +366,65 @@ ssh eternitystorage 'sudo dd if=/dev/nvme3n1 bs=512 skip=267485185 count=2047 if
 > U11 을 고쳐 extent 가 실제로 written 이 되면 6-2 의 파일 단위 비교가 되살아난다 —
 > U11 은 지연(첫 랩 `LPersist` 2배)뿐 아니라 **복제 관측 가능성**의 선결 조건이기도 하다.
 
+### 6-4. push 모드 — push 된 바이트가 맞는가
+
+`-mode push` 로 띄울 때만 한다(DECISIONS.md D20). 인프라 준비(다른 멤버 볼륨 attach,
+`-push-devices`, 배너 wwid 대조)는 SETUP.md "PUSH MODE" 를 먼저 끝낸다. 세 노드 모두
+`-mode push -statemachine hash -debug` 로 띄우고, 각 노드의 `-push-devices` 에 나머지 두 멤버를 준다.
+
+push 된 배치는 팔로워가 pull 을 건너뛰므로, 그 구간의 팔로워 바이트는 **리더의 push 만** 썼다.
+아래 (2)(3) 이 그 바이트를 확인한다.
+
+**(1) push 가 실제로 쓰이는가 — 리더 `-debug`**
+
+```bash
+./build/raft_client -addrs $ADDRS -op apply -n 300 -size 4096
+```
+
+리더의 `[state]` 줄에서 두 팔로워가 `push=target pushed=[A..B] skip=N pull=M` 으로 나와야 한다.
+- `skip`(push 덕에 pull 을 건너뛴 배치)이 Apply 마다 늘고, `B` 가 리더 `tail` 을 따라간다.
+- `pull`(대상인데 push 구간 밖이라 pull 한 배치)은 거의 늘지 않아야 한다. 세는 것은 두 가지다.
+  하나는 대상이 된 직후의 경계 배치다 — 대상이 되기 전에 쓴(push 안 된) 엔트리와 그 뒤 push 된
+  엔트리에 걸쳐 있어 통째로 pull 한다. 선거나 맵 설치마다 보통 하나다. 다른 하나는 push 실패 뒤
+  1 초 동안의 배치다. 맵을 받기 전에 보낸 배치는 아직 대상이 아니므로 세지 않는다.
+- `push=nomap` 이 계속되면 맵 검증이 실패한 것이다. 리더 stderr 의
+  `[ERROR] [PUSH] ... extent map rejected -- <이유>` 를 본다. `push=nodev` 면 그 리더 호스트의
+  `-push-devices` 에 그 멤버가 없다.
+
+**(2) push 된 바이트가 리더와 같은가 — §6-3 raw 비교**
+
+(1) 을 마치고 apply 를 멈춘 뒤 §6-3 절차를 그대로 한다. 세 해시가 같고 0 이 아니어야 한다.
+다르면 push 경로 결함이다. `-push-devices` 매핑(배너 wwid)과 `write_at_logical` 이 팔로워 맵으로
+구한 PBA 부터 본다.
+
+**(3) push 받은 노드가 리더가 되어 같은 상태를 만드는가 — 리더 교체 해시**
+
+(2) 는 바이트만 본다. 이 검사는 push 받은 노드가 리더가 된 뒤 **자기 링에서** 명령을 읽어 apply 한
+결과가 원래 리더와 같은지 본다. (1) 에 이어서 한다. `-at-count` 는 지금까지 apply 한 명령 수와 정확히
+같아야 한다 — (1) 전에 다른 apply 를 했다면 300 대신 그 합을 쓴다.
+
+```bash
+./build/raft_client -addrs $ADDRS -op hash -at-count 300
+#   리더 줄의 hash=H count=300 을 기록한다 (팔로워 줄은 count=0 err=... 가 정상, §6-2 (a))
+#   리더 프로세스를 끈다 (Ctrl-C). 남은 둘 중 하나가 리더가 된다.
+./build/raft_client -addrs $ADDRS -op hash -at-count 300
+#   새 리더 줄이 hash=H count=300 이어야 한다 (끈 노드는 unreachable)
+```
+
+- 새 리더는 `become_leader` 에서, 팔로워일 때 메타데이터만 받아 둔 엔트리의 명령을 자기 링에서
+  읽어 apply 한다(`core/src/raft_election.cpp` 의 deferred entry 로드). 그 노드에서는 push 된 배치에
+  pull 이 돌지 않았으므로, 해시가 같으면 push 된 바이트가 끝까지 맞다는 뜻이다.
+- **링 한 바퀴 안에서 할 것.** 그 로드는 `ring_slot` 이 0 인 엔트리를 건너뛴다(`e.ring_slot != 0`).
+  첫 바퀴의 슬롯 0 은 첫 no-op(명령 없음)이라 무해하지만, 랩 뒤에 슬롯 0 에 놓인 명령은 빠진다.
+  300 × 4 KiB 는 16 MiB 링의 한 바퀴(§7-1)에 한참 못 미친다.
+
+**(4) A안이 포기하는 몫 — apply-timed**
+
+§7-2 를 push 모드로 돌린다. push 된 배치는 팔로워가 pull 을 하지 않으므로 `StorageIO ≈ 0` 이고,
+push 쓰기는 리더의 `LPersist` 에 들어간다(지금은 자기 쓰기와 대상 수만큼의 push 쓰기의 합).
+`FHandler` 를 기록해 둔다 — OK 채널 대신 AE 를 쓰기 뒤에 보내는 결정(A안)이 라운드마다 포기하는
+몫의 대부분이 이것이다. 같은 조건의 `-mode destination` 결과와 나란히 놓으면 push 의 이득이 보인다.
+
 ---
 
 ## 7. 측정

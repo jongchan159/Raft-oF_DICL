@@ -7,7 +7,9 @@
  * 받아서 설치한 맵이 지금 알린 해시와 같은가(push_map_cached_hash).
  * 잘못 판정하면 매핑이 없는 팔로워에게 쓰려 하거나, 낡은 맵이나 엉뚱한
  * 장치로 다른 블록을 덮어쓴다. 맵 검증·설치, push 구간 기록, 실패 후
- * 쉬기도 여기서 본다. I/O 없이 판정과 부기만 본다 -- 장치 핸들
+ * 쉬기, push 구간으로 pull을 건너뛸지(push_covers -- 잘못 true면 팔로워
+ * 볼륨에 없는 엔트리를 있다고 믿는다)도 여기서 본다. I/O 없이 판정과
+ * 부기만 본다 -- 장치 핸들
  * (io.push_fds)이 없으므로 맵 설치는 set_extents를 건너뛰고 부기만 남는다.
  * ============================================================ */
 #include "third_party/doctest.h"
@@ -282,4 +284,60 @@ TEST_CASE("note_push_failure: 구간을 버리고 쉬는 동안 쓰기 대상에
     CHECK(s->push_write_targets(now) == std::vector<int>{2});
     CHECK(s->is_push_target(1) == true);   /* 대상 자격은 그대로 -- 쓰기만 쉰다 */
     CHECK(s->push_write_targets(now + std::chrono::seconds(2)) == std::vector<int>{1, 2});
+}
+
+/* ---------------- pull 건너뛰기 (push_covers) ---------------- */
+
+TEST_CASE("push_covers: 배치가 push 구간 안에 통째로 들면 true다") {
+    auto s = make_push_leader();
+    s->note_pushed(1, 102, 110);
+    CHECK(s->push_covers(1, 102, 110) == true);   /* 경계가 정확히 같다 */
+    CHECK(s->push_covers(1, 105, 107) == true);
+    CHECK(s->push_covers(1, 102, 102) == true);
+    CHECK(s->push_covers(1, 110, 110) == true);
+}
+
+TEST_CASE("push_covers: 일부라도 구간 밖이면 false다 -- 그 배치는 pull한다") {
+    auto s = make_push_leader();
+    s->note_pushed(1, 102, 110);
+    CHECK(s->push_covers(1, 101, 105) == false);   /* 앞이 걸친다 (대상이 되기 전에 쓴 엔트리) */
+    CHECK(s->push_covers(1, 108, 111) == false);   /* 뒤가 걸친다 */
+    CHECK(s->push_covers(1, 90, 100) == false);    /* 통째로 앞 (catch-up) */
+    CHECK(s->push_covers(1, 111, 115) == false);   /* 통째로 뒤 */
+    CHECK(s->push_covers(1, 106, 105) == false);   /* 빈 배치 */
+}
+
+TEST_CASE("push_covers: 이어 붙은 구간은 합친 전체를 덮는다") {
+    auto s = make_push_leader();
+    s->note_pushed(1, 102, 110);
+    s->note_pushed(1, 111, 115);
+    CHECK(s->push_covers(1, 105, 113) == true);    /* 두 Apply에 걸친 배치 */
+}
+
+TEST_CASE("push_covers: 구간이 없으면 false다") {
+    auto s = make_push_leader();
+    CHECK(s->push_covers(1, 1, 1) == false);       /* 아직 push한 적 없다 */
+    s->note_pushed(1, 102, 110);
+    s->note_push_failure(1, "test");               /* 실패하면 구간을 버린다 */
+    CHECK(s->push_covers(1, 102, 110) == false);
+}
+
+TEST_CASE("push_covers: 대상이 아니면 구간이 남아 있어도 false다") {
+    auto s = make_push_leader();
+    s->note_pushed(1, 102, 110);
+    SUBCASE("설치한 맵과 알린 해시가 다르다") {
+        s->raft.cluster[1].push_map_hash = 0x9999;
+        CHECK(s->push_covers(1, 102, 110) == false);
+    }
+    SUBCASE("리더가 아니다") {
+        s->raft.state = ServerState::Follower;
+        CHECK(s->push_covers(1, 102, 110) == false);
+    }
+    SUBCASE("리더가 push 모드가 아니다") {
+        s->replication_mode = Server::ReplicationMode::DestinationSide;
+        CHECK(s->push_covers(1, 102, 110) == false);
+    }
+    SUBCASE("다른 팔로워의 구간은 보지 않는다") {
+        CHECK(s->push_covers(2, 102, 110) == false);
+    }
 }

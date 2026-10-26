@@ -445,15 +445,17 @@ D9 의 목적은 새 링 파일의 extent 를 written 으로 만들어 첫 쓰�
 ## D20. push 복제 모드 (진행 중, 2026-10-25 ~ 2026-10-26)
 
 `core/src/raft_push.cpp` · `-mode push` · `-push-devices` · `AppendEntriesResponse.push_map_hash` ·
-`AppendEntriesRequest.need_extent_map` · `CachedFD::open_device` / `write_at_logical` · `persist_circular`
+`AppendEntriesRequest.need_extent_map` · `CachedFD::open_device` / `write_at_logical` · `persist_circular` ·
+`push_covers` → `AppendEntriesRequest.data_already_copied`
 
 원본에 없는 세 번째 복제 정책이다. 리더가 자기 볼륨에 로그를 쓸 때 push 팔로워의
-볼륨에도 직접 쓰고, AE 를 병렬로 보낸다. 팔로워는 리더의 쓰기 완료(OK)를 받은 뒤
-AE 에 성공으로 응답한다. 여러 단계로 나눠 들어오고 있다. **지금은 대상 인식, 맵 받기,
-리더의 push 쓰기까지 있다.** 팔로워 쪽은 아직 바뀌지 않았다 — AE 쪽 분기가 전부
-`== LeaderSide` 비교라 `Push` 는 기본(destination) 분기를 타고, push 된 바이트를 팔로워가
-pull 로 한 번 더 쓴다(같은 바이트라 무해하다). push 된 배치에서 pull 을 건너뛰는 것
-(`data_already_copied` + 아래 push 구간)은 다음 단계다.
+볼륨에도 직접 쓰고, 그 쓰기와 flush 가 끝난 뒤 AE 를 보낸다. AE 배치가 이미 push 한
+구간이면 `data_already_copied` 를 실어 팔로워가 pull 을 건너뛴다. AE 가 쓰기 뒤에 나가므로
+AE 자체가 "네 볼륨에 썼다"는 알림이다 — 처음 설계에 있던 OK 채널은 두지 않았다(아래
+"OK 는 AE 가 대신한다"). 여러 단계로 나눠 들어오고 있다. **지금은 대상 인식, 맵 받기,
+리더의 push 쓰기, push 된 배치의 pull 건너뛰기까지 있다.** 남은 것은 병렬화다 — 리더 자기
+쓰기와 push 쓰기를 겹치고(쓰기 병렬화), AE 를 Lock A 끝이 아니라 대상별 진행에 맞춰
+보낸다(AE 병렬화).
 
 **누가 push 대상인가.** 각 노드의 `-mode push` 가 후보 자격이다. 정적 목록은 없다.
 - 팔로워는 모든 AE 응답(거절 포함)에 `push_map_hash` 를 싣는다. 0 이면 push 모드가 아니고,
@@ -496,17 +498,69 @@ extent 경계에서 쪼갠다). 자기 fdatasync 뒤에 대상 장치도 flush(`
   쓰면 그 팔로워의 투표 기록을 덮어 재시작 후 같은 term 에 두 번 투표하게 만든다.
 - push 쓰기와 flush 시간은 `nvme_ns`(= `LPersist`)에 들어간다. 넣지 않으면 `LHandler`
   (= Lock A 보유 시간 − nvme_ns)로 잘못 잡힌다. 따라서 push 모드의 `LPersist` 는
-  "자기 링 + push 대상 장치" 쓰기 시간이다. 병렬화 단계에서 다시 나눈다.
+  "자기 링 + push 대상 장치" 쓰기 시간이다. 지금은 대상마다 차례로 쓰므로 그 **합**이다.
+  나중의 쓰기 병렬화(대상별 상시 I/O 워커로 자기 쓰기와 겹치기)에서 대략 최댓값이 된다.
 - 대상 하나가 실패해도 리더 자신의 persist 는 실패시키지 않는다. 그 대상은 1 초 동안 push 를
   쉬고 pull 로 간다(`note_push_failure`). 경로가 끊긴 볼륨에 매 Apply 마다 쓰다가 `mu` 를 오래
   잡는 것을 막기 위해서다.
 
 **push 구간 (`push_from` / `push_upto`).** 이 리더가 이 팔로워 장치에 쓰고 flush 까지 마친 **연속**
-로그 인덱스 구간이다(0 = 없음). 다음 단계에서 AE 배치 `[next, next+len-1]` 가 이 구간에 통째로
-들어갈 때만 `data_already_copied` 를 세운다. 시작값이 필요한 이유는 push 가 로그 중간부터
+로그 인덱스 구간이다(0 = 없음). AE 배치 `[next, next+len-1]` 가 이 구간에 통째로 들어갈 때만
+`data_already_copied` 를 세운다(아래 pull 건너뛰기). 시작값이 필요한 이유는 push 가 로그 중간부터
 시작하기 때문이다(맵 전의 no-op 등은 push 되지 않았다). Apply 가 이어지면 이어 붙이고, 중간에
 이 팔로워에게 쓰지 않은 호출이 있었으면 새로 시작한다(`note_pushed`). 팔로워 링이 바뀌었을 수
 있는 순간에는 반드시 비운다 — 새 term(`become_leader`), 알린 해시 변화, 맵 (재)설치, 쓰기 실패.
+
+**pull 건너뛰기 (`push_covers`).** `append_entries_worker` 의 Lock B 가 배치를 확정한 뒤(바이트
+상한, wrap, extent clamp 를 다 거친 값) 그 배치가 그 팔로워의 push 구간에 **통째로** 들 때만
+`data_already_copied` 를 세운다. 일부만 걸치면 배치를 쪼개지 않고 통째로 pull 한다.
+- 앞쪽이 걸치는 배치는 실제로 생긴다. 팔로워는 리더가 그 AE 응답을 처리할 때(선거 뒤 해시를 다시
+  알 때, 맵 설치) 비로소 대상이 되므로 그 전에 쓴 엔트리는 push 되지 않았다. 그런데 AE 워커는
+  `next_index` 부터 tail 까지를 한 배치로 보내고 엔트리를 실은 AE 가 날아가는 동안은 다음 배치를
+  보내지 않으므로(`inflight`), 대상이 된 직후의 첫 배치는 push 안 된 앞부분과 push 된 뒷부분에
+  걸치기 쉽다. push 실패 뒤 1 초 쉬는 구간과 catch-up 도 같다. 이 배치에 플래그를 세우면 팔로워는
+  자기 볼륨에 없는 엔트리를 성공으로 응답하고, 리더가 된 뒤 그 슬롯(0 이나 이전 바퀴의 엔트리)을
+  명령으로 읽는다. 통째로 pull 하면 이미 push 된 뒷부분은 같은 바이트를 한 번 더 쓸 뿐이다.
+  경계에서 잘라 앞부분만 pull 하면 뒷부분이 다음 라운드로 밀려 왕복이 하나 는다.
+- 뒤쪽 조건(`last <= push_upto`)은 지금 구조에서는 늘 참이다 — 워커는 Lock A 가 push 까지 마친
+  엔트리만 보고, 대상이 되는 모든 경로가 구간을 비운다. AE 병렬화에서 AE 가 Lock A 를 기다리지
+  않게 되면 이 조건이 관문이 된다.
+
+팔로워 코드는 바꾸지 않았다.
+`data_already_copied` 면 `do_pba_copy` 를 건너뛰고 메타데이터로만 로그를 잇는 경로가 Leader-Side 용으로
+이미 있었다.
+- 슬롯이 맞는 이유: 배치는 리더 extent 하나 안에 있고 wrap 하지 않으므로 슬롯이 연속이다.
+  팔로워가 `start_slot` 부터 차례로 계산하는 슬롯이 리더가 같은 논리 오프셋으로 push 한 위치와 같다.
+- 계측: push 된 배치는 응답의 `write_pba_rt_ns`/`storage_copy_ns` 가 0 이라 `StorageIO` 가 0 이고,
+  push 비용은 리더의 `LPersist` 에 있다. 팔로워의 `FHandler` 에서는 pull 이 빠진다.
+- 관측: 리더 `-debug` 의 `skip=`(push 덕에 pull 을 건너뛴 배치)과 `pull=`(push 대상인데 구간 밖이라
+  pull 한 배치). 보낸 배치 기준의 누적값이다(`push_ae_skipped` / `push_ae_pulled`).
+
+**OK 는 AE 가 대신한다 (A안, 2026-10-26 결정).** 처음 설계는 AE 를 push 쓰기와 병렬로 보내고,
+쓰기가 끝나면 RDMA Write 로 OK 를 따로 보내, 팔로워가 OK 를 받은 뒤 응답하는 것이었다. 팔로워는
+자기 볼륨에 내구성 있게 있다는 것을 알기 전에는 성공으로 응답할 수 없으므로 어떤 형태로든 "썼다"는
+신호가 필요하다. 지금은 AE 를 push 쓰기와 flush 가 끝난 뒤에 보내 AE 자체를 그 신호로 쓴다. 엔트리는
+Lock A 에서 로그에 붙고, 같은 `mu` 보유 안에서 push 와 flush, `note_pushed` 까지 끝난 뒤에야 AE
+워커에 보인다. 그래서 `data_already_copied` 가 선 배치는 팔로워 볼륨에 이미 내구성 있게 있다.
+이렇게 정한 이유:
+- 다른 Raft 구현(etcd, braft, LogCabin)으로 옮길 때 고칠 곳이 팔로워별 송신기의 관문 하나다
+  ("push 대상이면 그 push 가 끝난 뒤 보낸다"). 그 구현들의 "리더 자기 쓰기와 AE 의 병렬"
+  (Raft 논문 §10.2.1)은 그대로 남는다 — 그 구현에서도 팔로워의 쓰기는 응답 앞에 있고, 여기서는
+  그 쓰기를 리더가 대신 하면서 AE 앞으로 옮겼을 뿐이다. OK 채널안은 팔로워 저장 경로(쓰기 대신
+  OK 대기, 타임아웃, fallback)와 RDMA 부채널까지 고쳐야 한다.
+- 전송과 무관하다. push 쓰기는 커널 NVMe-oF 장치를 거치고 AE 는 기존 전송을 쓰므로 TCP 에서도
+  동작한다. OK 채널은 RDMA 전용이었다.
+- 포기하는 것은 라운드마다 팔로워의 AE 처리 시간(`FHandler`)과 AE RPC 의 수신·파싱 정도다. OK
+  채널이라면 이 시간이 push 쓰기와 겹쳐 가려진다. push 쓰기(NVMe-oF 왕복 + flush)보다 작을 것으로
+  보지만 측정으로 확인한다(E2E_EXPERIMENT.md §6-4). 크면 그때 OK 채널을 얹는다.
+- NVMe-oF 에는 팔로워가 쓰기 완료를 알 표준 수단이 없다. 타깃의 RDMA READ 는 쓰기를 낸 리더의
+  메모리로 가고(keyed SGL 은 명령이 들어온 QP 에서만 해석된다), one-sided 라 받는 쪽에 완료가
+  생기지 않으며, SSD 쓰기 **전에** 일어난다. 쓰기 완료는 명령을 낸 호스트만 완료 캡슐로 받는다.
+  데이터 쓰기를 알리는 AEN 종류도 없다.
+
+AE 병렬화(리더 자기 쓰기와 AE 를 겹치는 것)도 이 결정 위에서 한다. AE 워커가 Lock A 끝을 기다리지
+않고 대상별 관문으로 배치를 자른다 — push 대상은 `push_upto` 까지, pull 팔로워는 리더 자기 쓰기가
+끝난 인덱스까지(pull 은 리더 볼륨에서 읽어 가므로). 리더 자신의 match 는 내구 인덱스로 센다.
 
 **왜 파일이 아니라 장치에 쓰나.** 팔로워 링 파일은 팔로워 호스트의 ext4 위에 있다. 리더
 호스트가 그 ext4 를 같이 마운트하면 두 커널의 메타데이터 캐시가 어긋나 파일시스템이 깨진다.

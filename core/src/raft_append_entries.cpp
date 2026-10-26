@@ -283,6 +283,24 @@ void Server::append_entries_worker(int fi, ReplSink *sink) {
          * heartbeat에도 실린다 -- 맵은 엔트리와 무관하다. */
         req.need_extent_map = needs_extent_map(fi);
 
+        /* push 모드: 이 배치가 그 팔로워의 push 구간에 통째로 들면 팔로워는
+         * pull(do_pba_copy)을 건너뛴다. len_entries는 위의 바이트 상한, wrap,
+         * extent clamp를 다 거친 최종값이다 -- 배치가 리더 extent 하나 안에
+         * 있고 wrap하지 않으므로 슬롯이 연속이고, 팔로워가 start_slot부터
+         * 차례로 계산하는 슬롯이 리더가 push한 위치와 같다.
+         * 엔트리는 Lock A에서 로그에 붙고, 같은 mu 보유 안에서 push 쓰기 +
+         * flush + note_pushed까지 끝난 뒤에야 보이므로 이 AE 자체가 "네
+         * 볼륨에 내구성 있게 썼다"는 OK다 (A안, DECISIONS.md D20). */
+        if (has_entries && is_push_target(fi)) {
+            ClusterMember &pm = raft.cluster[static_cast<size_t>(fi)];
+            if (push_covers(fi, next, next + len_entries - 1)) {
+                req.data_already_copied = true;
+                pm.push_ae_skipped++;
+            } else {
+                pm.push_ae_pulled++;
+            }
+        }
+
         int64_t ae_lock_b_held = elapsed_ns(t_b_held_start);
         mu.unlock();   /* "lockB Finish" */
 

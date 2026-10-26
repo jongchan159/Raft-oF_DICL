@@ -129,9 +129,13 @@ struct ClusterMember {
      *   맵을 매 AE마다 다시 요청하지 않으려고 둔다.
      * push_from / push_upto: 이 리더가 이 팔로워 장치에 쓰고 flush까지 마친
      *   **연속** 로그 인덱스 구간 [push_from, push_upto]. 0이면 없다.
-     *   팔로워 링이 바뀌었을 수 있는 순간(새 term, 해시 변화, 맵 재설치,
-     *   쓰기 실패)에는 비운다.
-     * push_fail_until: push 쓰기가 실패한 뒤 이 시각까지는 push하지 않는다. */
+     *   AE 배치가 이 구간에 통째로 들면 data_already_copied를 세운다
+     *   (push_covers). 팔로워 링이 바뀌었을 수 있는 순간(새 term, 해시
+     *   변화, 맵 재설치, 쓰기 실패)에는 비운다.
+     * push_fail_until: push 쓰기가 실패한 뒤 이 시각까지는 push하지 않는다.
+     * push_ae_skipped / push_ae_pulled: 이 팔로워가 push 대상일 때 보낸 엔트리
+     *   배치 중 push 구간에 들어 pull을 건너뛰게 한 수 / 구간 밖이라 pull로
+     *   보낸 수. 관측용 누적값이고 리셋하지 않는다 (-debug의 skip=, pull=). */
     std::string push_device_path;
     uint64_t push_map_hash = 0;
     bool push_nodev_warned = false;
@@ -141,6 +145,8 @@ struct ClusterMember {
     uint64_t push_from = 0;
     uint64_t push_upto = 0;
     std::chrono::steady_clock::time_point push_fail_until{};
+    uint64_t push_ae_skipped = 0;
+    uint64_t push_ae_pulled = 0;
 };
 
 /* CachedFD는 blockio/cached_fd.h가 정의한다. 여기서는 shared_ptr로만 다루므로

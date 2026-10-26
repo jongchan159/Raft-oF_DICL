@@ -263,8 +263,8 @@ int64_t Server::persist_circular(bool write_log, int n_new_entries) {
         nvme_ns += elapsed_ns(t_sync_io);
     }
 
-    /* 쓰고 flush까지 마친 대상에 이번 구간을 기록한다 -- 다음 단계에서
-     * 이 구간에 통째로 든 AE 배치는 팔로워가 pull을 건너뛴다 */
+    /* 쓰고 flush까지 마친 대상에 이번 구간을 기록한다 -- 이 구간에 통째로
+     * 든 AE 배치는 팔로워가 pull을 건너뛴다 (push_covers) */
     for (size_t k = 0; k < push_fis.size(); k++) {
         if (push_ok[k]) {
             note_pushed(push_fis[k], push_first, push_last);
