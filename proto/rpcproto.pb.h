@@ -109,6 +109,9 @@ extern RequestVoteRequestDefaultTypeInternal _RequestVoteRequest_default_instanc
 class RequestVoteResponse;
 struct RequestVoteResponseDefaultTypeInternal;
 extern RequestVoteResponseDefaultTypeInternal _RequestVoteResponse_default_instance_;
+class RingExtent;
+struct RingExtentDefaultTypeInternal;
+extern RingExtentDefaultTypeInternal _RingExtent_default_instance_;
 class WritePBABatchRequest;
 struct WritePBABatchRequestDefaultTypeInternal;
 extern WritePBABatchRequestDefaultTypeInternal _WritePBABatchRequest_default_instance_;
@@ -138,12 +141,183 @@ template<> ::rpcproto::ReadIndexHeartbeatRequest* Arena::CreateMaybeMessage<::rp
 template<> ::rpcproto::ReadIndexHeartbeatResponse* Arena::CreateMaybeMessage<::rpcproto::ReadIndexHeartbeatResponse>(Arena*);
 template<> ::rpcproto::RequestVoteRequest* Arena::CreateMaybeMessage<::rpcproto::RequestVoteRequest>(Arena*);
 template<> ::rpcproto::RequestVoteResponse* Arena::CreateMaybeMessage<::rpcproto::RequestVoteResponse>(Arena*);
+template<> ::rpcproto::RingExtent* Arena::CreateMaybeMessage<::rpcproto::RingExtent>(Arena*);
 template<> ::rpcproto::WritePBABatchRequest* Arena::CreateMaybeMessage<::rpcproto::WritePBABatchRequest>(Arena*);
 template<> ::rpcproto::WritePBABatchResponse* Arena::CreateMaybeMessage<::rpcproto::WritePBABatchResponse>(Arena*);
 PROTOBUF_NAMESPACE_CLOSE
 namespace rpcproto {
 
 // ===================================================================
+
+class RingExtent final :
+    public ::PROTOBUF_NAMESPACE_ID::Message /* @@protoc_insertion_point(class_definition:rpcproto.RingExtent) */ {
+ public:
+  inline RingExtent() : RingExtent(nullptr) {}
+  ~RingExtent() override;
+  explicit PROTOBUF_CONSTEXPR RingExtent(::PROTOBUF_NAMESPACE_ID::internal::ConstantInitialized);
+
+  RingExtent(const RingExtent& from);
+  RingExtent(RingExtent&& from) noexcept
+    : RingExtent() {
+    *this = ::std::move(from);
+  }
+
+  inline RingExtent& operator=(const RingExtent& from) {
+    CopyFrom(from);
+    return *this;
+  }
+  inline RingExtent& operator=(RingExtent&& from) noexcept {
+    if (this == &from) return *this;
+    if (GetOwningArena() == from.GetOwningArena()
+  #ifdef PROTOBUF_FORCE_COPY_IN_MOVE
+        && GetOwningArena() != nullptr
+  #endif  // !PROTOBUF_FORCE_COPY_IN_MOVE
+    ) {
+      InternalSwap(&from);
+    } else {
+      CopyFrom(from);
+    }
+    return *this;
+  }
+
+  static const ::PROTOBUF_NAMESPACE_ID::Descriptor* descriptor() {
+    return GetDescriptor();
+  }
+  static const ::PROTOBUF_NAMESPACE_ID::Descriptor* GetDescriptor() {
+    return default_instance().GetMetadata().descriptor;
+  }
+  static const ::PROTOBUF_NAMESPACE_ID::Reflection* GetReflection() {
+    return default_instance().GetMetadata().reflection;
+  }
+  static const RingExtent& default_instance() {
+    return *internal_default_instance();
+  }
+  static inline const RingExtent* internal_default_instance() {
+    return reinterpret_cast<const RingExtent*>(
+               &_RingExtent_default_instance_);
+  }
+  static constexpr int kIndexInFileMessages =
+    0;
+
+  friend void swap(RingExtent& a, RingExtent& b) {
+    a.Swap(&b);
+  }
+  inline void Swap(RingExtent* other) {
+    if (other == this) return;
+  #ifdef PROTOBUF_FORCE_COPY_IN_SWAP
+    if (GetOwningArena() != nullptr &&
+        GetOwningArena() == other->GetOwningArena()) {
+   #else  // PROTOBUF_FORCE_COPY_IN_SWAP
+    if (GetOwningArena() == other->GetOwningArena()) {
+  #endif  // !PROTOBUF_FORCE_COPY_IN_SWAP
+      InternalSwap(other);
+    } else {
+      ::PROTOBUF_NAMESPACE_ID::internal::GenericSwap(this, other);
+    }
+  }
+  void UnsafeArenaSwap(RingExtent* other) {
+    if (other == this) return;
+    GOOGLE_DCHECK(GetOwningArena() == other->GetOwningArena());
+    InternalSwap(other);
+  }
+
+  // implements Message ----------------------------------------------
+
+  RingExtent* New(::PROTOBUF_NAMESPACE_ID::Arena* arena = nullptr) const final {
+    return CreateMaybeMessage<RingExtent>(arena);
+  }
+  using ::PROTOBUF_NAMESPACE_ID::Message::CopyFrom;
+  void CopyFrom(const RingExtent& from);
+  using ::PROTOBUF_NAMESPACE_ID::Message::MergeFrom;
+  void MergeFrom( const RingExtent& from) {
+    RingExtent::MergeImpl(*this, from);
+  }
+  private:
+  static void MergeImpl(::PROTOBUF_NAMESPACE_ID::Message& to_msg, const ::PROTOBUF_NAMESPACE_ID::Message& from_msg);
+  public:
+  PROTOBUF_ATTRIBUTE_REINITIALIZES void Clear() final;
+  bool IsInitialized() const final;
+
+  size_t ByteSizeLong() const final;
+  const char* _InternalParse(const char* ptr, ::PROTOBUF_NAMESPACE_ID::internal::ParseContext* ctx) final;
+  uint8_t* _InternalSerialize(
+      uint8_t* target, ::PROTOBUF_NAMESPACE_ID::io::EpsCopyOutputStream* stream) const final;
+  int GetCachedSize() const final { return _impl_._cached_size_.Get(); }
+
+  private:
+  void SharedCtor(::PROTOBUF_NAMESPACE_ID::Arena* arena, bool is_message_owned);
+  void SharedDtor();
+  void SetCachedSize(int size) const final;
+  void InternalSwap(RingExtent* other);
+
+  private:
+  friend class ::PROTOBUF_NAMESPACE_ID::internal::AnyMetadata;
+  static ::PROTOBUF_NAMESPACE_ID::StringPiece FullMessageName() {
+    return "rpcproto.RingExtent";
+  }
+  protected:
+  explicit RingExtent(::PROTOBUF_NAMESPACE_ID::Arena* arena,
+                       bool is_message_owned = false);
+  public:
+
+  static const ClassData _class_data_;
+  const ::PROTOBUF_NAMESPACE_ID::Message::ClassData*GetClassData() const final;
+
+  ::PROTOBUF_NAMESPACE_ID::Metadata GetMetadata() const final;
+
+  // nested types ----------------------------------------------------
+
+  // accessors -------------------------------------------------------
+
+  enum : int {
+    kLogicalFieldNumber = 1,
+    kPhysicalFieldNumber = 2,
+    kLengthFieldNumber = 3,
+  };
+  // int64 logical = 1;
+  void clear_logical();
+  int64_t logical() const;
+  void set_logical(int64_t value);
+  private:
+  int64_t _internal_logical() const;
+  void _internal_set_logical(int64_t value);
+  public:
+
+  // uint64 physical = 2;
+  void clear_physical();
+  uint64_t physical() const;
+  void set_physical(uint64_t value);
+  private:
+  uint64_t _internal_physical() const;
+  void _internal_set_physical(uint64_t value);
+  public:
+
+  // uint64 length = 3;
+  void clear_length();
+  uint64_t length() const;
+  void set_length(uint64_t value);
+  private:
+  uint64_t _internal_length() const;
+  void _internal_set_length(uint64_t value);
+  public:
+
+  // @@protoc_insertion_point(class_scope:rpcproto.RingExtent)
+ private:
+  class _Internal;
+
+  template <typename T> friend class ::PROTOBUF_NAMESPACE_ID::Arena::InternalHelper;
+  typedef void InternalArenaConstructable_;
+  typedef void DestructorSkippable_;
+  struct Impl_ {
+    int64_t logical_;
+    uint64_t physical_;
+    uint64_t length_;
+    mutable ::PROTOBUF_NAMESPACE_ID::internal::CachedSize _cached_size_;
+  };
+  union { Impl_ _impl_; };
+  friend struct ::TableStruct_rpcproto_2eproto;
+};
+// -------------------------------------------------------------------
 
 class EntryMeta final :
     public ::PROTOBUF_NAMESPACE_ID::Message /* @@protoc_insertion_point(class_definition:rpcproto.EntryMeta) */ {
@@ -193,7 +367,7 @@ class EntryMeta final :
                &_EntryMeta_default_instance_);
   }
   static constexpr int kIndexInFileMessages =
-    0;
+    1;
 
   friend void swap(EntryMeta& a, EntryMeta& b) {
     a.Swap(&b);
@@ -352,7 +526,7 @@ class RequestVoteRequest final :
                &_RequestVoteRequest_default_instance_);
   }
   static constexpr int kIndexInFileMessages =
-    1;
+    2;
 
   friend void swap(RequestVoteRequest& a, RequestVoteRequest& b) {
     a.Swap(&b);
@@ -533,7 +707,7 @@ class RequestVoteResponse final :
                &_RequestVoteResponse_default_instance_);
   }
   static constexpr int kIndexInFileMessages =
-    2;
+    3;
 
   friend void swap(RequestVoteResponse& a, RequestVoteResponse& b) {
     a.Swap(&b);
@@ -692,7 +866,7 @@ class AppendEntriesRequest final :
                &_AppendEntriesRequest_default_instance_);
   }
   static constexpr int kIndexInFileMessages =
-    3;
+    4;
 
   friend void swap(AppendEntriesRequest& a, AppendEntriesRequest& b) {
     a.Swap(&b);
@@ -778,6 +952,7 @@ class AppendEntriesRequest final :
     kStartSlotFieldNumber = 10,
     kLeaderDevIndexFieldNumber = 11,
     kDataAlreadyCopiedFieldNumber = 13,
+    kNeedExtentMapFieldNumber = 14,
   };
   // repeated .rpcproto.EntryMeta entry_metas = 12;
   int entry_metas_size() const;
@@ -905,6 +1080,15 @@ class AppendEntriesRequest final :
   void _internal_set_data_already_copied(bool value);
   public:
 
+  // bool need_extent_map = 14;
+  void clear_need_extent_map();
+  bool need_extent_map() const;
+  void set_need_extent_map(bool value);
+  private:
+  bool _internal_need_extent_map() const;
+  void _internal_set_need_extent_map(bool value);
+  public:
+
   // @@protoc_insertion_point(class_scope:rpcproto.AppendEntriesRequest)
  private:
   class _Internal;
@@ -926,6 +1110,7 @@ class AppendEntriesRequest final :
     uint64_t start_slot_;
     int32_t leader_dev_index_;
     bool data_already_copied_;
+    bool need_extent_map_;
     mutable ::PROTOBUF_NAMESPACE_ID::internal::CachedSize _cached_size_;
   };
   union { Impl_ _impl_; };
@@ -981,7 +1166,7 @@ class AppendEntriesResponse final :
                &_AppendEntriesResponse_default_instance_);
   }
   static constexpr int kIndexInFileMessages =
-    4;
+    5;
 
   friend void swap(AppendEntriesResponse& a, AppendEntriesResponse& b) {
     a.Swap(&b);
@@ -1054,6 +1239,8 @@ class AppendEntriesResponse final :
   // accessors -------------------------------------------------------
 
   enum : int {
+    kExtentMapFieldNumber = 14,
+    kVolumeWwidFieldNumber = 15,
     kTermFieldNumber = 1,
     kConflictTermFieldNumber = 3,
     kConflictIndexFieldNumber = 4,
@@ -1065,8 +1252,41 @@ class AppendEntriesResponse final :
     kHandleAeLockWait2NanosFieldNumber = 10,
     kHandleAePostNanosFieldNumber = 11,
     kHandleAePersistNanosFieldNumber = 12,
+    kPushMapHashFieldNumber = 13,
     kSuccessFieldNumber = 2,
   };
+  // repeated .rpcproto.RingExtent extent_map = 14;
+  int extent_map_size() const;
+  private:
+  int _internal_extent_map_size() const;
+  public:
+  void clear_extent_map();
+  ::rpcproto::RingExtent* mutable_extent_map(int index);
+  ::PROTOBUF_NAMESPACE_ID::RepeatedPtrField< ::rpcproto::RingExtent >*
+      mutable_extent_map();
+  private:
+  const ::rpcproto::RingExtent& _internal_extent_map(int index) const;
+  ::rpcproto::RingExtent* _internal_add_extent_map();
+  public:
+  const ::rpcproto::RingExtent& extent_map(int index) const;
+  ::rpcproto::RingExtent* add_extent_map();
+  const ::PROTOBUF_NAMESPACE_ID::RepeatedPtrField< ::rpcproto::RingExtent >&
+      extent_map() const;
+
+  // string volume_wwid = 15;
+  void clear_volume_wwid();
+  const std::string& volume_wwid() const;
+  template <typename ArgT0 = const std::string&, typename... ArgT>
+  void set_volume_wwid(ArgT0&& arg0, ArgT... args);
+  std::string* mutable_volume_wwid();
+  PROTOBUF_NODISCARD std::string* release_volume_wwid();
+  void set_allocated_volume_wwid(std::string* volume_wwid);
+  private:
+  const std::string& _internal_volume_wwid() const;
+  inline PROTOBUF_ALWAYS_INLINE void _internal_set_volume_wwid(const std::string& value);
+  std::string* _internal_mutable_volume_wwid();
+  public:
+
   // uint64 term = 1;
   void clear_term();
   uint64_t term() const;
@@ -1166,6 +1386,15 @@ class AppendEntriesResponse final :
   void _internal_set_handle_ae_persist_nanos(int64_t value);
   public:
 
+  // uint64 push_map_hash = 13;
+  void clear_push_map_hash();
+  uint64_t push_map_hash() const;
+  void set_push_map_hash(uint64_t value);
+  private:
+  uint64_t _internal_push_map_hash() const;
+  void _internal_set_push_map_hash(uint64_t value);
+  public:
+
   // bool success = 2;
   void clear_success();
   bool success() const;
@@ -1183,6 +1412,8 @@ class AppendEntriesResponse final :
   typedef void InternalArenaConstructable_;
   typedef void DestructorSkippable_;
   struct Impl_ {
+    ::PROTOBUF_NAMESPACE_ID::RepeatedPtrField< ::rpcproto::RingExtent > extent_map_;
+    ::PROTOBUF_NAMESPACE_ID::internal::ArenaStringPtr volume_wwid_;
     uint64_t term_;
     uint64_t conflict_term_;
     uint64_t conflict_index_;
@@ -1194,6 +1425,7 @@ class AppendEntriesResponse final :
     int64_t handle_ae_lock_wait2_nanos_;
     int64_t handle_ae_post_nanos_;
     int64_t handle_ae_persist_nanos_;
+    uint64_t push_map_hash_;
     bool success_;
     mutable ::PROTOBUF_NAMESPACE_ID::internal::CachedSize _cached_size_;
   };
@@ -1250,7 +1482,7 @@ class ReadIndexHeartbeatRequest final :
                &_ReadIndexHeartbeatRequest_default_instance_);
   }
   static constexpr int kIndexInFileMessages =
-    5;
+    6;
 
   friend void swap(ReadIndexHeartbeatRequest& a, ReadIndexHeartbeatRequest& b) {
     a.Swap(&b);
@@ -1420,7 +1652,7 @@ class ReadIndexHeartbeatResponse final :
                &_ReadIndexHeartbeatResponse_default_instance_);
   }
   static constexpr int kIndexInFileMessages =
-    6;
+    7;
 
   friend void swap(ReadIndexHeartbeatResponse& a, ReadIndexHeartbeatResponse& b) {
     a.Swap(&b);
@@ -1590,7 +1822,7 @@ class WritePBABatchRequest final :
                &_WritePBABatchRequest_default_instance_);
   }
   static constexpr int kIndexInFileMessages =
-    7;
+    8;
 
   friend void swap(WritePBABatchRequest& a, WritePBABatchRequest& b) {
     a.Swap(&b);
@@ -1835,7 +2067,7 @@ class WritePBABatchResponse final :
                &_WritePBABatchResponse_default_instance_);
   }
   static constexpr int kIndexInFileMessages =
-    8;
+    9;
 
   friend void swap(WritePBABatchResponse& a, WritePBABatchResponse& b) {
     a.Swap(&b);
@@ -2021,7 +2253,7 @@ class ClientApplyRequest final :
                &_ClientApplyRequest_default_instance_);
   }
   static constexpr int kIndexInFileMessages =
-    9;
+    10;
 
   friend void swap(ClientApplyRequest& a, ClientApplyRequest& b) {
     a.Swap(&b);
@@ -2184,7 +2416,7 @@ class ClientApplyResponse final :
                &_ClientApplyResponse_default_instance_);
   }
   static constexpr int kIndexInFileMessages =
-    10;
+    11;
 
   friend void swap(ClientApplyResponse& a, ClientApplyResponse& b) {
     a.Swap(&b);
@@ -2359,7 +2591,7 @@ class ClientApplyTimedRequest final :
                &_ClientApplyTimedRequest_default_instance_);
   }
   static constexpr int kIndexInFileMessages =
-    11;
+    12;
 
   friend void swap(ClientApplyTimedRequest& a, ClientApplyTimedRequest& b) {
     a.Swap(&b);
@@ -2522,7 +2754,7 @@ class ClientApplyTimedResponse final :
                &_ClientApplyTimedResponse_default_instance_);
   }
   static constexpr int kIndexInFileMessages =
-    12;
+    13;
 
   friend void swap(ClientApplyTimedResponse& a, ClientApplyTimedResponse& b) {
     a.Swap(&b);
@@ -2829,7 +3061,7 @@ class ClientReadRequest final :
                &_ClientReadRequest_default_instance_);
   }
   static constexpr int kIndexInFileMessages =
-    13;
+    14;
 
   friend void swap(ClientReadRequest& a, ClientReadRequest& b) {
     a.Swap(&b);
@@ -2992,7 +3224,7 @@ class ClientReadResponse final :
                &_ClientReadResponse_default_instance_);
   }
   static constexpr int kIndexInFileMessages =
-    14;
+    15;
 
   friend void swap(ClientReadResponse& a, ClientReadResponse& b) {
     a.Swap(&b);
@@ -3237,7 +3469,7 @@ class ClientEchoRequest final :
                &_ClientEchoRequest_default_instance_);
   }
   static constexpr int kIndexInFileMessages =
-    15;
+    16;
 
   friend void swap(ClientEchoRequest& a, ClientEchoRequest& b) {
     a.Swap(&b);
@@ -3400,7 +3632,7 @@ class ClientEchoResponse final :
                &_ClientEchoResponse_default_instance_);
   }
   static constexpr int kIndexInFileMessages =
-    16;
+    17;
 
   friend void swap(ClientEchoResponse& a, ClientEchoResponse& b) {
     a.Swap(&b);
@@ -3547,7 +3779,7 @@ class ClientGetCommitIndexRequest final :
                &_ClientGetCommitIndexRequest_default_instance_);
   }
   static constexpr int kIndexInFileMessages =
-    17;
+    18;
 
   friend void swap(ClientGetCommitIndexRequest& a, ClientGetCommitIndexRequest& b) {
     a.Swap(&b);
@@ -3666,7 +3898,7 @@ class ClientGetCommitIndexResponse final :
                &_ClientGetCommitIndexResponse_default_instance_);
   }
   static constexpr int kIndexInFileMessages =
-    18;
+    19;
 
   friend void swap(ClientGetCommitIndexResponse& a, ClientGetCommitIndexResponse& b) {
     a.Swap(&b);
@@ -3830,7 +4062,7 @@ class ClientGetHashRequest final :
                &_ClientGetHashRequest_default_instance_);
   }
   static constexpr int kIndexInFileMessages =
-    19;
+    20;
 
   friend void swap(ClientGetHashRequest& a, ClientGetHashRequest& b) {
     a.Swap(&b);
@@ -3978,7 +4210,7 @@ class ClientGetHashResponse final :
                &_ClientGetHashResponse_default_instance_);
   }
   static constexpr int kIndexInFileMessages =
-    20;
+    21;
 
   friend void swap(ClientGetHashResponse& a, ClientGetHashResponse& b) {
     a.Swap(&b);
@@ -4157,7 +4389,7 @@ class ClientGetAEBatchStatsRequest final :
                &_ClientGetAEBatchStatsRequest_default_instance_);
   }
   static constexpr int kIndexInFileMessages =
-    21;
+    22;
 
   friend void swap(ClientGetAEBatchStatsRequest& a, ClientGetAEBatchStatsRequest& b) {
     a.Swap(&b);
@@ -4276,7 +4508,7 @@ class ClientGetAEBatchStatsResponse final :
                &_ClientGetAEBatchStatsResponse_default_instance_);
   }
   static constexpr int kIndexInFileMessages =
-    22;
+    23;
 
   friend void swap(ClientGetAEBatchStatsResponse& a, ClientGetAEBatchStatsResponse& b) {
     a.Swap(&b);
@@ -4410,6 +4642,70 @@ class ClientGetAEBatchStatsResponse final :
   #pragma GCC diagnostic push
   #pragma GCC diagnostic ignored "-Wstrict-aliasing"
 #endif  // __GNUC__
+// RingExtent
+
+// int64 logical = 1;
+inline void RingExtent::clear_logical() {
+  _impl_.logical_ = int64_t{0};
+}
+inline int64_t RingExtent::_internal_logical() const {
+  return _impl_.logical_;
+}
+inline int64_t RingExtent::logical() const {
+  // @@protoc_insertion_point(field_get:rpcproto.RingExtent.logical)
+  return _internal_logical();
+}
+inline void RingExtent::_internal_set_logical(int64_t value) {
+  
+  _impl_.logical_ = value;
+}
+inline void RingExtent::set_logical(int64_t value) {
+  _internal_set_logical(value);
+  // @@protoc_insertion_point(field_set:rpcproto.RingExtent.logical)
+}
+
+// uint64 physical = 2;
+inline void RingExtent::clear_physical() {
+  _impl_.physical_ = uint64_t{0u};
+}
+inline uint64_t RingExtent::_internal_physical() const {
+  return _impl_.physical_;
+}
+inline uint64_t RingExtent::physical() const {
+  // @@protoc_insertion_point(field_get:rpcproto.RingExtent.physical)
+  return _internal_physical();
+}
+inline void RingExtent::_internal_set_physical(uint64_t value) {
+  
+  _impl_.physical_ = value;
+}
+inline void RingExtent::set_physical(uint64_t value) {
+  _internal_set_physical(value);
+  // @@protoc_insertion_point(field_set:rpcproto.RingExtent.physical)
+}
+
+// uint64 length = 3;
+inline void RingExtent::clear_length() {
+  _impl_.length_ = uint64_t{0u};
+}
+inline uint64_t RingExtent::_internal_length() const {
+  return _impl_.length_;
+}
+inline uint64_t RingExtent::length() const {
+  // @@protoc_insertion_point(field_get:rpcproto.RingExtent.length)
+  return _internal_length();
+}
+inline void RingExtent::_internal_set_length(uint64_t value) {
+  
+  _impl_.length_ = value;
+}
+inline void RingExtent::set_length(uint64_t value) {
+  _internal_set_length(value);
+  // @@protoc_insertion_point(field_set:rpcproto.RingExtent.length)
+}
+
+// -------------------------------------------------------------------
+
 // EntryMeta
 
 // uint64 term = 1;
@@ -4824,6 +5120,26 @@ inline void AppendEntriesRequest::set_data_already_copied(bool value) {
   // @@protoc_insertion_point(field_set:rpcproto.AppendEntriesRequest.data_already_copied)
 }
 
+// bool need_extent_map = 14;
+inline void AppendEntriesRequest::clear_need_extent_map() {
+  _impl_.need_extent_map_ = false;
+}
+inline bool AppendEntriesRequest::_internal_need_extent_map() const {
+  return _impl_.need_extent_map_;
+}
+inline bool AppendEntriesRequest::need_extent_map() const {
+  // @@protoc_insertion_point(field_get:rpcproto.AppendEntriesRequest.need_extent_map)
+  return _internal_need_extent_map();
+}
+inline void AppendEntriesRequest::_internal_set_need_extent_map(bool value) {
+  
+  _impl_.need_extent_map_ = value;
+}
+inline void AppendEntriesRequest::set_need_extent_map(bool value) {
+  _internal_set_need_extent_map(value);
+  // @@protoc_insertion_point(field_set:rpcproto.AppendEntriesRequest.need_extent_map)
+}
+
 // repeated .rpcproto.EntryMeta entry_metas = 12;
 inline int AppendEntriesRequest::_internal_entry_metas_size() const {
   return _impl_.entry_metas_.size();
@@ -5106,6 +5422,116 @@ inline void AppendEntriesResponse::_internal_set_handle_ae_persist_nanos(int64_t
 inline void AppendEntriesResponse::set_handle_ae_persist_nanos(int64_t value) {
   _internal_set_handle_ae_persist_nanos(value);
   // @@protoc_insertion_point(field_set:rpcproto.AppendEntriesResponse.handle_ae_persist_nanos)
+}
+
+// uint64 push_map_hash = 13;
+inline void AppendEntriesResponse::clear_push_map_hash() {
+  _impl_.push_map_hash_ = uint64_t{0u};
+}
+inline uint64_t AppendEntriesResponse::_internal_push_map_hash() const {
+  return _impl_.push_map_hash_;
+}
+inline uint64_t AppendEntriesResponse::push_map_hash() const {
+  // @@protoc_insertion_point(field_get:rpcproto.AppendEntriesResponse.push_map_hash)
+  return _internal_push_map_hash();
+}
+inline void AppendEntriesResponse::_internal_set_push_map_hash(uint64_t value) {
+  
+  _impl_.push_map_hash_ = value;
+}
+inline void AppendEntriesResponse::set_push_map_hash(uint64_t value) {
+  _internal_set_push_map_hash(value);
+  // @@protoc_insertion_point(field_set:rpcproto.AppendEntriesResponse.push_map_hash)
+}
+
+// repeated .rpcproto.RingExtent extent_map = 14;
+inline int AppendEntriesResponse::_internal_extent_map_size() const {
+  return _impl_.extent_map_.size();
+}
+inline int AppendEntriesResponse::extent_map_size() const {
+  return _internal_extent_map_size();
+}
+inline void AppendEntriesResponse::clear_extent_map() {
+  _impl_.extent_map_.Clear();
+}
+inline ::rpcproto::RingExtent* AppendEntriesResponse::mutable_extent_map(int index) {
+  // @@protoc_insertion_point(field_mutable:rpcproto.AppendEntriesResponse.extent_map)
+  return _impl_.extent_map_.Mutable(index);
+}
+inline ::PROTOBUF_NAMESPACE_ID::RepeatedPtrField< ::rpcproto::RingExtent >*
+AppendEntriesResponse::mutable_extent_map() {
+  // @@protoc_insertion_point(field_mutable_list:rpcproto.AppendEntriesResponse.extent_map)
+  return &_impl_.extent_map_;
+}
+inline const ::rpcproto::RingExtent& AppendEntriesResponse::_internal_extent_map(int index) const {
+  return _impl_.extent_map_.Get(index);
+}
+inline const ::rpcproto::RingExtent& AppendEntriesResponse::extent_map(int index) const {
+  // @@protoc_insertion_point(field_get:rpcproto.AppendEntriesResponse.extent_map)
+  return _internal_extent_map(index);
+}
+inline ::rpcproto::RingExtent* AppendEntriesResponse::_internal_add_extent_map() {
+  return _impl_.extent_map_.Add();
+}
+inline ::rpcproto::RingExtent* AppendEntriesResponse::add_extent_map() {
+  ::rpcproto::RingExtent* _add = _internal_add_extent_map();
+  // @@protoc_insertion_point(field_add:rpcproto.AppendEntriesResponse.extent_map)
+  return _add;
+}
+inline const ::PROTOBUF_NAMESPACE_ID::RepeatedPtrField< ::rpcproto::RingExtent >&
+AppendEntriesResponse::extent_map() const {
+  // @@protoc_insertion_point(field_list:rpcproto.AppendEntriesResponse.extent_map)
+  return _impl_.extent_map_;
+}
+
+// string volume_wwid = 15;
+inline void AppendEntriesResponse::clear_volume_wwid() {
+  _impl_.volume_wwid_.ClearToEmpty();
+}
+inline const std::string& AppendEntriesResponse::volume_wwid() const {
+  // @@protoc_insertion_point(field_get:rpcproto.AppendEntriesResponse.volume_wwid)
+  return _internal_volume_wwid();
+}
+template <typename ArgT0, typename... ArgT>
+inline PROTOBUF_ALWAYS_INLINE
+void AppendEntriesResponse::set_volume_wwid(ArgT0&& arg0, ArgT... args) {
+ 
+ _impl_.volume_wwid_.Set(static_cast<ArgT0 &&>(arg0), args..., GetArenaForAllocation());
+  // @@protoc_insertion_point(field_set:rpcproto.AppendEntriesResponse.volume_wwid)
+}
+inline std::string* AppendEntriesResponse::mutable_volume_wwid() {
+  std::string* _s = _internal_mutable_volume_wwid();
+  // @@protoc_insertion_point(field_mutable:rpcproto.AppendEntriesResponse.volume_wwid)
+  return _s;
+}
+inline const std::string& AppendEntriesResponse::_internal_volume_wwid() const {
+  return _impl_.volume_wwid_.Get();
+}
+inline void AppendEntriesResponse::_internal_set_volume_wwid(const std::string& value) {
+  
+  _impl_.volume_wwid_.Set(value, GetArenaForAllocation());
+}
+inline std::string* AppendEntriesResponse::_internal_mutable_volume_wwid() {
+  
+  return _impl_.volume_wwid_.Mutable(GetArenaForAllocation());
+}
+inline std::string* AppendEntriesResponse::release_volume_wwid() {
+  // @@protoc_insertion_point(field_release:rpcproto.AppendEntriesResponse.volume_wwid)
+  return _impl_.volume_wwid_.Release();
+}
+inline void AppendEntriesResponse::set_allocated_volume_wwid(std::string* volume_wwid) {
+  if (volume_wwid != nullptr) {
+    
+  } else {
+    
+  }
+  _impl_.volume_wwid_.SetAllocated(volume_wwid, GetArenaForAllocation());
+#ifdef PROTOBUF_FORCE_COPY_DEFAULT_STRING
+  if (_impl_.volume_wwid_.IsDefault()) {
+    _impl_.volume_wwid_.Set("", GetArenaForAllocation());
+  }
+#endif // PROTOBUF_FORCE_COPY_DEFAULT_STRING
+  // @@protoc_insertion_point(field_set_allocated:rpcproto.AppendEntriesResponse.volume_wwid)
 }
 
 // -------------------------------------------------------------------
@@ -6899,6 +7325,8 @@ inline void ClientGetAEBatchStatsResponse::set_allocated_err(std::string* err) {
 #ifdef __GNUC__
   #pragma GCC diagnostic pop
 #endif  // __GNUC__
+// -------------------------------------------------------------------
+
 // -------------------------------------------------------------------
 
 // -------------------------------------------------------------------
