@@ -42,13 +42,57 @@ done
 #   RDMA 포트로 export 안 된 서브시스템은 TCP 로 붙는다 (E2E_EXPERIMENT.md §1)
 
 # 2) 컴퓨트 노드마다: 다른 멤버의 서브시스템에 연결 (trsvcid 는 nvmet ports/*/addr_trsvcid)
-sudo nvme connect -t rdma -a 10.0.0.91 -s <trsvcid> -n node5 --fast_io_fail_tmo=1
+sudo nvme connect -t rdma -a 10.0.0.91 -s <trsvcid> -n node5
 sudo nvme list-subsys        # NQN -> /dev/nvmeXnY 대응을 기록한다 (이름은 호스트마다 다르다)
+#   "Connect rejected: status 8 (invalid service ID)" (dmesg) 면 ARP 문제다 -- 아래 "ARP" 참고
+
+# 2-1) 새로 붙인 컨트롤러에만 fast_io_fail_tmo=1 (자기 볼륨 컨트롤러는 건드리지 않는다)
+#   nvme-cli 2.8 의 connect 에는 --fast_io_fail_tmo 옵션이 없어서 sysfs 로 준다.
+#   끊긴 지 1 초 뒤 큐에 묶인 I/O 를 EIO 로 돌려준다 -- push 쓰기가 mu 를 잡고 멈추지 않게,
+#   옛 리더의 늦은 push 쓰기 창을 줄이게 (DECISIONS.md D20 "한계").
+#   자기 볼륨(마운트된 ext4)에 주면 짧은 끊김에도 ext4 가 I/O 에러를 받는다.
+#   재연결(disconnect/connect)하면 기본값(off)으로 돌아가므로 다시 준다.
+echo 1 | sudo tee /sys/class/nvme/nvmeX/fast_io_fail_tmo
 
 # 3) raft_node 실행 사용자에게 그 장치들의 rw 권한 (E2E_EXPERIMENT.md §3-1 과 같은 방식)
 
 # 4) hostid 가 호스트마다 다른지 (나중에 펜싱할 때 필요)
 cat /etc/nvme/hostid
+#   2026-10-27 현재 eternity5 와 eternity6 의 hostnqn/hostid 가 같다 (이미지 복제). 연결은 되지만
+#   타깃이 두 호스트를 구분하지 못한다 -- 펜싱을 넣기 전에 재생성할 것
+```
+
+**연결 확인** -- 아무 호스트에서나 (root 불필요). 기동 전에 매번 돌린다.
+
+```bash
+for h in eternity4 eternity5 eternity6; do echo "== $h"; ssh $h '
+  for s in /sys/class/nvme-subsystem/*; do n=$(cat $s/subsysnqn); case $n in node*)
+    for d in $s/nvme*n*; do b=$(basename $d); c=$(ls -d $s/nvme[0-9]* | head -1 | xargs basename)
+      echo "  $n -> /dev/$b state=$(cat /sys/class/nvme/$c/state) wwid=$(cat $d/wwid)" \
+           "fio_tmo=$(cat /sys/class/nvme/$c/fast_io_fail_tmo) mnt=[$(findmnt -no TARGET /dev/$b)]"
+    done;; esac; done'; done
+```
+
+통과 조건:
+- 호스트마다 `node4`/`node5`/`node6` 세 줄, 전부 `state=live`
+- **자기 볼륨만 `mnt=[/mnt/raftvol]`**, 나머지 둘은 `mnt=[]`. 비어 있지 않으면 즉시 umount
+- 같은 node 의 `wwid` 가 세 호스트에서 같다 -- 이 줄의 `node5 -> /dev/nvmeXn1` 이 그 호스트의
+  `-push-devices 5=/dev/nvmeXn1` 이다
+- 새로 붙인 둘은 `fio_tmo=1`, 자기 볼륨은 `off`
+
+**ARP -- `invalid service ID` 로 연결이 거절될 때**
+
+eternitystorage 는 IB 포트 두 개가 같은 서브넷에 있다(`ibp59s0`=10.0.0.91, `ibp216s0`=10.0.0.90).
+기본 `arp_ignore=0` 이라 `ibp216s0` 도 10.0.0.91 의 ARP 에 답하고, 컴퓨트 노드가 그 주소를 배우면
+RDMA CM 연결 요청이 nvmet 리스너가 없는 포트로 가서 거절된다(dmesg `Connect rejected: status 8
+(invalid service ID)`, connect 는 `Connection reset by peer`). 이미 맺은 연결은 영향이 없다.
+
+```bash
+ip neigh show 10.0.0.91     # 끝이 ...00:0e:00:4e 가 맞다. ...00:0d:ff:de 면 잘못 배운 것
+# 컴퓨트 노드에서 고정 (재부팅 / ip neigh del 하면 사라진다)
+sudo ip neigh replace 10.0.0.91 dev ibp59s0 nud permanent \
+  lladdr 00:00:10:29:fe:80:00:00:00:00:00:00:b8:3f:d2:03:00:0e:00:4e
+# 근본 해결은 스토리지 노드의 sysctl net.ipv4.conf.all.arp_ignore=1 arp_announce=2 (공유 장비라 관리자와 상의)
 ```
 
 ```bash
