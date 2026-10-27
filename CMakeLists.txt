@@ -134,7 +134,7 @@ set(NET_SRCS
 # include하지 않는다 (의존은 core -> blockio 한 방향).
 # storage/ 와 그 net 껍데기. raft_blockcopy_server 만 링크한다 (core 불필요).
 # 예전에는 storage/ 가 헤더 온리라 어느 빌드에도 컴파일 대상이 없었다.
-set(STORAGE_SRCS storage/raft_blockcopy_server.cpp net/src/raft_blockcopy_tcp_server.cpp)
+set(STORAGE_SRCS storage/raft_blockcopy_server.cpp net/src/raft_blockcopy_net.cpp)
 
 set(BLOCKIO_SRCS blockio/cached_fd.cpp)
 
