@@ -30,9 +30,9 @@ case "$TRANSPORT_MODE" in
         ;;
 esac
 
-RESULT_DIR="$RAFT_ROOT/results/200us_rdma_group_commit_1013"
+RESULT_DIR="$RAFT_ROOT/results/1028"
 mkdir -p "$RESULT_DIR"
-"$SCRIPT_DIR/node_cfg.sh" raft_node > "$D/node_args.txt" 2>&1
+"$SCRIPT_DIR/node_cfg.sh" raft_node > "$RESULT_DIR/node_args.txt" 2>&1
 TS="$(date +%Y%m%d_%H%M%S)"
 OUT="$RESULT_DIR/${PAYLOAD}B_${TS}_${TRANSPORT_MODE}.log"
 
