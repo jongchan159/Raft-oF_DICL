@@ -1,8 +1,6 @@
 #ifndef BLOCKIO_CACHED_FD_H
 #define BLOCKIO_CACHED_FD_H
 
-#include "extent.h"
-
 #include <cstdint>
 #include <cstddef>
 #include <vector>
@@ -66,8 +64,21 @@ struct RingFileResult {
 
 RingFileResult create_ring_file(const std::string &path, uint64_t size_bytes);
 
-/* Extent(논리 -> 물리 구간 하나)는 blockio/extent.h에 있다 -- AE 응답이
- * 이 구조체를 싣기 때문에 따로 떼어 두었다 (그 파일 주석 참고). */
+/* ============================================================
+ * extent (raft.go 원본, 소문자 비공개 타입)
+ *
+ * 링 파일의 논리 구간 하나가 디바이스의 어느 물리 구간에 있는가.
+ *
+ * push 모드에서 팔로워가 자기 링의 extent 목록을 AE 응답에 그대로 싣는다
+ * (core/include/raft_entry.h, DECISIONS.md D20). 그래서 raft_entry.h가 이
+ * 헤더를 include한다. 예전에는 core TU가 이 헤더 전체를 파싱하지 않도록 이
+ * 구조체만 blockio/extent.h로 떼어 두었는데, 2026-10-27에 여기로 합쳤다.
+ * ============================================================ */
+struct Extent {
+    int64_t logical = 0;     /* logical byte offset in the file */
+    uint64_t physical = 0;   /* physical byte offset on the device */
+    uint64_t length = 0;     /* bytes */
+};
 
 /* ============================================================
  * ExtentCache (raft.go 원본)

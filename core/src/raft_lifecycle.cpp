@@ -33,6 +33,16 @@ namespace {
 constexpr int kApplyWorkerPollMs = 50;
 constexpr int kSlotGcWorkerPollMs = 100;
 
+/* push 워커 (raft_io_worker.h, DECISIONS.md D20).
+ * kPushIoSpinUs: 일을 마친 뒤 잠들기 전에 큐를 돌며 기다리는 시간. cv 깨우기
+ *   지연이 NVMe-oF 쓰기 한 번과 같은 규모라 둔다. 한 클라이언트가 하나씩 보내는
+ *   closed loop에서도 Apply 사이에 잠들지 않을 만큼이다. 비용은 대상마다 코어
+ *   하나이고, 일이 이어지는 동안만 쓴다.
+ * kPushIoMaxQueue: 대상마다 쌓아 둘 수 있는 job 수. 넘치면 그 대상은 너무
+ *   뒤처졌거나 멈춘 것이므로 1초 쉬고 pull로 간다. */
+constexpr int kPushIoSpinUs = 1000;
+constexpr size_t kPushIoMaxQueue = 16;
+
 /* 메타데이터 디렉터리 생성 모드 (링 파일 자체는 0644 -- raft_cached_fd.cpp) */
 constexpr int kMetadataDirMode = 0755;
 void ensure_dir(const std::string &path) {
@@ -233,6 +243,19 @@ void Server::start() {
 
     start_read_hb_workers();   /* ReadIndex heartbeat 워커 (raft_read.cpp) [수정-17] */
 
+    /* push 워커: 이 호스트에 장치가 매핑된 멤버마다 하나 (DECISIONS.md D20).
+     * 그 멤버가 실제 push 대상인지는 실행 중에 정해지고, 일이 오지 않는
+     * 워커는 잠들어 있다. */
+    workers.push_io.clear();
+    workers.push_io.resize(raft.cluster.size());
+    for (size_t i = 0; i < io.push_fds.size() && i < raft.cluster.size(); i++) {
+        if (io.push_fds[i]) {
+            auto pw = std::make_unique<IoWorker>();
+            pw->start(kPushIoSpinUs, kPushIoMaxQueue);
+            workers.push_io[i] = std::move(pw);
+        }
+    }
+
     workers.main_thread = std::thread([this]() { main_loop(); });
     workers.apply_thread = std::thread([this]() { apply_worker_loop(); });
     workers.slot_gc_thread = std::thread([this]() { slot_gc_worker_loop(); });
@@ -275,6 +298,15 @@ void Server::stop() {
         std::lock_guard<std::mutex> lk(mu);
         ring_not_full.notify_all();
         read_cv.notify_all();
+    }
+
+    /* push 워커를 AE 워커보다 먼저 멈춘다. 받아 둔 job은 끝까지 돌리는데,
+     * job은 끝에서 mu를 잡고 기록한다(done이라 AE 워커는 깨우지 않는다).
+     * 여기서는 mu를 쥐고 있지 않으므로 막히지 않는다. */
+    for (auto &pw : workers.push_io) {
+        if (pw) {
+            pw->stop();
+        }
     }
 
     if (workers.main_thread.joinable()) {

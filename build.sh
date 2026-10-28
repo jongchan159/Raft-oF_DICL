@@ -62,6 +62,7 @@ CORE_SRCS=(
     "$CORE_DIR/raft_types.cpp"
     "$CORE_DIR/raft_read.cpp"
     "$CORE_DIR/raft_push.cpp"
+    "$CORE_DIR/raft_io_worker.cpp"
 )
 
 # net/ 중 core 인터페이스(RaftTransport / BlockCopyClient)를 구현하는 것.

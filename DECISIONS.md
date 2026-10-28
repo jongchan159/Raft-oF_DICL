@@ -442,20 +442,21 @@ D9 의 목적은 새 링 파일의 extent 를 written 으로 만들어 첫 쓰�
 **실클러스터 검증 전이다.** 기동 배너의 `ring alloc` 이 `FALLOC_FL_WRITE_ZEROES` 로 나오는지,
 `filefrag -v <링 파일>` 에 `unwritten` 플래그가 없는지 확인할 것.
 
-## D20. push 복제 모드 (진행 중, 2026-10-25 ~ 2026-10-26)
+## D20. push 복제 모드 (진행 중, 2026-10-25 ~ 2026-10-27)
 
 `core/src/raft_push.cpp` · `-mode push` · `-push-devices` · `AppendEntriesResponse.push_map_hash` ·
 `AppendEntriesRequest.need_extent_map` · `CachedFD::open_device` / `write_at_logical` · `persist_circular` ·
-`push_covers` → `AppendEntriesRequest.data_already_copied`
+`push_gate` / `push_covers` → `AppendEntriesRequest.data_already_copied` · `IoWorker`(`core/include/raft_io_worker.h`)
 
 원본에 없는 세 번째 복제 정책이다. 리더가 자기 볼륨에 로그를 쓸 때 push 팔로워의
-볼륨에도 직접 쓰고, 그 쓰기와 flush 가 끝난 뒤 AE 를 보낸다. AE 배치가 이미 push 한
-구간이면 `data_already_copied` 를 실어 팔로워가 pull 을 건너뛴다. AE 가 쓰기 뒤에 나가므로
-AE 자체가 "네 볼륨에 썼다"는 알림이다 — 처음 설계에 있던 OK 채널은 두지 않았다(아래
+볼륨에도 직접 쓰고, 그 팔로워의 쓰기와 flush 가 끝나면 그 팔로워에게 AE 를 보낸다. AE 배치가
+이미 push 한 구간이면 `data_already_copied` 를 실어 팔로워가 pull 을 건너뛴다. AE 가 쓰기 뒤에
+나가므로 AE 자체가 "네 볼륨에 썼다"는 알림이다 — 처음 설계에 있던 OK 채널은 두지 않았다(아래
 "OK 는 AE 가 대신한다"). 여러 단계로 나눠 들어오고 있다. **지금은 대상 인식, 맵 받기,
-리더의 push 쓰기, push 된 배치의 pull 건너뛰기까지 있다.** 남은 것은 병렬화다 — 리더 자기
-쓰기와 push 쓰기를 겹치고(쓰기 병렬화), AE 를 Lock A 끝이 아니라 대상별 진행에 맞춰
-보낸다(AE 병렬화).
+리더의 push 쓰기, push 된 배치의 pull 건너뛰기, 대상별 비동기 push(8단계 1부)까지 있다.**
+push 는 대상별 워커가 하고 Lock A 는 기다리지 않는다. 그래서 먼저 끝난 대상은 다른 대상을
+기다리지 않고 바로 AE 를 받는다. 남은 것(2부)은 리더 자기 쓰기도 `mu` 밖으로 빼서, push 가 자기
+쓰기보다 먼저 끝난 대상에게는 자기 쓰기를 기다리지 않고 AE 를 보내는 것이다.
 
 **누가 push 대상인가.** 각 노드의 `-mode push` 가 후보 자격이다. 정적 목록은 없다.
 - 팔로워는 모든 AE 응답(거절 포함)에 `push_map_hash` 를 싣는다. 0 이면 push 모드가 아니고,
@@ -473,6 +474,12 @@ AE 자체가 "네 볼륨에 썼다"는 알림이다 — 처음 설계에 있던 
 **왜 해시인가.** D18 이후로 링 파일은 재시작해도 그대로라 맵이 바뀌지 않지만, 링 파일을
 지우고 다시 만들면 바뀐다. 해시 하나로 "push 후보인가" 와 "받아 둔 맵이 아직 맞는가" 를
 함께 알린다. 정규화하므로 extent 레코드가 쪼개지기만 하면 해시는 그대로다.
+- **한계: 해시는 바뀐 뒤에야 안다.** 팔로워가 링 파일을 지우고 다시 만드는 동안(그 팔로워가
+  내려가 있는 동안) 리더는 새 해시를 받을 수 없으므로 받아 둔 옛 맵으로 계속 push 한다 — 즉
+  옛 물리 블록에 쓴다. 그 블록이 새 링 파일이나 다른 파일에 다시 할당됐으면 그 내용을 덮는다.
+  대상별 비동기 push(8 단계 1 부) 이후에는 큐에 남은 job 까지 옛 맵으로 쓴다. 운영 규칙으로
+  막는다: **리더가 떠 있는 동안 팔로워의 링 파일을 지우지 않는다**(E2E §8 정리는 클러스터를 모두
+  내린 뒤에 한다).
 
 **맵은 한 번만 받는다 (`need_extent_map`).** 리더는 팔로워가 알린 해시가 설치한 맵과 다를 때만
 AE 요청에 `need_extent_map` 을 싣는다(heartbeat 포함). 팔로워는 자기 링의 extent 목록과 볼륨
@@ -484,36 +491,79 @@ wwid 를 응답에 싣는다. 리더는 설치 전에 세 가지를 대조한다
   엇갈렸을 때 다른 멤버의 볼륨에 쓰는 것을 이 대조가 막는다. 기동 배너의 수동 대조를
   자동으로 하는 것이다.
 
-통과하면 그 팔로워의 `open_device` 핸들에 `set_extents` 로 설치하고, 캐시 해시
+통과하면 그 팔로워의 `open_device` 핸들에 `set_extents` 로 설치한다. 설치는 그 팔로워의 push
+워커 **줄에 세워** 한다 — push job 은 `mu` 없이 워커 스레드에서 맵을 읽으므로, Lock C(`mu`
+아래)에서 바로 바꾸면 쓰는 중인 job 과 겹친다. 줄에 세우면 앞서 맡긴 job 은 옛 맵으로 끝까지
+쓰고(결과는 구간 비우기로 버려진다) 뒤에 맡긴 job 은 새 맵을 쓴다. 큐가 꽉 차 있으면 이번엔
+설치하지 않고 다음 AE 가 다시 요청한다. 캐시 해시
 (`push_map_cached_hash`)를 **선거가 바뀌어도 유지**한다 — 같은 해시를 다시 알리면 받지
 않는다. 실패하면 `push_map_rejected_hash` 를 기록해, 같은 맵을 매 AE 마다 다시 요청하지
-않게 한다. 메시지에는 blockio `Extent` 를 그대로 싣는다. `raft_entry.h` 가 `cached_fd.h`
-전체를 끌어오지 않도록 그 구조체만 `blockio/extent.h` 로 떼어 냈다.
+않게 한다. 메시지에는 blockio `Extent`(`blockio/cached_fd.h`)를 그대로 싣고, 그래서 `raft_entry.h`
+가 `cached_fd.h` 를 include한다. 처음에는 core TU 가 그 헤더 전체를 파싱하지 않도록 구조체만
+`blockio/extent.h` 로 떼어 두었으나, 2026-10-27 에 `cached_fd.h` 로 합쳤다(사용자 결정).
 
-**push 쓰기 (`persist_circular`).** 엔트리를 쓰는 호출에서만, 엔트리 루프 앞에서 대상을 한 번
-정한다(`push_write_targets`). `flush_run` 이 자기 링에 `write_at_file` 한 바로 뒤에, 같은 바이트를
-같은 논리 오프셋으로 대상 장치에 쓴다(`write_at_logical` — 팔로워 맵으로 PBA 를 구하고 팔로워
-extent 경계에서 쪼갠다). 자기 fdatasync 뒤에 대상 장치도 flush(`fdatasync_device`)한다.
+**push 쓰기 (`persist_circular`, 8단계 1부 2026-10-27).** 엔트리를 쓰는 호출에서만, 엔트리 루프
+앞에서 대상을 한 번 정한다(`push_write_targets`). 쓰기는 대상마다 상시 push 워커(`IoWorker`,
+`workers.push_io`)에 job 하나로 맡기고 **기다리지 않는다**. job 은 같은 바이트를 같은 논리
+오프셋으로 대상 장치에 쓰고(`write_at_logical` — 팔로워 맵으로 PBA 를 구하고 팔로워 extent
+경계에서 쪼갠다), flush(`fdatasync_device`)한 뒤 `finish_push_job` 으로 끝난 구간을 늘리고 그
+대상의 AE 워커만 깨운다.
+- **순서**: 루프에서 `flush_run` 은 run(링에 pwrite 한 번으로 쓰는 연속 구간 — 보통 호출당 하나,
+  wrap·extent 건너뛰기 때만 여럿)을 쓰지 않고 목록에 적기만 한다. 루프 뒤에 job 을 먼저 맡기고
+  그다음 자기 run 을 쓴다 — 그래야 둘이 겹친다. 대상이 없는 호출은 예전 그대로다.
+- **버퍼**: job 은 호출이 끝난 뒤에도 버퍼를 읽으므로 공유 소유로 넘긴다(`ring.push_bufs` 풀,
+  `acquire_push_buffer`). 어떤 job 도 들고 있지 않은 것을 재사용하고 run 사이에 비우지 않는다.
+- **워커**: 이 호스트에 장치가 매핑된 멤버마다 `start()` 가 하나 띄운다(멤버와 매핑은 기동 때
+  고정). 넣은 순서대로 하나씩 돌리므로 대상마다 완료가 인덱스 순서로 온다. 큐가 필요한 이유는 Lock
+  A 가 push 를 기다리지 않아 같은 대상의 push 가 겹칠 수 있어서다(동시 클라이언트, 느린 팔로워).
+  큐 상한(16)을 넘으면 그 대상은 너무 뒤처졌거나 멈춘 것이라 1 초 쉬고 pull 로 간다. 일을 마친 뒤
+  1 ms 동안은 spin 하며 다음 일을 기다린다 — cv 깨우기 지연이 NVMe-oF 쓰기 한 번과 같은 규모라서다.
+  워커는 job 을 큐 락을 놓은 채로 돌린다(job 이 끝에서 `mu` 를 잡고, persist 는 `mu` 를 쥔 채
+  submit 한다 — 반대 순서면 교착).
 - **헤더는 push 하지 않는다.** term/votedFor 등 그 노드 자신의 영속 상태라, 팔로워 링에
   쓰면 그 팔로워의 투표 기록을 덮어 재시작 후 같은 term 에 두 번 투표하게 만든다.
-- push 쓰기와 flush 시간은 `nvme_ns`(= `LPersist`)에 들어간다. 넣지 않으면 `LHandler`
-  (= Lock A 보유 시간 − nvme_ns)로 잘못 잡힌다. 따라서 push 모드의 `LPersist` 는
-  "자기 링 + push 대상 장치" 쓰기 시간이다. 지금은 대상마다 차례로 쓰므로 그 **합**이다.
-  나중의 쓰기 병렬화(대상별 상시 I/O 워커로 자기 쓰기와 겹치기)에서 대략 최댓값이 된다.
+- **계측**: `nvme_ns`(= `LPersist`)는 자기 링 쓰기만이다. push 가 Lock A 뒤로 삐져나온 시간(그
+  팔로워의 push 끝 − Lock A 종료, 0 이상)은 Leader-Side 의 "AE 전 복사" 자리에 넣어
+  `derive_apply_timings` 가 같은 분기로 계산한다: StorageIO = push 대기, QuorumWait = replicate −
+  push 대기 − AE_RT. 측정 상자(`ReplSink`)는 persist 를 거쳐 job 이 들고 간다.
 - 대상 하나가 실패해도 리더 자신의 persist 는 실패시키지 않는다. 그 대상은 1 초 동안 push 를
-  쉬고 pull 로 간다(`note_push_failure`). 경로가 끊긴 볼륨에 매 Apply 마다 쓰다가 `mu` 를 오래
-  잡는 것을 막기 위해서다.
+  쉬고 pull 로 간다(`note_push_failure`). 이제 멈춘 대상은 Lock A 도 다른 대상도 막지 않는다.
+- 이전(5 단계까지)에는 Lock A 안에서 자기 쓰기 → 대상 1 → 대상 2 를 차례로 쓰고 flush 해서
+  `LPersist` 가 그 합이었고, 먼저 끝난 대상도 가장 느린 대상을 기다렸으며, 멈춘 대상이 I/O 실패까지
+  Lock A 전체를 멈췄다.
 
-**push 구간 (`push_from` / `push_upto`).** 이 리더가 이 팔로워 장치에 쓰고 flush 까지 마친 **연속**
-로그 인덱스 구간이다(0 = 없음). AE 배치 `[next, next+len-1]` 가 이 구간에 통째로 들어갈 때만
-`data_already_copied` 를 세운다(아래 pull 건너뛰기). 시작값이 필요한 이유는 push 가 로그 중간부터
-시작하기 때문이다(맵 전의 no-op 등은 push 되지 않았다). Apply 가 이어지면 이어 붙이고, 중간에
-이 팔로워에게 쓰지 않은 호출이 있었으면 새로 시작한다(`note_pushed`). 팔로워 링이 바뀌었을 수
-있는 순간에는 반드시 비운다 — 새 term(`become_leader`), 알린 해시 변화, 맵 (재)설치, 쓰기 실패.
+**push 기록 (팔로워마다 한 벌, `ClusterMember`, `mu` 로 보호).**
+- **끝난 구간** `[push_from, push_upto]`: 이 리더가 이 팔로워 장치에 쓰고 flush 까지 마친 **연속**
+  로그 인덱스 구간(0 = 없음). push job 이 끝날 때 늘어난다(`record_push_completion` → `note_pushed`).
+  AE 배치가 이 안에 통째로 들 때만 `data_already_copied` 를 세운다(아래 pull 건너뛰기). 시작값이
+  필요한 이유는 push 가 로그 중간부터 시작하기 때문이다(맵 전의 no-op 등은 push 되지 않았다).
+- **맡긴 구간** `[push_sub_from, push_sub_upto]`: 워커에 맡긴(쓰는 중이거나 끝난) 구간. persist 가
+  job 을 맡길 때 늘린다(`note_push_submitted`). AE 워커가 "쓰는 중이니 기다린다"를 판정하는 데 쓴다.
+- **세대 번호** `push_epoch`: 두 구간을 비울 때마다 1 씩 오른다(`reset_push_range`). job 은 맡길
+  때의 번호를 들고 가고, 끝났을 때 번호가 다르면 결과를 버린다. 비우는 순간은 팔로워 볼륨의 i 번
+  자리가 무엇을 뜻하는지 바뀐 순간이다 — 새 term(`become_leader`), 알린 해시 변화, 맵 (재)설치,
+  push 실패, 자기 쓰기 실패 롤백(같은 인덱스에 곧 다른 명령이 들어온다). 그 전에 맡긴 job 이 늦게
+  끝나 결과를 새 구간에 적으면, 팔로워 볼륨에 없는 엔트리를 "있다"고 표시해 보내게 된다. 5 단계까지는
+  push 가 Lock A 안에서 동기로 끝나 이런 일이 없었다. 비울 때 job 을 기다리는 방법은 멈춘 대상 하나가
+  다른 처리까지 막아서 쓰지 않는다.
 
-**pull 건너뛰기 (`push_covers`).** `append_entries_worker` 의 Lock B 가 배치를 확정한 뒤(바이트
-상한, wrap, extent clamp 를 다 거친 값) 그 배치가 그 팔로워의 push 구간에 **통째로** 들 때만
-`data_already_copied` 를 세운다. 일부만 걸치면 배치를 쪼개지 않고 통째로 pull 한다.
+**pull 건너뛰기 (`push_gate`, `push_covers`).** `append_entries_worker` 의 Lock B 는 배치를 자르는
+다른 단계보다 먼저 관문(`push_gate`)을 지난다. 규칙은 하나다: **`next` 가 그 팔로워에게 맡긴
+구간(쓰는 중이거나 끝난 엔트리) 안이면 `last` 를 쓰기가 끝난 데(`push_upto`)까지 자른다.**
+- 자르고 남은 게 있으면 그만큼 보낸다. 최종 배치(바이트 상한, wrap, extent clamp 를 다 거친 값)도
+  끝난 구간 안이면(`push_covers`) `data_already_copied` 를 세운다.
+- 남은 게 없으면(`last < next`) 끝났는데 팔로워가 아직 안 받은 엔트리가 없다 — 나머지는 쓰는
+  중이므로 보내지 않는다. 그 job 이 끝나면 이 워커를 다시 깨운다. 이번 회차를 하트비트 타이머가
+  깨웠으면(`heartbeat_due`) 빈 AE 만 보내 팔로워가 선거를 시작하지 않게 하고, 아니면 RPC 없이
+  돌아간다 — 매번 보내면 그 RPC 가 오가는 동안 push 가 끝났을 때 진짜 AE 가 한 왕복 늦어진다.
+  완료는 `mu` 아래에서 기록한 뒤 깨우므로 깨우기를 잃지 않는다.
+- 맡긴 구간 밖이면 지금 동작 그대로 통째로 pull 한다 — push 대상이 아닌 팔로워, 빈 배치, 맡긴 적
+  없는 엔트리(기록이 비었음, 구간 시작 전에 쓴 것). 기다려도 써 줄 job 이 없기 때문이다. 일부만
+  걸치면 배치를 쪼개지 않는다. `-debug` 의 `pull=` 은 push 대상일 때만 센다.
+- 한 세대 안에서 job 은 이어서 맡겨지고 넣은 순서대로 끝나므로 끝난 구간은 늘 맡긴 구간의
+  앞부분이다. 그래서 이 한 규칙이 "끝났으면 보내고, 쓰는 중이면 기다리고, 맡긴 적 없으면 pull"과
+  같다. 처음에는 판정을 네 종류(대상 아님 / 끝남 / 쓰는 중 / pull)로 나눴으나, 동작이 같은 것을
+  합쳐 2026-10-28 에 이 규칙 하나로 줄였다.
 - 앞쪽이 걸치는 배치는 실제로 생긴다. 팔로워는 리더가 그 AE 응답을 처리할 때(선거 뒤 해시를 다시
   알 때, 맵 설치) 비로소 대상이 되므로 그 전에 쓴 엔트리는 push 되지 않았다. 그런데 AE 워커는
   `next_index` 부터 tail 까지를 한 배치로 보내고 엔트리를 실은 AE 가 날아가는 동안은 다음 배치를
@@ -522,26 +572,27 @@ extent 경계에서 쪼갠다). 자기 fdatasync 뒤에 대상 장치도 flush(`
   자기 볼륨에 없는 엔트리를 성공으로 응답하고, 리더가 된 뒤 그 슬롯(0 이나 이전 바퀴의 엔트리)을
   명령으로 읽는다. 통째로 pull 하면 이미 push 된 뒷부분은 같은 바이트를 한 번 더 쓸 뿐이다.
   경계에서 잘라 앞부분만 pull 하면 뒷부분이 다음 라운드로 밀려 왕복이 하나 는다.
-- 뒤쪽 조건(`last <= push_upto`)은 지금 구조에서는 늘 참이다 — 워커는 Lock A 가 push 까지 마친
-  엔트리만 보고, 대상이 되는 모든 경로가 구간을 비운다. AE 병렬화에서 AE 가 Lock A 를 기다리지
-  않게 되면 이 조건이 관문이 된다.
+- 뒤쪽(`last > push_upto`, 아직 쓰는 중인 엔트리)은 Covered 에서 `last` 를 `push_upto` 로 잘라
+  보내지 않는다. 그 엔트리는 job 이 끝나 다시 깨워진 회차에 보낸다.
 
 팔로워 코드는 바꾸지 않았다.
 `data_already_copied` 면 `do_pba_copy` 를 건너뛰고 메타데이터로만 로그를 잇는 경로가 Leader-Side 용으로
 이미 있었다.
 - 슬롯이 맞는 이유: 배치는 리더 extent 하나 안에 있고 wrap 하지 않으므로 슬롯이 연속이다.
   팔로워가 `start_slot` 부터 차례로 계산하는 슬롯이 리더가 같은 논리 오프셋으로 push 한 위치와 같다.
-- 계측: push 된 배치는 응답의 `write_pba_rt_ns`/`storage_copy_ns` 가 0 이라 `StorageIO` 가 0 이고,
-  push 비용은 리더의 `LPersist` 에 있다. 팔로워의 `FHandler` 에서는 pull 이 빠진다.
+- 계측: push 된 배치는 팔로워가 pull 하지 않으므로 응답의 `write_pba_rt_ns`/`storage_copy_ns` 가 0
+  이다. 리더는 그 자리에 push 대기(위 "push 쓰기"의 계측)를 넣는다(`ReplSample.pushed`). 팔로워의
+  `FHandler` 에서는 pull 이 빠진다.
 - 관측: 리더 `-debug` 의 `skip=`(push 덕에 pull 을 건너뛴 배치)과 `pull=`(push 대상인데 구간 밖이라
   pull 한 배치). 보낸 배치 기준의 누적값이다(`push_ae_skipped` / `push_ae_pulled`).
 
 **OK 는 AE 가 대신한다 (A안, 2026-10-26 결정).** 처음 설계는 AE 를 push 쓰기와 병렬로 보내고,
 쓰기가 끝나면 RDMA Write 로 OK 를 따로 보내, 팔로워가 OK 를 받은 뒤 응답하는 것이었다. 팔로워는
 자기 볼륨에 내구성 있게 있다는 것을 알기 전에는 성공으로 응답할 수 없으므로 어떤 형태로든 "썼다"는
-신호가 필요하다. 지금은 AE 를 push 쓰기와 flush 가 끝난 뒤에 보내 AE 자체를 그 신호로 쓴다. 엔트리는
-Lock A 에서 로그에 붙고, 같은 `mu` 보유 안에서 push 와 flush, `note_pushed` 까지 끝난 뒤에야 AE
-워커에 보인다. 그래서 `data_already_copied` 가 선 배치는 팔로워 볼륨에 이미 내구성 있게 있다.
+신호가 필요하다. 지금은 AE 를 push 쓰기와 flush 가 끝난 뒤에 보내 AE 자체를 그 신호로 쓴다. 끝난
+구간은 그 팔로워의 push 쓰기와 flush 가 끝난 뒤에만 늘어나고(`finish_push_job`), AE 워커는 끝난
+구간 안의 엔트리에만 `data_already_copied` 를 세운다. 그래서 그 플래그가 선 배치는 팔로워 볼륨에
+이미 내구성 있게 있다.
 이렇게 정한 이유:
 - 다른 Raft 구현(etcd, braft, LogCabin)으로 옮길 때 고칠 곳이 팔로워별 송신기의 관문 하나다
   ("push 대상이면 그 push 가 끝난 뒤 보낸다"). 그 구현들의 "리더 자기 쓰기와 AE 의 병렬"
@@ -558,9 +609,12 @@ Lock A 에서 로그에 붙고, 같은 `mu` 보유 안에서 push 와 flush, `no
   생기지 않으며, SSD 쓰기 **전에** 일어난다. 쓰기 완료는 명령을 낸 호스트만 완료 캡슐로 받는다.
   데이터 쓰기를 알리는 AEN 종류도 없다.
 
-AE 병렬화(리더 자기 쓰기와 AE 를 겹치는 것)도 이 결정 위에서 한다. AE 워커가 Lock A 끝을 기다리지
-않고 대상별 관문으로 배치를 자른다 — push 대상은 `push_upto` 까지, pull 팔로워는 리더 자기 쓰기가
-끝난 인덱스까지(pull 은 리더 볼륨에서 읽어 가므로). 리더 자신의 match 는 내구 인덱스로 센다.
+병렬화도 이 결정 위에서 한다. 1 부(2026-10-27)는 대상별 관문까지다 — push 는 대상별 워커가 하고,
+push 대상의 AE 는 그 대상의 push 가 끝나는 대로 나간다(`push_gate`). 다만 자기 쓰기는 아직 Lock A
+안이라 F 의 AE 는 max(자기 쓰기, F 의 push) 뒤에 나간다. 2 부는 자기 쓰기도 `mu` 밖으로 뺀다 —
+그러면 pull 팔로워는 리더 자기 쓰기가 끝난 인덱스까지만 보내야 하고(pull 은 리더 볼륨에서 읽어
+가므로), 리더 자신의 match 는 `tail−1` 이 아니라 내구 인덱스로 세야 하며, 자기 쓰기 실패는 이미
+다른 팔로워에게 나간 엔트리를 되돌릴 수 없어 치명 오류로 다뤄야 한다.
 
 **왜 파일이 아니라 장치에 쓰나.** 팔로워 링 파일은 팔로워 호스트의 ext4 위에 있다. 리더
 호스트가 그 ext4 를 같이 마운트하면 두 커널의 메타데이터 캐시가 어긋나 파일시스템이 깨진다.
@@ -589,6 +643,19 @@ fallback 으로 pull 한다.
 전에 옛 리더의 등록을 preempt)으로 막을 수 있지만, nvmet 지원이 확인되지 않아 넣지 않았다.
 SETUP.md 의 `--fast_io_fail_tmo` 로 지연 창을 줄이는 것이 완화책이다. 리더가 바뀌지 않는
 측정에는 영향이 없다. 인프라 준비 절차는 SETUP.md "PUSH MODE".
+- 8 단계 1 부(비동기 push)로 이 창이 하나 더 생긴다. 물러난 뒤에도 워커 큐에 남은 job(대상마다 최대
+  16 개)이 돌 수 있기 때문이다. 이것은 **펜싱이 막는다고 가정한다**(2026-10-27 결정). 새 리더가 첫
+  push 전에 각 push 대상 네임스페이스에서 옛 리더의 등록을 Preempt and Abort 하면, 그 뒤에 도착하는
+  옛 리더의 쓰기는 큐에 있던 job 이든 아니든 타깃이 Reservation Conflict 로 거절한다. 리더 쪽에서 따로
+  막지 않는 이유는, 펜싱이 이 경우뿐 아니라 물러난 줄 모르는 옛 리더(Raft 피어와는 끊겼지만
+  스토리지와는 이어진 경우)까지 막으므로 리더 쪽 장치가 중복이기 때문이다. 리더 쪽에서 막는 리더십
+  순번 검사를 넣었다가 같은 날 뺐다.
+- 그 가정이 서려면 세 가지가 필요하다. (1) 새 리더가 push 하지 않는 팔로워의 볼륨도 선점해야 한다 —
+  그 팔로워의 pull 쓰기는 스토리지 노드가 로컬로 해서 Reservation 을 거치지 않는데, 옛 리더의 늦은
+  push 가 그 슬롯을 덮을 수 있다. 그래서 새 리더의 호스트도 그 볼륨을 attach·등록해야 한다.
+  (2) 그냥 Preempt 가 아니라 Preempt and Abort 여야 한다 — 선점 시점에 처리 중이던 옛 쓰기가 새 쓰기
+  뒤에 끝나지 않게. (3) nvmet 이 이것을 강제해야 한다(클러스터 커널에서 미확인). **펜싱을 구현하기
+  전까지는 이 창이 열려 있다.**
 
 ## U. 미해결 — 리팩토링 중 마주치면 여기를 볼 것
 
@@ -607,7 +674,8 @@ SETUP.md 의 `--fast_io_fail_tmo` 로 지연 창을 줄이는 것이 완화책�
 | U11 | **`FALLOC_FL_ZERO_RANGE` 가 ext4 에서 extent 를 "written" 으로 만들지 않는다 — D9 의 전제가 성립하지 않는다.** `create_ring_file` 은 매 기동마다 링 파일 전체에 ZERO_RANGE 를 걸고, D9 와 `blockio/cached_fd.h:31-36` 는 그것이 extent 를 전부 written 으로 뒤집어 "이후 첫 쓰기가 파일시스템 저널을 통한 extent 상태 변환으로 직렬화" 되는 것을 막는다고 서술한다. **실측 결과 ZERO_RANGE 후에도 extent 는 unwritten 으로 남는다** — ext4 에서는 범위를 unwritten 으로 두는 것이 가장 싼 zeroing 구현이기 때문으로 보인다. 커널 4.15(eternitymaster)와 6.8(eternitystorage) 양쪽에서 동일했다: `fallocate -l` → unwritten, `fallocate -l` + `fallocate -z` → **여전히 unwritten**, `dd oflag=direct`(실제 쓰기) → written. 라이브 링 파일 `/mnt/raftvol/node5/raft_meta.bin`(32GiB, 3시간 가동)도 **257 extent 중 257 개가 unwritten** 이고 블록 0(헤더 쓰기가 닿은 곳)만 written 이었다 | `blockio/cached_fd.cpp` `create_ring_file` · `DECISIONS.md D9` | **미해결. 이번에는 고치지 않았다** (blockcopy 벤치 교체 작업 범위 밖이고, `blockio`/`storage` 변경은 U7 대조군에 영향을 준다). 확인된 것은 **전제가 틀렸다는 사실**까지다 — 그 결과로 실제 지연이 얼마나 늘어나는지는 측정하지 않았다. U7(StorageIO 격차)과 관련이 있을 수 있으므로 그 조사에서 같이 볼 것. 고치려면 extent 를 실제로 written 으로 만들어야 하는데, 링 파일 전체를 한 번 쓰는 비용(기본 32GiB/노드)이 기동 시간에 그대로 붙는다 — 비용/이득을 따져 결정할 일이다. 새 벤치(`scripts/blkcopy_scaling.sh`)는 이 문제를 피하려고 백킹 파일을 `dd oflag=direct` 로 준비하고 preflight 에서 unwritten extent 를 검사해 거부한다. **2026-10-24 (D18):** 이제 기존 링 파일에는 ZERO_RANGE 를 다시 걸지 않으므로, 링 파일을 파일시스템을 통해 한 번 써 두면 그 written 상태가 재시작 후에도 남는다. **2026-10-24 (D19):** `FALLOC_FL_WRITE_ZEROES` 를 지원하는 환경에서는 새 링 파일이 처음부터 written 으로 할당된다 (기동 배너 `ring alloc` 으로 확인) |
 
 | U12 | **`-statemachine kvs` 에서 failover 직후 새 리더의 KVS 가 불완전할 수 있다.** 팔로워는 apply 하지 않고(리더만 `apply_pending`), 승격 시 `become_leader` 가 링에서 명령을 읽어 replay 한다. `read_entry_direct` 실패는 조용히 건너뛰고(`raft_election.cpp`), 링이 한 바퀴 돌았으면 덮어쓴 데이터를 읽을 수도 있다. 그 상태에서 GET(ReadIndex)은 빠진 PUT 을 못 본다 | `core/src/raft_election.cpp` `become_leader` · `core/src/raft_commit.cpp` `apply_pending` | 2026-10-13 결정으로 팔로워 apply 는 현행 유지. **벤치마크에 failover 를 넣지 말 것.** 고치려면 팔로워도 커밋 시 링에서 읽어 apply 해야 한다 |
-| U13 | **`tests/test_apply_timings.cpp` 가 HEAD 에서 컴파일되지 않는다.** `ApplyWalls::replicate_commit_ns` / `ApplyTimings::replicate_commit_corrected_ns` 를 참조하는데 `core/include/raft_timings.h` 에 그 필드가 없다 (persistent worker 계측 변경 이후로 보인다). `raft_unit_tests` 전체가 빌드되지 않는다 | `tests/test_apply_timings.cpp` | 2026-10-13 발견, 미수정 (KVS/ReadIndex 작업 범위 밖). 이 파일을 빼면 나머지 58개 케이스 통과 (macOS, TSan/ASan 포함) |
+| U13 | **`tests/test_apply_timings.cpp` 가 HEAD 에서 컴파일되지 않는다.** `ApplyWalls::replicate_commit_ns` / `ApplyTimings::replicate_commit_corrected_ns` 를 참조하는데 `core/include/raft_timings.h` 에 그 필드가 없다 (persistent worker 계측 변경 이후로 보인다). `raft_unit_tests` 전체가 빌드되지 않는다 | `tests/test_apply_timings.cpp` | 2026-10-13 발견. **2026-10-27 `db0a794` 에서 해소** — 필드 이름 변경(`replicate_commit_ns` → `replicate_ns`, `replicate_commit_corrected_ns` → `replicate_corrected_ns`)을 따랐다. push 8 단계 1 부에서 push 분기 테스트를 더했다 |
+| U14 | **리더 자기 쓰기 실패 처리 (다음 작업 항목, 2026-10-28).** 지금 `apply_internal` 은 persist 가 실패하면 엔트리를 되돌리고 클라이언트에 실패를 돌려준 뒤 **리더로 남는다.** 문제는 셋이다. (1) 하트비트는 계속 나가 팔로워가 선거를 시작하지 않는데 모든 Apply 는 실패한다 — 고장 난 리더가 자리를 비키지 않는다. (2) 같은 term 에서 같은 인덱스를 다른 명령으로 다시 쓴다 — Raft 가 기대는 "(인덱스, term) 이 같으면 같은 엔트리"가 깨지고, push(이미 맡긴 job 의 바이트가 팔로워 볼륨에 있을 수 있다)와 재시작 replay 에서 정합성 문제가 된다. (3) `ring.tail_slot`/`log_slot_map` 은 되돌리지 않는다. **계획:** 되돌리지 않고 같은 엔트리를 같은 위치에 다시 쓴다. 재시도 시간은 선거 타임아웃보다 짧게 잡는다. 오류 종류를 나눠 EIO·타임아웃(경로 문제)만 재시도하고 EINVAL 등 설정·버그 오류는 바로 끝낸다. 재시도가 다 실패하면 프로세스를 끝낸다(fail-stop — etcd 도 WAL 저장 실패 시 Fatal). 리더를 내려놓기만 하면 투표 기록(votedFor)도 남길 수 없어 안전하게 참여할 수 없다. 다시 띄워 따라잡으려면 U5(재시작 replay)가 필요하다. disaggregated 구성에서는 대부분의 경로 흔들림을 NVMe 드라이버(재시도·재연결·멀티패스)가 흡수하고, Raft 까지 오는 것은 느려짐과 `fast_io_fail_tmo` 뒤의 EIO 다 | `core/src/raft_apply.cpp` `apply_internal` · `core/src/raft_persist.cpp` | 쓰기가 오래 멈추면 Lock A 가 `mu` 를 쥐고 있어 하트비트도 멈추므로, 선거 타임아웃 뒤 팔로워가 이미 새 리더를 뽑는다(지금도 그렇다). push 대상 쪽 실패는 리더를 바꾸지 않는다(1 초 쉬고 pull, D20). 이걸 하면 push 세대 번호의 한 용도(롤백)는 사라지지만, 링 교체·재선출 경우가 남아 세대 번호는 유지한다 |
 
 그 외 남은 작업 목록은 HANDOFF.md §7에 있다.
 

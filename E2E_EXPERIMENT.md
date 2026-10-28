@@ -420,10 +420,17 @@ push 된 배치는 팔로워가 pull 을 건너뛰므로, 그 구간의 팔로�
 
 **(4) A안이 포기하는 몫 — apply-timed**
 
-§7-2 를 push 모드로 돌린다. push 된 배치는 팔로워가 pull 을 하지 않으므로 `StorageIO ≈ 0` 이고,
-push 쓰기는 리더의 `LPersist` 에 들어간다(지금은 자기 쓰기와 대상 수만큼의 push 쓰기의 합).
+§7-2 를 push 모드로 돌린다. push 는 대상별 워커가 자기 쓰기와 겹쳐 하므로(DECISIONS.md D20,
+8 단계 1 부) 항이 이렇게 읽힌다.
+- `LPersist` 는 리더 자기 링 쓰기만이다.
+- `StorageIO` 는 push 대기다 — 커밋을 만든 팔로워의 push 가 Lock A 뒤로 삐져나온 시간(push 가 자기
+  쓰기보다 일찍 끝났으면 0). 팔로워의 pull 은 없다.
+- `ReplNet` 은 0 이다.
+
 `FHandler` 를 기록해 둔다 — OK 채널 대신 AE 를 쓰기 뒤에 보내는 결정(A안)이 라운드마다 포기하는
 몫의 대부분이 이것이다. 같은 조건의 `-mode destination` 결과와 나란히 놓으면 push 의 이득이 보인다.
+8 단계 1 부 이전(push 를 Lock A 안에서 차례로 쓰던 때)의 결과가 있으면 그것과도 비교한다 — 그때는
+`LPersist` 가 자기 쓰기와 push 쓰기의 합이었고 `StorageIO ≈ 0` 이었다.
 
 ---
 

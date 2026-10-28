@@ -48,7 +48,7 @@ inline EntryMeta entry_meta_from_proto(const rpcproto::EntryMeta &p) {
     return EntryMeta{p.term(), p.cmd_len()};
 }
 
-/* push 모드 링 extent (blockio/extent.h, DECISIONS.md D20) */
+/* push 모드 링 extent (blockio/cached_fd.h의 Extent, DECISIONS.md D20) */
 inline void ring_extent_to_proto(const Extent &g, rpcproto::RingExtent *p) {
     p->set_logical(g.logical);
     p->set_physical(g.physical);

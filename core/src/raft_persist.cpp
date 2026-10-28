@@ -3,9 +3,11 @@
 #include "raft_basics.h"
 #include "cached_fd.h"   /* CachedFD 역참조 */
 
+#include <atomic>
 #include <chrono>
 #include <cstring>
 #include <cstdio>
+#include <string>
 
 namespace nvmeof_raft {
 
@@ -18,7 +20,8 @@ namespace nvmeof_raft {
  *  Returns nvmeNs: total wall time spent inside O_DIRECT WriteAtFile +
  *  Fdatasync syscalls (the actual NVMe-oF traffic)."
  * ============================================================ */
-int64_t Server::persist_circular(bool write_log, int n_new_entries) {
+int64_t Server::persist_circular(bool write_log, int n_new_entries,
+                                 std::shared_ptr<ReplSink> sink) {
     if (n_new_entries == 0 && write_log) {
         n_new_entries = static_cast<int>(raft.log.size()) - 1;
     }
@@ -28,19 +31,29 @@ int64_t Server::persist_circular(bool write_log, int n_new_entries) {
 
     /* ---- push 모드 (DECISIONS.md D20) ----
      * 이번 호출이 쓰는 엔트리를 push 대상 팔로워의 장치에도 같은 논리
-     * 오프셋으로 쓴다. 대상은 엔트리를 쓰는 호출에서만, 엔트리 루프 앞에서
-     * 한 번 정한다 -- 한 호출 안에서 flush_run이 여러 번 불려도(링 wrap,
-     * extent-skip) 같은 대상에 쓰기 위해서다. 헤더만 쓰는 호출(false, 0)과
-     * 리더가 아닐 때는 대상이 없다 (push_write_targets가 리더만 본다).
-     * push_ok[k]: 이번 호출에서 대상 k에 쓰기가 아직 다 성공했는가. */
+     * 오프셋으로 쓴다. 쓰기는 대상별 push 워커에 맡기고 **기다리지 않는다**.
+     * 그 대상의 쓰기와 flush가 끝나면 job이 끝난 구간을 늘리고 그 대상의
+     * AE 워커만 깨운다(finish_push_job). 대상은 엔트리를 쓰는 호출에서만,
+     * 엔트리 루프 앞에서 한 번 정한다. 헤더만 쓰는 호출과 리더가 아닐 때는
+     * 대상이 없다 (push_write_targets가 리더만 본다).
+     *
+     * run: 링에 pwrite 한 번으로 쓰는 연속 구간. 보통 호출당 하나이고, 링
+     * 끝에서 감아 돌거나(wrap) 엔트리가 extent 경계에 걸려 건너뛸 때만 여러
+     * 개다. push 대상이 있으면 flush_run은 쓰지 않고 runs에 적기만 한다 --
+     * 루프가 끝나야 모든 run을 알고, 그것을 job에 먼저 맡긴 뒤 자기 쓰기를
+     * 해야 둘이 겹친다. job은 이 호출이 끝난 뒤에도 버퍼를 읽으므로 버퍼는
+     * 공유 소유(push_buf)로 넘기고, run 사이에 비우지 않고 다음 run을 뒤에
+     * 이어 붙인다. */
+    struct Run {
+        size_t buf_off;        /* 버퍼 안 시작 */
+        size_t len;            /* 바이트 */
+        int64_t logical_off;   /* 링 파일의 논리 오프셋 */
+    };
     std::vector<int> push_fis;
-    std::vector<char> push_ok;
+    std::vector<Run> runs;
+    std::shared_ptr<AlignedBuffer> push_buf;
     uint64_t push_first = 0;
     uint64_t push_last = 0;
-    auto push_fd = [this](int fi) -> CachedFD * {
-        size_t i = static_cast<size_t>(fi);
-        return (i < io.push_fds.size()) ? io.push_fds[i].get() : nullptr;
-    };
 
     if (write_log && n_new_entries > 0) {
         int start = static_cast<int>(raft.log.size()) - n_new_entries;
@@ -49,7 +62,6 @@ int64_t Server::persist_circular(bool write_log, int n_new_entries) {
         }
 
         push_fis = push_write_targets(clock_type::now());
-        push_ok.assign(push_fis.size(), 1);
         /* 이번 호출이 쓰는 엔트리의 로그 인덱스 구간 (아래 루프의 log_idx와 같은 식) */
         push_first = ring.tail_log_index -
                      static_cast<uint64_t>(raft.log.size() - static_cast<size_t>(start));
@@ -60,7 +72,12 @@ int64_t Server::persist_circular(bool write_log, int n_new_entries) {
             est_size += static_cast<size_t>(
                 slots_for_entry(raft.log[static_cast<size_t>(k)].command.size())) * SECTOR_SIZE;
         }
-        if (ring.run_buf.capacity() < est_size) {
+
+        /* push 대상이 있으면 run을 모아 두었다가 루프 뒤에 쓴다 */
+        const bool deferred = !push_fis.empty();
+        if (deferred) {
+            push_buf = acquire_push_buffer(est_size);
+        } else if (ring.run_buf.capacity() < est_size) {
             /* 원본: makeAlignedBlock(estSize)[:0]. AlignedBuffer는
              * posix_memalign 메모리를 복사 없이 그대로 소유하므로
              * O_DIRECT 정렬이 항상 유지됨 (std::vector 버그 수정) */
@@ -68,42 +85,31 @@ int64_t Server::persist_circular(bool write_log, int n_new_entries) {
             ring.run_buf.clear();   /* capacity는 유지, size만 0 (Go의 [:0] 슬라이싱과 동일 의도) */
         }
 
-        AlignedBuffer &run_buffer = ring.run_buf;   /* 원본 runBuf 별칭, s.runBuf[:0] 대응 */
+        /* 원본 runBuf 별칭, s.runBuf[:0] 대응 */
+        AlignedBuffer &run_buffer = deferred ? *push_buf : ring.run_buf;
         run_buffer.clear();
+        size_t run_start = 0;   /* 지금 run이 버퍼의 어디서 시작하나 (push가 없으면 늘 0) */
         int64_t run_off = 0;
 
         /* flushRun (원본 클로저 -> 람다)
          * "write the buffered runBuf to the metadata file at the current
          *  runOff via O_DIRECT WriteAtFile... One pwrite per flushRun
-         *  call regardless of extent count" */
+         *  call regardless of extent count"
+         * push 대상이 있으면 쓰지 않고 run을 적기만 한다 (위 주석). */
         auto flush_run = [&]() {
-            if (run_buffer.empty()) {
+            if (run_buffer.size() == run_start) {
+                return;
+            }
+            size_t len = run_buffer.size() - run_start;
+            if (deferred) {
+                runs.push_back(Run{run_start, len, run_off});
+                run_start = run_buffer.size();
                 return;
             }
             auto t_io = clock_type::now();
             flush_count++;
-            io.cached_fd->write_at_file(run_buffer.data(), run_buffer.size(), run_off);
-            /* push: 같은 바이트를 같은 논리 오프셋으로 대상 팔로워 장치에 쓴다
-             * (팔로워 맵으로 PBA를 구해 장치에 직접). 실패해도 리더 자신의
-             * persist는 실패시키지 않는다 -- 그 팔로워만 이번 호출에서 빠지고
-             * 잠시 pull로 간다. 시간은 nvme_ns(= LPersist)에 포함된다. */
-            for (size_t k = 0; k < push_fis.size(); k++) {
-                if (!push_ok[k]) {
-                    continue;
-                }
-                CachedFD *pfd = push_fd(push_fis[k]);
-                try {
-                    if (pfd == nullptr) {
-                        throw std::runtime_error("no device handle");
-                    }
-                    pfd->write_at_logical(run_buffer.data(), run_buffer.size(), run_off);
-                } catch (const std::exception &e) {
-                    push_ok[k] = 0;
-                    note_push_failure(push_fis[k], e.what());
-                }
-            }
+            io.cached_fd->write_at_file(run_buffer.data(), len, run_off);
             nvme_ns += elapsed_ns(t_io);
-            run_off += static_cast<int64_t>(run_buffer.size());
             run_buffer.clear();
         };
 
@@ -148,7 +154,7 @@ int64_t Server::persist_circular(bool write_log, int n_new_entries) {
                 }
             }
 
-            if (run_buffer.empty()) {
+            if (run_buffer.size() == run_start) {   /* 새 run의 첫 엔트리 */
                 run_off = slot_offset(ring.tail_slot);
             }
 
@@ -197,6 +203,58 @@ int64_t Server::persist_circular(bool write_log, int n_new_entries) {
         flush_run();
         /* state는 엔트리별 logSlotMap insert 시점에 이미 설정되므로
          * 배치 후 markSlots 불필요 (원본 주석 그대로) */
+
+        if (deferred) {
+            /* 1) 대상마다 job 하나를 맡긴다 -- 자기 쓰기보다 먼저 시작시켜야
+             *    둘이 겹친다. job은 모든 run을 쓰고 flush한 뒤 결과를 적고
+             *    그 대상의 AE 워커를 깨운다. 기다리지 않는다. */
+            for (int fi : push_fis) {
+                size_t i = static_cast<size_t>(fi);
+                IoWorker *w = push_worker(fi);
+                std::shared_ptr<CachedFD> pfd = (i < io.push_fds.size()) ? io.push_fds[i] : nullptr;
+                /* 맡길 때의 세대 번호를 들고 간다 -- 그 사이 구간이 비워지면
+                 * (롤백, 리더 교체, 링 교체, 실패) 끝났을 때 결과를 버린다 */
+                uint64_t epoch = raft.cluster[i].push_epoch;
+                bool queued = false;
+                if (w != nullptr && pfd != nullptr) {
+                    queued = w->submit([this, fi, pfd, push_buf, runs, epoch,
+                                        push_first, push_last, sink]() {
+                        /* 워커 스레드, mu 없이. F의 장치와 맵은 F의 워커만
+                         * 만진다 (맵 설치도 이 줄에 선다 -- note_push_response).
+                         * 리더에서 물러난 뒤 큐에 남은 job의 쓰기는 펜싱(NVMe
+                         * Reservation)이 타깃에서 거절한다고 가정한다 -- D20 한계. */
+                        std::string err;
+                        try {
+                            for (const Run &r : runs) {
+                                pfd->write_at_logical(push_buf->data() + r.buf_off, r.len,
+                                                      r.logical_off);
+                            }
+                            /* 블록 장치 fdatasync = 디바이스 캐시 flush. 이것까지
+                             * 끝나야 "팔로워 볼륨에 내구성 있게 있다" */
+                            pfd->fdatasync_device();
+                        } catch (const std::exception &e) {
+                            err = e.what();
+                        }
+                        finish_push_job(fi, epoch, push_first, push_last, err, sink);
+                    });
+                }
+                if (queued) {
+                    note_push_submitted(fi, push_first, push_last);
+                } else {
+                    /* 워커가 없거나 큐가 꽉 찼다(그 대상이 너무 뒤처졌거나
+                     * 멈췄다) -- 1초 쉬고 그동안 pull로 간다 */
+                    note_push_failure(fi, (w == nullptr || pfd == nullptr)
+                                              ? "no push worker" : "push queue full");
+                }
+            }
+            /* 2) 자기 run 쓰기 (같은 버퍼, 복사 없음) */
+            for (const Run &r : runs) {
+                auto t_io = clock_type::now();
+                flush_count++;
+                io.cached_fd->write_at_file(run_buffer.data() + r.buf_off, r.len, r.logical_off);
+                nvme_ns += elapsed_ns(t_io);
+            }
+        }
     }
 
     /* conditional header write (원본 주석 그대로: "no calculate in
@@ -230,7 +288,7 @@ int64_t Server::persist_circular(bool write_log, int n_new_entries) {
 
         /* Header lives at logical offset 0 (RING_OFFSET == HEADER_SIZE
          * -- ring slot 0은 헤더 다음부터 시작, 원본 주석 그대로) */
-        /* 헤더는 push하지 않는다 (flush_run을 타지 않는다). term/votedFor
+        /* 헤더는 push하지 않는다 (push job에 넣지 않는다). term/votedFor
          * 등 **이 노드 자신의** 영속 상태라, 팔로워 링에 쓰면 그 팔로워의
          * 투표 기록을 덮어 재시작 후 같은 term에 두 번 투표하게 만든다
          * (D18, DECISIONS.md D20). */
@@ -244,34 +302,33 @@ int64_t Server::persist_circular(bool write_log, int n_new_entries) {
     }
 
     if ((write_log && n_new_entries > 0) || write_header) {
-        /* 3-2. fdatasync */
+        /* 3-2. fdatasync (자기 링만. push 대상 장치의 flush는 그 job이 한다) */
         auto t_sync_io = clock_type::now();
         io.cached_fd->fdatasync();
-        /* push 대상 장치도 flush해야 "팔로워 볼륨에 내구성 있게 있다"고
-         * 말할 수 있다 (블록 장치 fdatasync = 디바이스 캐시 flush) */
-        for (size_t k = 0; k < push_fis.size(); k++) {
-            if (!push_ok[k]) {
-                continue;
-            }
-            try {
-                push_fd(push_fis[k])->fdatasync_device();
-            } catch (const std::exception &e) {
-                push_ok[k] = 0;
-                note_push_failure(push_fis[k], e.what());
-            }
-        }
         nvme_ns += elapsed_ns(t_sync_io);
     }
 
-    /* 쓰고 flush까지 마친 대상에 이번 구간을 기록한다 -- 이 구간에 통째로
-     * 든 AE 배치는 팔로워가 pull을 건너뛴다 (push_covers) */
-    for (size_t k = 0; k < push_fis.size(); k++) {
-        if (push_ok[k]) {
-            note_pushed(push_fis[k], push_first, push_last);
+    return nvme_ns;
+}
+
+std::shared_ptr<AlignedBuffer> Server::acquire_push_buffer(size_t capacity) {
+    for (auto &b : ring.push_bufs) {
+        /* 풀만 들고 있다 = 이 버퍼를 읽는 push job이 없다 */
+        if (b.use_count() == 1) {
+            /* use_count()는 relaxed로 읽힌다. job이 참조를 놓은 것(release)과
+             * 짝을 맞춰, job의 읽기가 아래 덮어쓰기보다 먼저 끝났음을 보장한다 */
+            std::atomic_thread_fence(std::memory_order_acquire);
+            if (b->capacity() < capacity) {
+                b->resize(capacity, SECTOR_SIZE);
+            }
+            b->clear();
+            return b;
         }
     }
-
-    return nvme_ns;
+    auto b = std::make_shared<AlignedBuffer>(capacity, SECTOR_SIZE);
+    b->clear();
+    ring.push_bufs.push_back(b);
+    return b;
 }
 
 } /* namespace nvmeof_raft */

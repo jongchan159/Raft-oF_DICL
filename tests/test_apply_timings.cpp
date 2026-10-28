@@ -229,3 +229,51 @@ TEST_CASE("샘플도 폴백도 없으면 전송 구간이 전부 0이 된다") {
     CHECK(t.quorum_wait_ns == w.replicate_ns);
     CHECK(identity_rhs(t) == w.a_held_ns + w.replicate_ns);
 }
+
+/* ---------------- push 모드 (DECISIONS.md D20) ---------------- */
+
+TEST_CASE("push된 배치: StorageIO는 push 대기이고 항등식이 그대로 telescope된다") {
+    /* 팔로워는 pull하지 않았고, Lock A 뒤로 삐져나온 push 대기를 "AE 전
+     * 복사" 자리(write_pba_rt = storage_copy)에 넣는다. Leader-Side와 같은
+     * 분기다: FHandler = R2 전체, QuorumWait = replicate - push 대기 - AE_RT. */
+    ApplyWalls w = ordered_walls();
+    ReplSample smp;
+    smp.pushed = true;
+    smp.storage_copy_ns  = 120'000;   /* push 대기 */
+    smp.write_pba_rt_ns  = 120'000;   /* 같은 값 -> ReplNet 0 */
+    smp.r2_ns            = 40'000;    /* 팔로워 핸들러 (pull 없음) */
+    smp.ae_rt_ns         = 90'000;
+    ReplSink sink;
+    sink.push(smp);
+    ProfilingSink prof;
+    ApplyTimings t;
+
+    derive_apply_timings(w, &sink, prof, t);
+
+    CHECK(t.storage_io_ns == 120'000);
+    CHECK(t.repl_net_ns == 0);
+    CHECK(t.f_handler_ns == smp.r2_ns);
+    CHECK(t.ae_net_ns == smp.ae_rt_ns - smp.r2_ns);
+    CHECK(t.quorum_wait_ns == w.replicate_ns - 120'000 - smp.ae_rt_ns);
+    CHECK(identity_rhs(t) == w.a_held_ns + w.replicate_ns);
+}
+
+TEST_CASE("push_wait_ns: Lock A 뒤로 삐져나온 몫만 센다") {
+    ReplSink sink;
+    auto t0 = clock_type::now();
+
+    /* 기준점(Lock A 종료)이 없으면 0 */
+    sink.note_push_end(1, t0 + std::chrono::microseconds(300));
+    CHECK(sink.push_wait_ns(1) == 0);
+
+    sink.set_repl_start(t0);
+    CHECK(sink.push_wait_ns(1) == 300'000);
+
+    /* Lock A 안에서 끝났으면(자기 쓰기와 완전히 겹쳤으면) 0 */
+    sink.note_push_end(2, t0 - std::chrono::microseconds(50));
+    CHECK(sink.push_wait_ns(2) == 0);
+
+    /* 끝난 기록이 없는 팔로워는 0 */
+    CHECK(sink.push_wait_ns(3) == 0);
+}
+

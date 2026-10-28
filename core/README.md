@@ -27,9 +27,11 @@ DECISIONS.md §X "헤더에 구현을 남기는 유일한 이유들 (R0)" 에 �
 - 의존 방향은 `core/ → blockio/` 한 방향이다. `raft_constants.h` 가
   `blockio/block_geometry.h` 의 `kSectorSize`/`kPageSize` 를 `SECTOR_SIZE`/
   `PAGE_SIZE` 로 재수출한다 — 값의 단일 출처는 `blockio/` 쪽이다.
-- `raft_state.h` 는 `CachedFD` 를 **전방 선언으로만** 안다. 완전한 타입이
-  필요한 `.cpp` 만 `blockio/cached_fd.h` 를 include한다. 되돌리면 core TU
-  전부가 그 헤더를 파싱한다.
+- `raft_state.h` 는 `CachedFD` 를 전방 선언으로 쓴다. 다만 `raft_entry.h` 가
+  push 모드 AE 응답의 `Extent` 때문에 `blockio/cached_fd.h` 를 include하므로
+  (2026-10-27, `blockio/extent.h` 를 합침 — DECISIONS.md D20) core TU 전부와
+  `raft_entry.h` 를 쓰는 net TU 가 그 헤더를 파싱한다. `cached_fd.h` 는 표준
+  헤더만 include하므로 플랫폼 의존성은 늘지 않는다.
 - `raft_basics.h` 는 **`.cpp` 를 가지면 안 된다.** `elapsed_ns` 는 Apply 한 번에
   수십 번, `put_u64_le` 는 엔트리당 4번 불리는 핫패스다.
 - 락은 `Server::mu` 하나가 `raft`·`ring` 상태 전부를 보호한다. 전송 구현체

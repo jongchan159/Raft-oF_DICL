@@ -2,9 +2,10 @@
  * raft_push.cpp -- push 복제 모드 (DECISIONS.md D20, 진행 중)
  *
  * push 모드에서 리더는 자기 로그를 쓸 때 push 모드 팔로워의 볼륨에도
- * 직접 쓴다. 이 파일은 그 정책의 판정과 부기를 모은다. 실제 쓰기는
- * persist_circular(raft_persist.cpp)가 이 파일의 push_write_targets /
- * note_pushed / note_push_failure를 불러 가며 한다.
+ * 직접 쓴다. 이 파일은 "누구에게 push하는가" 판정과, 팔로워마다 들고 있는
+ * push 기록(맡긴 구간, 끝난 구간, 세대 번호)을 고치는 함수를 모은다.
+ * 실제 쓰기는 persist_circular(raft_persist.cpp)가 대상별 push 워커
+ * (raft_io_worker.h)에 맡기고, 그 job이 끝에서 finish_push_job을 부른다.
  *
  * push 대상 판정 (is_push_target):
  *   - 이 노드가 push 모드이고 리더다
@@ -27,8 +28,14 @@
  *
  * OK는 AE가 대신한다 (A안, DECISIONS.md D20): 처음 설계는 AE를 push와
  * 병렬로 보내고 쓰기가 끝나면 RDMA로 OK를 따로 보내는 것이었다. 지금은
- * AE가 push 쓰기와 flush가 끝난 뒤(Lock A 뒤)에만 나가므로 AE를 받았다는
- * 것 자체가 "네 볼륨에 내구성 있게 있다"는 뜻이다. 그래서 OK 채널이 없다.
+ * 그 팔로워의 push 쓰기와 flush가 끝난 뒤에만 그 엔트리를 실은 AE가
+ * 나가므로, AE를 받았다는 것 자체가 "네 볼륨에 내구성 있게 있다"는 뜻이다.
+ * 그래서 OK 채널이 없다.
+ *
+ * 대상별 비동기 push (8단계 1부): persist(Lock A)는 push가 끝나기를 기다리지
+ * 않는다. 대상마다 끝나는 대로 끝난 구간을 늘리고 그 대상의 AE 워커만
+ * 깨운다(finish_push_job). AE 워커는 push_gate로 "끝났으면 보내고, 쓰는
+ * 중이면 기다리고, 맡긴 적 없으면 pull"을 가른다.
  * ============================================================ */
 #include "raft_server.h"
 #include "cached_fd.h"   /* ExtentCache, CachedFD::set_extents */
@@ -95,6 +102,11 @@ std::vector<int> Server::push_write_targets(clock_type::time_point now) const {
     return out;
 }
 
+IoWorker *Server::push_worker(int fi) const {
+    size_t i = static_cast<size_t>(fi);
+    return (fi >= 0 && i < workers.push_io.size()) ? workers.push_io[i].get() : nullptr;
+}
+
 bool Server::needs_extent_map(int fi) const {
     if (replication_mode != ReplicationMode::Push || raft.state != ServerState::Leader) {
         return false;
@@ -120,6 +132,82 @@ bool Server::push_covers(int fi, uint64_t first, uint64_t last) const {
      * 쪼개 보내지 않는다). */
     const ClusterMember &m = raft.cluster[static_cast<size_t>(fi)];
     return m.push_upto != 0 && m.push_from <= first && last <= m.push_upto;
+}
+
+bool Server::push_gate(int fi, uint64_t next, uint64_t &last) const {
+    if (!is_push_target(fi) || next > last) {
+        return false;   /* push 대상 아님, 빈 배치 */
+    }
+    const ClusterMember &m = raft.cluster[static_cast<size_t>(fi)];
+    /* 맡긴 구간 밖 -- 이번 세대에 맡긴 게 없거나(기록이 비었음), 구간이
+     * 시작되기 전 엔트리이거나(대상이 되기 전, 쉬는 동안 쓴 것), 구간 뒤
+     * 엔트리다(지금 구조에서는 생기지 않는 방어). 기다려도 써 줄 job이
+     * 없으므로 통째로 pull한다. 경계에서 쪼개지 않는다 (DECISIONS.md D20). */
+    if (m.push_sub_upto == 0 || next < m.push_sub_from || next > m.push_sub_upto) {
+        return false;
+    }
+    /* 쓰기가 끝난 데까지만 보낸다. 아무것도 안 끝났으면 push_upto가 0이라
+     * last < next가 된다 -- 쓰는 중이니 기다린다. */
+    last = std::min(last, m.push_upto);
+    return true;
+}
+
+void Server::reset_push_range(int fi) {
+    ClusterMember &m = raft.cluster[static_cast<size_t>(fi)];
+    m.push_from = 0;
+    m.push_upto = 0;
+    m.push_sub_from = 0;
+    m.push_sub_upto = 0;
+    m.push_epoch++;
+}
+
+void Server::note_push_submitted(int fi, uint64_t first, uint64_t last) {
+    ClusterMember &m = raft.cluster[static_cast<size_t>(fi)];
+    /* note_pushed와 같은 규칙: 바로 다음이면 이어 붙이고 아니면 새로 시작 */
+    if (m.push_sub_upto != 0 && m.push_sub_upto + 1 == first) {
+        m.push_sub_upto = last;
+    } else {
+        m.push_sub_from = first;
+        m.push_sub_upto = last;
+    }
+}
+
+bool Server::record_push_completion(int fi, uint64_t epoch, uint64_t first, uint64_t last,
+                                    const std::string &err) {
+    ClusterMember &m = raft.cluster[static_cast<size_t>(fi)];
+    /* 맡긴 뒤 구간이 비워졌다(롤백, 리더 교체, 링 교체, 앞선 실패) -- 이
+     * 결과는 지금 구간과 무관하다. become_leader도 번호를 올리므로 리더
+     * 여부는 따로 보지 않는다. */
+    if (epoch != m.push_epoch) {
+        return false;
+    }
+    if (err.empty()) {
+        note_pushed(fi, first, last);
+    } else {
+        note_push_failure(fi, err);
+    }
+    return true;
+}
+
+void Server::finish_push_job(int fi, uint64_t epoch, uint64_t first, uint64_t last,
+                             const std::string &err, const std::shared_ptr<ReplSink> &sink) {
+    auto t_end = clock_type::now();
+    {
+        std::lock_guard<std::mutex> lk(mu);
+        bool recorded = record_push_completion(fi, epoch, first, last, err);
+        /* 끝난 시각은 mu 안에서 적는다. 이 기록을 보고 Covered AE를 보내는
+         * 워커는 mu(Lock B)를 잡은 뒤에야 움직이므로, 그 AE의 샘플이 push
+         * 대기를 읽을 때는 이 시각이 이미 들어가 있다. (상자의 락은 mu 다음에
+         * 잡는다 -- Lock C의 sink->push와 같은 순서) */
+        if (recorded && err.empty() && sink != nullptr) {
+            sink->note_push_end(fi, t_end);
+        }
+    }
+    /* 결과를 버렸어도 깨운다 -- 워커가 지금 구간 기준으로 다시 가른다
+     * (쓰는 중이라 기다리던 엔트리는 이제 pull로 간다). mu 밖에서 깨운다. */
+    if (!done.load()) {
+        trigger_ae_worker(fi, sink);
+    }
 }
 
 std::string Server::push_map_reject_reason(uint64_t advertised_hash, uint64_t computed_hash,
@@ -152,8 +240,7 @@ void Server::note_push_response(int fi, const AppendEntriesResponse &rsp) {
      * push한 구간은 새 링에 없을 수 있으므로 버린다. (become_leader의
      * 0 리셋 뒤 첫 값은 "바뀜"이 아니다) */
     if (m.push_map_hash != 0 && rsp.push_map_hash != m.push_map_hash) {
-        m.push_from = 0;
-        m.push_upto = 0;
+        reset_push_range(fi);
     }
     m.push_map_hash = rsp.push_map_hash;
 
@@ -192,15 +279,33 @@ void Server::note_push_response(int fi, const AppendEntriesResponse &rsp) {
     }
 
     /* 운영 경로에서는 push_device_path가 있으면 init_storage가 연 핸들도
-     * 있다. 단위 테스트는 장치 없이 부기만 확인하므로 null이면 건너뛴다. */
+     * 있다. 단위 테스트는 장치 없이 push 기록만 확인하므로 null이면 건너뛴다. */
     size_t n_extents = rsp.extent_map.size();
     if (static_cast<size_t>(fi) < io.push_fds.size() && io.push_fds[static_cast<size_t>(fi)]) {
-        io.push_fds[static_cast<size_t>(fi)]->set_extents(std::move(cache));
+        std::shared_ptr<CachedFD> pfd = io.push_fds[static_cast<size_t>(fi)];
+        IoWorker *w = push_worker(fi);
+        if (w != nullptr) {
+            /* 맵 설치를 이 팔로워의 push job들과 **같은 줄**에 세운다. push job은
+             * mu 없이 워커 스레드에서 맵을 읽으므로, 여기서(mu 아래) 바로 바꾸면
+             * 쓰는 중인 job과 겹친다. 줄에 세우면 앞서 맡긴 job은 옛 맵으로
+             * 끝까지 쓰고(결과는 아래 reset_push_range로 버려진다), 뒤에 맡길
+             * job은 새 맵을 쓴다. */
+            /* 맵은 job에 옮겨 담는다(원소 복사 없음). mutable이어야 job이 실행될
+             * 때 담아 둔 맵을 set_extents로 다시 옮길 수 있다 -- 아니면 const라
+             * 복사된다. */
+            if (!w->submit([pfd, c = std::move(cache)]() mutable { pfd->set_extents(std::move(c)); })) {
+                /* 큐가 꽉 찼다(이 팔로워의 push가 멈춰 있다). 이번엔 설치하지
+                 * 않는다 -- 캐시 해시를 안 바꿨으므로 다음 AE가 다시 요청한다. */
+                return;
+            }
+        } else {
+            /* 워커가 없으면 이 맵을 읽는 다른 스레드도 없다 */
+            pfd->set_extents(std::move(cache));
+        }
     }
     m.push_map_cached_hash = computed;
     m.push_map_rejected_hash = 0;
-    m.push_from = 0;   /* 새 맵 -- 그 전에 쓴 구간은 세지 않는다 */
-    m.push_upto = 0;
+    reset_push_range(fi);   /* 새 맵 -- 그 전에 쓴(쓰는 중인) 구간은 세지 않는다 */
 
     std::ostringstream os;
     os << "[PUSH] follower id=" << m.id << ": extent map installed (" << n_extents
@@ -224,8 +329,9 @@ void Server::note_pushed(int fi, uint64_t first, uint64_t last) {
 
 void Server::note_push_failure(int fi, const std::string &what) {
     ClusterMember &m = raft.cluster[static_cast<size_t>(fi)];
-    m.push_from = 0;
-    m.push_upto = 0;
+    /* 세대 번호도 올린다 -- 이미 맡겨 둔 뒤쪽 job이 성공해도 끊긴 구간 뒤에
+     * 이어 붙지 않게 결과를 버린다 (그 엔트리들은 pull로 간다) */
+    reset_push_range(fi);
     m.push_fail_until = clock_type::now() + std::chrono::milliseconds(kPushRetryCooldownMs);
     /* 쉬는 동안에는 쓰지 않으므로 이 로그는 쉬는 구간마다 한 번만 나온다 */
     std::ostringstream os;

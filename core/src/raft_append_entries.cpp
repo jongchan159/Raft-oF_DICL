@@ -24,52 +24,55 @@ namespace nvmeof_raft {
  * join_all_replication_threads로 관리 (raft_server.h 참고,
  * use-after-free 방지를 위해 join도 detach도 아닌 절충안).
  * ============================================================ */
-void Server::append_entries(std::shared_ptr<ReplSink> sink) {
+void Server::append_entries(std::shared_ptr<ReplSink> sink, bool heartbeat) {
     for (size_t i = 0; i < raft.cluster.size(); i++) {
         int fi = static_cast<int>(i);
         if (fi == raft.cluster_index) {
             continue;   /* "Don't need to send message to self" */
         }
-        /* sink를 값으로 캡처해 워커가 살아 있는 동안 ReplSink도 살아
-         * 있게 한다 (raft_server.h의 append_entries 주석 참고) */
-        
-
         // Original Method - Create threads per follower for every AppendEntries Request
         // spawn_replication_thread([this, fi, sink]() {
         //     append_entries_worker(fi, sink.get());
         // });
 
         // New Method - Use persistent worker that is spawned in initial time
-        // [Persistent Worker]
-        /* start() 를 거치지 않은 하네스(유닛 테스트)에는 워커가 없다 */
-        if (i >= workers.ae_workers.size() || !workers.ae_workers[i]) {
-            continue;
-        }
-        auto &w = *workers.ae_workers[i];
-        
-        {
-            std::lock_guard<std::mutex> lk(w.mu);
-            w.pending = true;
-
-            // [Diag]
-            // w.trigger_time = clock_type::now();
-            // [Diag]
-
-            if(sink != nullptr) {
-                w.sink = sink;
-            }
-        }
-
-        w.cv.notify_one();
-        // [Persistent Worker]
-
+        trigger_ae_worker(fi, sink, heartbeat);
     }
+}
+
+/* trigger_ae_worker: 팔로워 fi의 상시 AE 워커 하나만 깨운다.
+ * append_entries가 팔로워마다 부르고, push job은 자기 대상의 쓰기가 끝났을 때
+ * 그 대상에 대해서만 부른다 (finish_push_job, DECISIONS.md D20). */
+void Server::trigger_ae_worker(int fi, std::shared_ptr<ReplSink> sink, bool heartbeat) {
+    size_t i = static_cast<size_t>(fi);
+    /* start() 를 거치지 않은 하네스(유닛 테스트)에는 워커가 없다 */
+    if (fi < 0 || i >= workers.ae_workers.size() || !workers.ae_workers[i]) {
+        return;
+    }
+    auto &w = *workers.ae_workers[i];
+    {
+        std::lock_guard<std::mutex> lk(w.mu);
+        w.pending = true;
+        if (heartbeat) {
+            w.heartbeat_due = true;
+        }
+        // [Diag]
+        // w.trigger_time = clock_type::now();
+        // [Diag]
+
+        /* sink를 값으로 캡처해 워커가 살아 있는 동안 ReplSink도 살아
+         * 있게 한다 (raft_server.h의 append_entries 주석 참고) */
+        if (sink != nullptr) {
+            w.sink = sink;
+        }
+    }
+    w.cv.notify_one();
 }
 
 /* append_entries_worker: 팔로워 한 명에 대한 처리 로직.
  * 원본 append_entries의 go func(fi) {...} 본문 그대로 (로직 변경 없음,
  * 감싸는 함수만 분리) */
-void Server::append_entries_worker(int fi, ReplSink *sink) {
+void Server::append_entries_worker(int fi, ReplSink *sink, bool heartbeat_due) {
     {
         /* ---- 4-1. waitLockB ---- */
         auto t_b = clock_type::now();
@@ -89,6 +92,25 @@ void Server::append_entries_worker(int fi, ReplSink *sink) {
         }
         // => 불필요한 예외처리 아닌가?
         //    Claude: fast backoff를 되살리거나 로그 truncation을 도입하면 필요
+
+        /* push 관문 (DECISIONS.md D20). 배치를 자르는 다른 단계보다 먼저 한다.
+         * pushing이면 next가 이 팔로워에게 맡긴 엔트리이고, last는 이 팔로워
+         * 볼륨에 쓰기와 flush까지 끝난 데로 잘려 있다.
+         *   - 남은 게 있으면 그만큼 보내고 아래에서 data_already_copied를 세운다.
+         *   - 남은 게 없으면(last < next) 나머지는 쓰는 중이다 -- 엔트리를 보내지
+         *     않는다. 그 push job이 끝나면 이 워커를 다시 깨운다(finish_push_job).
+         *     이번 회차를 하트비트 타이머가 깨웠으면 빈 AE를 보내 팔로워가 선거를
+         *     시작하지 않게 하고(last < next라 배치가 빈다), 아니면 RPC 없이
+         *     돌아간다 -- 매번 보내면 그 RPC가 오가는 동안 push가 끝났을 때 진짜
+         *     AE가 한 왕복 늦어진다.
+         * pushing이 아니면 지금 동작 그대로 (통째로 pull).
+         * 깨우기를 잃지 않는다: 완료는 mu 아래에서 기록한 뒤 깨우므로, 여기서
+         * 돌아간 뒤의 완료가 반드시 다시 깨운다. */
+        bool pushing = push_gate(fi, next, last);
+        if (pushing && last < next && !heartbeat_due) {
+            mu.unlock();
+            return;
+        }
 
         // /* "Clamp: if next fell below what we have in memory, reset to
         //  * oldest -> follower에게 보내야 할 entry가 ring에서 해제됐을 때
@@ -283,17 +305,18 @@ void Server::append_entries_worker(int fi, ReplSink *sink) {
          * heartbeat에도 실린다 -- 맵은 엔트리와 무관하다. */
         req.need_extent_map = needs_extent_map(fi);
 
-        /* push 모드: 이 배치가 그 팔로워의 push 구간에 통째로 들면 팔로워는
+        /* push 모드: 관문을 pushing으로 지났고 최종 배치도 끝난 구간 안이면 팔로워는
          * pull(do_pba_copy)을 건너뛴다. len_entries는 위의 바이트 상한, wrap,
          * extent clamp를 다 거친 최종값이다 -- 배치가 리더 extent 하나 안에
          * 있고 wrap하지 않으므로 슬롯이 연속이고, 팔로워가 start_slot부터
          * 차례로 계산하는 슬롯이 리더가 push한 위치와 같다.
-         * 엔트리는 Lock A에서 로그에 붙고, 같은 mu 보유 안에서 push 쓰기 +
-         * flush + note_pushed까지 끝난 뒤에야 보이므로 이 AE 자체가 "네
-         * 볼륨에 내구성 있게 썼다"는 OK다 (A안, DECISIONS.md D20). */
+         * 끝난 구간은 그 팔로워의 push 쓰기와 flush가 끝난 뒤에만 늘어나므로
+         * 이 AE 자체가 "네 볼륨에 내구성 있게 썼다"는 OK다 (A안, DECISIONS.md D20). */
+        /* skip/pull 계수(-debug)는 push 대상일 때만 센다 -- 대상이 아닌
+         * 팔로워의 pull까지 세면 "대상인데도 pull로 간 배치"를 못 본다. */
         if (has_entries && is_push_target(fi)) {
             ClusterMember &pm = raft.cluster[static_cast<size_t>(fi)];
-            if (push_covers(fi, next, next + len_entries - 1)) {
+            if (pushing && push_covers(fi, next, next + len_entries - 1)) {
                 req.data_already_copied = true;
                 pm.push_ae_skipped++;
             } else {
@@ -407,9 +430,18 @@ void Server::append_entries_worker(int fi, ReplSink *sink) {
              * rsp.write_pba_rt_ns/storage_copy_ns는 0 -- 대신 leader가
              * RPC 전에 직접 측정한 leader_side_copy 값을 기록해야
              * Destination-Side와 동일한 지표로 비교 가능하다. */
+            /* push된 배치: 팔로워는 pull하지 않았다. 그 대신 Lock A가 끝난 뒤에도
+             * 남았던 push 대기(이 팔로워의 push가 끝난 시각 - Lock A 종료)를
+             * Leader-Side의 "AE 전 복사" 자리에 넣는다 -- derive_apply_timings가
+             * 같은 분기로 StorageIO = push 대기로 계산한다. */
+            sample.pushed = (replication_mode == ReplicationMode::Push && req.data_already_copied);
             if (replication_mode == ReplicationMode::LeaderSide) {
                 sample.write_pba_rt_ns = leader_side_copy.write_pba_rt_ns;
                 sample.storage_copy_ns = leader_side_copy.storage_copy_ns;
+            } else if (sample.pushed) {
+                int64_t wait_ns = (sink != nullptr) ? sink->push_wait_ns(fi) : 0;
+                sample.write_pba_rt_ns = wait_ns;
+                sample.storage_copy_ns = wait_ns;
             } else {
                 sample.write_pba_rt_ns = rsp.write_pba_rt_ns;
                 sample.storage_copy_ns = rsp.storage_copy_ns;
@@ -468,6 +500,7 @@ void Server::append_entries_worker(int fi, ReplSink *sink) {
 void Server::append_entries_loop(int fi, AppendEntriesWorkerState *w) {
     while (!done.load()) {
         std::shared_ptr<ReplSink> sink;
+        bool heartbeat_due = false;
         {
             std::unique_lock<std::mutex> lk(w->mu);
 
@@ -479,6 +512,10 @@ void Server::append_entries_loop(int fi, AppendEntriesWorkerState *w) {
                 break;
 
             w->pending = false;
+            /* 이번 회차를 하트비트 타이머가 깨웠는가 -- 가져가며 내린다.
+             * 이번 회차에 무엇이든 보내면 하트비트 몫은 채워진다. */
+            heartbeat_due = w->heartbeat_due;
+            w->heartbeat_due = false;
 
 
             // [Diag]
@@ -498,7 +535,7 @@ void Server::append_entries_loop(int fi, AppendEntriesWorkerState *w) {
         //     sink->note_worker_start(fi, worker_start, wake_ns);
         // }
 
-        append_entries_worker(fi, sink.get());
+        append_entries_worker(fi, sink.get(), heartbeat_due);
     }
 }
 

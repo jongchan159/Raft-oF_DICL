@@ -234,6 +234,37 @@ void ReplSink::push(const ReplSample &s) {
 // }
 
 
+void ReplSink::set_repl_start(clock_type::time_point t) {
+    std::lock_guard<std::mutex> lk(mu_);
+    repl_start_ = t;
+    repl_start_set_ = true;
+}
+
+void ReplSink::note_push_end(int peer, clock_type::time_point t) {
+    std::lock_guard<std::mutex> lk(mu_);
+    for (auto &pe : push_end_) {
+        if (pe.first == peer) {
+            pe.second = t;
+            return;
+        }
+    }
+    push_end_.emplace_back(peer, t);
+}
+
+int64_t ReplSink::push_wait_ns(int peer) {
+    std::lock_guard<std::mutex> lk(mu_);
+    if (!repl_start_set_) {
+        return 0;
+    }
+    for (const auto &pe : push_end_) {
+        if (pe.first == peer) {
+            return timings_clamp0(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                      pe.second - repl_start_).count());
+        }
+    }
+    return 0;
+}
+
 std::pair<ReplSample, bool> ReplSink::first_sample(){
         std::lock_guard<std::mutex> lk(mu_);
         if (samples_.empty()) {
@@ -300,7 +331,11 @@ void derive_apply_timings(const ApplyWalls &w, ReplSink *sink,
     t.storage_io_ns =
         sample.storage_copy_ns;
 
-    if (sample.leader_side) {
+    /* push된 배치도 같은 모양이다: AE 전에 push 대기(write_pba_rt = storage_copy)가
+     * 있고, 팔로워는 복사를 하지 않으므로 핸들러 전체가 FHandler다 (DECISIONS.md D20). */
+    const bool pre_ae_copy = sample.leader_side || sample.pushed;
+
+    if (pre_ae_copy) {
         /*
          * Leader-side:
          *
@@ -386,7 +421,7 @@ void derive_apply_timings(const ApplyWalls &w, ReplSink *sink,
     /*
      * corrected QuorumWait도 mode별로 동일하게 분기해야 함.
      */
-    if (sample.leader_side) {
+    if (pre_ae_copy) {
         t.quorum_wait_corrected_ns =
             timings_clamp0(
                 t.replicate_corrected_ns

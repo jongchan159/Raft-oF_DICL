@@ -1,7 +1,7 @@
 #ifndef RAFT_ENTRY_HPP
 #define RAFT_ENTRY_HPP
 
-#include "extent.h"   /* Extent (blockio/extent.h) -- push 모드 AE 응답이 싣는다 */
+#include "cached_fd.h"   /* Extent (blockio/cached_fd.h) -- push 모드 AE 응답이 싣는다 */
 
 #include <cstdint>
 #include <vector>

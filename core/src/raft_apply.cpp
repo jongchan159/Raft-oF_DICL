@@ -160,13 +160,20 @@ static ApplyResult apply_internal(Server *s,
      * 슬롯을 기록한다. 반환값 nvme_ns가 곧 LPersist. */
     int64_t nvme_ns = 0;
     try {
-        nvme_ns = s->persist_circular(true, static_cast<int>(n));
+        nvme_ns = s->persist_circular(true, static_cast<int>(n), sink);
     } catch (const std::exception &e) {
         /* persist 실패: 방금 넣은 엔트리를 되돌린다 (device에 안 올라간
          * 엔트리를 로그에 남기면 이후 PBA 복제가 쓰레기를 읽는다) */
         for (size_t i = 0; i < n && s->raft.log.size() > 1; i++) {
             s->raft.log.pop_back();
             s->ring.tail_log_index--;
+        }
+        /* push 모드: 이 엔트리들의 push job은 이미 맡겼을 수 있다. push 구간을
+         * 비우고 세대 번호를 올려, 늦게 끝난 job이 되돌린 엔트리(같은 인덱스에
+         * 곧 다른 명령이 들어온다)를 "끝났다"고 적지 못하게 한다. job이 쓴
+         * 바이트는 팔로워의 tail 밖 슬롯이라 무해하다 (DECISIONS.md D20). */
+        for (size_t i = 0; i < s->raft.cluster.size(); i++) {
+            s->reset_push_range(static_cast<int>(i));
         }
         out.error = std::string("persist failed: ") + e.what();
         return out;
@@ -175,6 +182,12 @@ static ApplyResult apply_internal(Server *s,
     int64_t a_held_ns = elapsed_ns(t_a_held);
     if (timings != nullptr) {
         s->prof.ae_lock_a_held_ns.store(a_held_ns);
+    }
+    /* push 대기의 기준점 (DECISIONS.md D20). mu를 놓기 **전에** 남긴다 --
+     * push job은 mu를 잡은 뒤에야 상자에 끝난 시각을 적으므로 기준점이 늘
+     * 먼저 들어가 있다. push가 Lock A 안에서 끝났으면 대기는 0이 된다. */
+    if (sink != nullptr) {
+        sink->set_repl_start(clock_type::now());
     }
 
     lk.unlock();   /* ---- Lock A 끝 ---- */

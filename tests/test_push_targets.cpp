@@ -1,5 +1,5 @@
 /* ============================================================
- * push 모드 판정과 부기 단위 테스트 (core/src/raft_push.cpp, DECISIONS.md D20).
+ * push 모드 판정과 push 기록 단위 테스트 (core/src/raft_push.cpp, DECISIONS.md D20).
  *
  * 리더가 누구의 볼륨에 직접 쓸지는 네 조건으로 갈린다: 리더 자신이 push
  * 모드인가, 팔로워가 AE 응답에서 push 모드라고 알렸는가(push_map_hash),
@@ -8,9 +8,12 @@
  * 잘못 판정하면 매핑이 없는 팔로워에게 쓰려 하거나, 낡은 맵이나 엉뚱한
  * 장치로 다른 블록을 덮어쓴다. 맵 검증·설치, push 구간 기록, 실패 후
  * 쉬기, push 구간으로 pull을 건너뛸지(push_covers -- 잘못 true면 팔로워
- * 볼륨에 없는 엔트리를 있다고 믿는다)도 여기서 본다. I/O 없이 판정과
- * 부기만 본다 -- 장치 핸들
- * (io.push_fds)이 없으므로 맵 설치는 set_extents를 건너뛰고 부기만 남는다.
+ * 볼륨에 없는 엔트리를 있다고 믿는다)도 여기서 본다. 대상별 비동기 push의
+ * 관문(push_gate: 맡긴 구간이면 끝난 데까지 잘라 보내고 -- 남는 게 없으면
+ * 쓰는 중이니 기다리고 -- 맡긴 적 없으면 pull)과 push 기록(맡긴 구간, 끝난
+ * 구간, 세대 번호)도 본다.
+ * I/O 없이 판정과 기록만 본다 -- 장치 핸들(io.push_fds)과 push 워커가 없으므로
+ * 맵 설치는 set_extents를 건너뛰고 기록만 남는다.
  * ============================================================ */
 #include "third_party/doctest.h"
 
@@ -341,3 +344,156 @@ TEST_CASE("push_covers: 대상이 아니면 구간이 남아 있어도 false다"
         CHECK(s->push_covers(2, 102, 110) == false);
     }
 }
+
+/* ---------------- 대상별 비동기 push: 관문과 push 기록 ---------------- */
+
+TEST_CASE("push_gate: 맡긴 구간 안이면 true이고 last를 끝난 데까지 자른다") {
+    auto s = make_push_leader();
+    s->note_push_submitted(1, 102, 115);
+    s->note_pushed(1, 102, 110);   /* 102..110은 끝났고 111..115는 쓰는 중 */
+
+    uint64_t last = 120;
+    CHECK(s->push_gate(1, 105, last) == true);
+    CHECK(last == 110);   /* 쓰는 중인 111..은 빼고 끝난 데까지만 보낸다 */
+
+    last = 108;
+    CHECK(s->push_gate(1, 102, last) == true);
+    CHECK(last == 108);   /* 배치가 끝난 구간 안에 다 든다 */
+}
+
+TEST_CASE("push_gate: 끝났는데 안 받은 게 없으면 잘린 last가 next보다 작다 (쓰는 중 -- 기다린다)") {
+    auto s = make_push_leader();
+    s->note_push_submitted(1, 102, 115);
+    s->note_pushed(1, 102, 110);
+
+    uint64_t last = 120;
+    CHECK(s->push_gate(1, 111, last) == true);
+    CHECK(last < 111);
+    last = 115;
+    CHECK(s->push_gate(1, 115, last) == true);
+    CHECK(last < 115);
+
+    /* 아무것도 안 끝났어도 맡겼으면 기다린다 (push_upto = 0) */
+    s->note_push_submitted(2, 50, 60);
+    last = 60;
+    CHECK(s->push_gate(2, 50, last) == true);
+    CHECK(last == 0);
+}
+
+TEST_CASE("push_gate: 맡긴 구간 밖이면 false이고 last는 그대로다 -- 통째로 pull") {
+    auto s = make_push_leader();
+    s->note_push_submitted(1, 102, 115);
+    s->note_pushed(1, 102, 110);
+
+    /* 구간 시작 전: 대상이 되기 전에 쓴 엔트리 -- 경계에서 쪼개지 않는다 */
+    uint64_t last = 120;
+    CHECK(s->push_gate(1, 95, last) == false);
+    CHECK(last == 120);
+    /* 구간 뒤: 맡긴 적 없는 엔트리 (지금 구조에서는 생기지 않는 방어) */
+    last = 120;
+    CHECK(s->push_gate(1, 116, last) == false);
+    /* 기록이 비어 있음 */
+    last = 5;
+    CHECK(s->push_gate(2, 1, last) == false);
+}
+
+TEST_CASE("push_gate: push 대상이 아니거나 빈 배치면 false다 (지금 동작 그대로)") {
+    auto s = make_push_leader();
+    s->note_push_submitted(1, 102, 115);
+    s->note_pushed(1, 102, 110);
+    uint64_t last = 108;
+    SUBCASE("설치한 맵과 알린 해시가 다르다") {
+        s->raft.cluster[1].push_map_hash = 0x9999;
+        CHECK(s->push_gate(1, 105, last) == false);
+    }
+    SUBCASE("리더가 아니다") {
+        s->raft.state = ServerState::Follower;
+        CHECK(s->push_gate(1, 105, last) == false);
+    }
+    SUBCASE("빈 배치") {
+        last = 105;
+        CHECK(s->push_gate(1, 106, last) == false);
+    }
+}
+
+TEST_CASE("note_push_submitted: 맡긴 구간은 이어지면 붙이고 끊기면 새로 시작한다") {
+    auto s = make_push_leader();
+    s->note_push_submitted(1, 102, 110);
+    s->note_push_submitted(1, 111, 115);
+    CHECK(s->raft.cluster[1].push_sub_from == 102);
+    CHECK(s->raft.cluster[1].push_sub_upto == 115);
+
+    s->note_push_submitted(1, 120, 125);
+    CHECK(s->raft.cluster[1].push_sub_from == 120);
+    CHECK(s->raft.cluster[1].push_sub_upto == 125);
+}
+
+TEST_CASE("reset_push_range: 두 구간을 비우고 세대 번호를 올린다") {
+    auto s = make_push_leader();
+    s->note_push_submitted(1, 102, 115);
+    s->note_pushed(1, 102, 110);
+    uint64_t before = s->raft.cluster[1].push_epoch;
+
+    s->reset_push_range(1);
+    CHECK(s->raft.cluster[1].push_from == 0);
+    CHECK(s->raft.cluster[1].push_upto == 0);
+    CHECK(s->raft.cluster[1].push_sub_from == 0);
+    CHECK(s->raft.cluster[1].push_sub_upto == 0);
+    CHECK(s->raft.cluster[1].push_epoch == before + 1);
+    uint64_t last = 108;
+    CHECK(s->push_gate(1, 105, last) == false);
+}
+
+TEST_CASE("record_push_completion: 성공이면 끝난 구간을 늘린다") {
+    auto s = make_push_leader();
+    uint64_t e = s->raft.cluster[1].push_epoch;
+    s->note_push_submitted(1, 102, 110);
+    s->note_push_submitted(1, 111, 115);
+
+    CHECK(s->record_push_completion(1, e, 102, 110, ""));
+    uint64_t last = 120;
+    CHECK(s->push_gate(1, 102, last) == true);
+    CHECK(last == 110);   /* 102..110을 보낸다 */
+    last = 120;
+    CHECK(s->push_gate(1, 111, last) == true);
+    CHECK(last < 111);    /* 111..115는 쓰는 중 */
+
+    CHECK(s->record_push_completion(1, e, 111, 115, ""));
+    CHECK(s->raft.cluster[1].push_from == 102);
+    CHECK(s->raft.cluster[1].push_upto == 115);
+}
+
+TEST_CASE("record_push_completion: 구간을 비운 뒤 늦게 끝난 결과는 버린다") {
+    /* 맡긴 뒤 롤백·리더 교체·링 교체로 구간이 비워졌으면, 그 job의 결과는
+     * 옛 엔트리나 옛 링에 대한 것이다. 새 구간에 적으면 팔로워 볼륨에 없는
+     * 엔트리를 "있다"고 표시해 보낸다. */
+    auto s = make_push_leader();
+    uint64_t old_epoch = s->raft.cluster[1].push_epoch;
+    s->note_push_submitted(1, 102, 110);
+    s->reset_push_range(1);
+    s->note_push_submitted(1, 102, 105);   /* 같은 인덱스에 새 엔트리 */
+
+    CHECK(s->record_push_completion(1, old_epoch, 102, 110, "") == false);
+    CHECK(s->raft.cluster[1].push_upto == 0);
+    uint64_t last = 105;
+    CHECK(s->push_gate(1, 102, last) == true);
+    CHECK(last < 102);   /* 새 102..105는 아직 쓰는 중 */
+}
+
+TEST_CASE("record_push_completion: 실패면 구간을 비우고 쉬며, 뒤에 맡긴 job의 결과도 버린다") {
+    auto s = make_push_leader();
+    uint64_t e = s->raft.cluster[1].push_epoch;
+    s->note_push_submitted(1, 102, 110);
+    s->note_push_submitted(1, 111, 115);
+
+    auto now = clock_type::now();
+    CHECK(s->record_push_completion(1, e, 102, 110, "EIO"));
+    CHECK(s->raft.cluster[1].push_sub_upto == 0);
+    CHECK(s->push_write_targets(now) == std::vector<int>{2});   /* 1초 쉰다 */
+
+    /* 실패 뒤에 맡겨 둔 111..115가 성공해도 끊긴 구간 뒤에 붙이지 않는다 */
+    CHECK(s->record_push_completion(1, e, 111, 115, "") == false);
+    uint64_t last = 115;
+    CHECK(s->push_gate(1, 111, last) == false);
+}
+

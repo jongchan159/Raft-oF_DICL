@@ -190,6 +190,11 @@ struct ReplSample {
     int64_t handle_ae_post_ns = 0;
     int64_t handle_ae_persist_ns = 0;
     bool leader_side = false;
+    /* push 모드에서 팔로워가 pull을 건너뛴 배치 (DECISIONS.md D20). 이때
+     * write_pba_rt_ns / storage_copy_ns는 push 대기(Lock A 종료 -> 그 팔로워의
+     * push 끝)이고, derive_apply_timings는 Leader-Side와 같은 "AE 전 복사"
+     * 분기로 계산한다. */
+    bool pushed = false;
 };
 
 /* ============================================================
@@ -213,8 +218,20 @@ public:
 
     int64_t mutex_a_ns() const { return mutex_a_ns_; }
 
+    /* push 대기 측정 (DECISIONS.md D20).
+     * set_repl_start: Lock A가 끝나는 시각. apply_internal이 mu를 놓기 전에 남긴다.
+     * note_push_end: 팔로워 peer의 push(쓰기 + flush)가 끝난 시각. push job이 남긴다.
+     * push_wait_ns: 그 팔로워의 push가 Lock A 뒤로 삐져나온 시간 (0 이상).
+     *   기준점이나 끝난 시각이 없으면 0. */
+    void set_repl_start(clock_type::time_point t);
+    void note_push_end(int peer, clock_type::time_point t);
+    int64_t push_wait_ns(int peer);
+
 private:
     std::mutex mu_;
+    bool repl_start_set_ = false;
+    clock_type::time_point repl_start_{};
+    std::vector<std::pair<int, clock_type::time_point>> push_end_;
     std::vector<ReplSample> samples_;
     int64_t mutex_a_ns_ = 0;
 
