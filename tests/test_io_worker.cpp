@@ -19,6 +19,7 @@
 #include <atomic>
 #include <chrono>
 #include <mutex>
+#include <ostream>   /* doctest가 std::thread::id를 operator<<로 찍는다 */
 #include <stdexcept>
 #include <thread>
 #include <vector>
