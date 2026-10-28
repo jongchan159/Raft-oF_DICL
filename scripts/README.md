@@ -279,6 +279,25 @@ busy 대기까지 안는다. 둘이 크게 벌어지면 지연이 아니라 백�
 싣기 때문이다(128KiB 는 batch 7 이 상한). preflight 가 걸리는 크기를 목록에서 빼고
 경고한다. AppendEntries 는 엔트리당 16B 메타만 보내므로 이 제약과 무관하다.
 
+## `compare_latency.sh` — 스윕 결과 여러 개를 나란히 놓기
+
+`apply_latency_sweep.sh` 의 출력 디렉터리를 두 개 이상 받아, 크기마다 항(Total/LPersist/…/residual)별
+p50 을 나란히 놓고 첫 번째(기준) 대비 Δ·Δ% 를 낸다. 용도는 같은 조건에서 `-mode` 만 바꾼 비교다
+(pull vs push, 절차는 `E2E_EXPERIMENT.md` §7-6). 클러스터에 붙지 않고 `latency.csv` 만 읽는다.
+
+```bash
+./scripts/compare_latency.sh csv/lat_dest_1028 csv/lat_push_1028
+LABELS="dest push" CSV_OUT=cmp.csv ./scripts/compare_latency.sh -v csv/lat_dest_1028 csv/lat_push_1028
+```
+
+- **REPS>1 은 평균한다.** `latency.csv` 에 rep 열이 없어 같은 (size, term) 행이 반복 수만큼 있다.
+  mean/p50/p99 를 각각 산술평균하고, 표 머리에 라벨별 반복 수를 찍는다
+- **`ReplNet+StorageIO(mean)` 합성 행** — 팔로워 데이터 경로 전체 비용. p50 끼리는 더할 수 없어
+  이 행만 mean 의 합이다
+- `busy_retries` 가 0 이 아닌 크기는 경고한다 (그 지점은 백프레셔가 섞였다)
+- `-v` 는 mean/p99 열을 더한다. `CSV_OUT` 은 long 형식(size_bytes,term,label,reps,mean_us,p50_us,p99_us)
+- POSIX awk 만 쓴다 — mawk 와 gawk 에서 출력이 같은 것을 확인했다
+
 ## 스크립트는 소스 경로를 참조하지 않는다
 
 바이너리 이름만 쓴다. 디렉터리를 옮기는 리팩토링에서 이 파일들은

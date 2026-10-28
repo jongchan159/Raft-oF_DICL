@@ -375,6 +375,11 @@ ssh eternitystorage 'sudo dd if=/dev/nvme3n1 bs=512 skip=267485185 count=2047 if
 push 된 배치는 팔로워가 pull 을 건너뛰므로, 그 구간의 팔로워 바이트는 **리더의 push 만** 썼다.
 아래 (2)(3) 이 그 바이트를 확인한다.
 
+**순서: (1) → (1-a) → (2) → (3) → (5) → (6).** (3) 은 링 한 바퀴 안에서만 성립하므로 링을 돌리는
+(5) 보다 먼저 한다. (6) 은 리더 교체로 상태를 흐트러뜨리므로 맨 끝이다. (4) 는 측정이다(§7-6).
+매 회 새 링 디렉터리(`-metadata-dir`)로 띄운다. 코드를 받은 뒤에는 `./build.sh all` 로 `build/` 를
+다시 만든다 — 8 단계 1 부(비동기 push) 이전 바이너리로 돌리면 이 절의 (1-a)(6) 은 의미가 없다.
+
 **(1) push 가 실제로 쓰이는가 — 리더 `-debug`**
 
 ```bash
@@ -391,11 +396,52 @@ push 된 배치는 팔로워가 pull 을 건너뛰므로, 그 구간의 팔로�
   `[ERROR] [PUSH] ... extent map rejected -- <이유>` 를 본다. `push=nodev` 면 그 리더 호스트의
   `-push-devices` 에 그 멤버가 없다.
 
-**(2) push 된 바이트가 리더와 같은가 — §6-3 raw 비교**
+**(1-a) push job 이 겹쳐도 맞는가 — 동시 클라이언트**
 
-(1) 을 마치고 apply 를 멈춘 뒤 §6-3 절차를 그대로 한다. 세 해시가 같고 0 이 아니어야 한다.
-다르면 push 경로 결함이다. `-push-devices` 매핑(배너 wwid)과 `write_at_logical` 이 팔로워 맵으로
-구한 PBA 부터 본다.
+비동기 push 에서는 Lock A 가 push 를 기다리지 않으므로 같은 대상의 job 이 워커 큐에 쌓인다(상한 16).
+클라이언트를 여러 개 동시에 돌려 그 상황을 만든다. `-clients` 는 `kvs-loop` 전용이라 `apply` 는
+프로세스를 여러 개 띄운다.
+
+```bash
+for i in $(seq 8); do ./build/raft_client -addrs $ADDRS -op apply -n 200 -size 4096 & done; wait
+#   명령 수 = 8 × 200 = 1600. (3) 의 -at-count 에 (1) 의 300 과 합쳐 넣는다 (= 1900)
+```
+
+- 리더 stderr 에 아래가 없어야 한다. 있으면 그 대상은 1 초 동안 pull 로 갔다.
+  - `[WARN] [PUSH] follower id=N: push write failed (push queue full) -- pulling for the next 1000 ms`
+    — 큐 상한(16)을 넘었다. 팔로워 경로가 리더 apply 속도를 못 따라간다는 뜻이다
+  - `push write failed (<errno 메시지>)` — 장치 쓰기·flush 실패. 경로(ARP, `fast_io_fail_tmo`)부터 본다
+  - `[WARN] IoWorker: job threw (...)` — job 안의 예외
+- `[state]` 의 `pull` 이 (1) 대비 거의 늘지 않고, `skip` 과 `pushed=[..B]` 가 tail 을 따라가야 한다.
+  위 경고가 났으면 그 1 초 동안의 배치가 `pull` 로 잡힌다 — 정합성 문제는 아니다(그 구간은 pull 로 복제된다).
+
+**(2) push 된 바이트가 리더와 같은가 — 스토리지 노드 raw 비교**
+
+apply 를 멈춘 뒤 §6-3 처럼 스토리지 노드에서 세 볼륨의 같은 구간을 읽어 비교한다. 단, **비교 끝을
+리더 데이터의 끝으로 자른다.** 팔로워 링은 `unwritten` extent 라(U11) 아직 Raft 가 쓰지 않은 슬롯에
+예전 디스크 내용이 남아 있다 — 그 구간까지 비교하면 push 가 맞아도 해시가 다르다(2026-10-27 node6 에서
+실제로 데이터 끝 바로 뒤 3 섹터만 달랐다). 헤더의 `tail_slot` 은 apply 중에 갱신되지 않으므로(진단용,
+D8) 끝을 아는 데 못 쓴다.
+
+```bash
+# 1) 각 링의 시작 섹터 (+1 = 512B 헤더 건너뜀). 아무 호스트에서
+for hi in eternity4:4 eternity5:5 eternity6:6; do h=${hi%%:*}; id=${hi##*:}
+  blk=$(ssh $h "filefrag -v <metadata-dir>/raft-$id.ring | awk 'NR==4{print \$4}'" | tr -d '.')
+  echo "id=$id skip=$((blk*8+1))"; done
+#    extent 가 하나인지 본다 (filefrag 끝 줄 "1 extent found"). 여럿이면 extent 마다 따로 비교해야 한다
+
+# 2) 스토리지 노드(root). 장치는 §2-2 매핑 (2026-10-27: node4=nvme1n1 node5=nvme3n1 node6=nvme5n1)
+L=nvme1n1; LS=<리더 skip>      # 리더 볼륨
+N=$(dd if=/dev/$L bs=512 skip=$LS count=32767 iflag=direct 2>/dev/null \
+    | od -An -tx1 -v -w512 | grep -nv '^\( 00\)*$' | tail -1 | cut -d: -f1)   # = 마지막 0 아닌 슬롯 + 1
+echo "compare $N slots"
+for x in node4:nvme1n1:<skip4> node5:nvme3n1:<skip5> node6:nvme5n1:<skip6>; do IFS=: read n d s <<< "$x"
+  echo "$n $(dd if=/dev/$d bs=512 skip=$s count=$N iflag=direct 2>/dev/null | md5sum | cut -c1-32)"; done
+```
+
+세 해시가 같아야 한다. 다르면 `cmp -l` 로 처음 다른 섹터를 찾는다 — 그 섹터가 `N` 이상이면 위 자르기가
+틀린 것이고, 안쪽이면 push 경로 결함이다. `-push-devices` 매핑(배너 wwid)과 `write_at_logical` 이
+팔로워 맵으로 구한 PBA 부터 본다.
 
 **(3) push 받은 노드가 리더가 되어 같은 상태를 만드는가 — 리더 교체 해시**
 
@@ -430,7 +476,29 @@ push 된 배치는 팔로워가 pull 을 건너뛰므로, 그 구간의 팔로�
 `FHandler` 를 기록해 둔다 — OK 채널 대신 AE 를 쓰기 뒤에 보내는 결정(A안)이 라운드마다 포기하는
 몫의 대부분이 이것이다. 같은 조건의 `-mode destination` 결과와 나란히 놓으면 push 의 이득이 보인다.
 8 단계 1 부 이전(push 를 Lock A 안에서 차례로 쓰던 때)의 결과가 있으면 그것과도 비교한다 — 그때는
-`LPersist` 가 자기 쓰기와 push 쓰기의 합이었고 `StorageIO ≈ 0` 이었다.
+`LPersist` 가 자기 쓰기와 push 쓰기의 합이었고 `StorageIO ≈ 0` 이었다. 절차와 비교 도구는 §7-6.
+
+**(5) 링을 돈 뒤에도 맞는가 — 전체 링 raw 비교**
+
+(3) 을 마친 뒤 클러스터를 새로 띄워(새 링 디렉터리) 링을 1.2 바퀴 이상 돌린다. 한 바퀴를 넘기면
+모든 슬롯이 복제 경로(push, 또는 push 전 엔트리의 pull)로 덮이므로 (2) 의 자르기 없이 **링 전체**를
+비교할 수 있다. 랩과 extent 경계에서 push 가 쪼개지는 경로(`write_at_logical`)와 job 이 넣은 순서대로
+끝나는지를 함께 본다.
+
+```bash
+./build/raft_client -addrs $ADDRS -op apply -n 5000 -size 4064 -batch 10     # 16 MiB 링 ≈ 1.2 바퀴
+# 스토리지 노드: (2) 의 2) 에서 count=$N 대신 count=32767 (링 전체 = ring_slots)
+```
+
+세 해시가 같아야 한다. 여기서는 (3) 을 하지 않는다 — 랩 뒤 슬롯 0 의 명령을 건너뛰는 한계 때문이다.
+
+**(6) (선택) 리더 교체 중 늦게 끝난 job — 펜싱 없음의 확인**
+
+(1-a) 의 동시 apply 를 돌리는 도중 리더를 Ctrl-C 로 끈다. 새 리더 아래에서 apply 를 조금 더 한 뒤
+(2) 를 한다. 옛 리더 워커 큐에 남은 job 이 새 리더가 쓴 슬롯을 덮으면 해시가 다르다 — DECISIONS.md D20
+"한계 — 펜싱 없음" 이 재현된 것이므로 결함이 아니라 **알려진 한계의 관측**으로 기록한다(언제, 어느
+슬롯). 같게 나와도 "창이 없다" 는 뜻은 아니다. 리더가 Ctrl-C 로 바로 죽으면 큐도 함께 사라지므로,
+늦은 job 은 프로세스가 살아 있는 채 물러날 때(네트워크 분리) 주로 생긴다.
 
 ---
 
@@ -511,6 +579,76 @@ HANDOFF §6.2 는 **다른 머신, 로컬 3노드, identity-pba, 링 16 MiB** �
    분포를 논하지 말 것 — 여러 번 돌려 모은다.
 3. **리더가 누구였는지 기록할 것.** eternity3 이 리더면 `LPersist` 가 1GbE 를
    탄다 (§1).
+
+### 7-6. pull(destination) vs push 지연 비교
+
+같은 클러스터·같은 바이너리에서 **`-mode` 만 바꿔** `scripts/apply_latency_sweep.sh` 를 두 번 돌리고,
+`scripts/compare_latency.sh` 로 크기별·항별로 나란히 놓는다.
+
+**같게 둘 것 — 결과 디렉터리에 메모로 남긴다**
+- 노드 플래그: `-ring-pages 4096 -heartbeat-ms 300 -profile -ae-batch 256 -loop-sleep-us 20`
+  (+ `-statemachine noop`. `hash` 는 1 MiB 당 ~2ms 를 먹어 큰 크기에서 apply 비용이 섞인다).
+  `-mode` 와 `-push-devices` 만 다르다
+- **`-loop-sleep-us 20` — 빼면 비교가 뒤집힌다.** 리더는 커밋을 메인 루프(`main_loop`,
+  `core/src/raft_lifecycle.cpp`)의 `advance_commit_index` 로만 진전시키고, 루프는 바퀴마다 이 값만큼
+  잔다(기본 200µs, timer slack 포함 실제 ~250µs). 클라이언트가 한 번에 하나씩 보내므로 응답 시각이
+  루프 주기와 맞물려 `QuorumWait`/`CommitWait` 에 위상에 따라 0~250µs 가 붙는다. 2026-10-28 실측
+  (리더 eternity4): 기본값에서 push 16K 샘플의 82% 가 QuorumWait ≈253µs, 18% 가 25µs 로 갈려 Total 이
+  destination 과 같게 나왔다(470 vs 465µs). 20 에서는 갈림이 사라졌고(≥150µs 샘플 0%) 결과는 아래와 같다.
+
+  | Total p50 (µs) | 1K | 4K | 16K |
+  |---|---|---|---|
+  | destination | 341 | 365 | 399 |
+  | push (비동기) | 175 | 200 | 258 |
+
+  0(원본의 스핀)은 쓰지 않는다 — 루프가 바퀴마다 `mu` 를 잡아 AE 워커·Apply 를 굶긴다.
+- C-state(SETUP.md "c-state off")와 `kSpinServeUs` — AENet 스톨이 이것으로 크게 바뀐다
+- **리더.** 두 모드에서 같은 호스트가 리더여야 한다(sweep 로그의 `leader:` 줄로 확인). 다르면 다시 띄운다
+- 스토리지 IB 링크 속도(`cat /sys/class/infiniband/*/ports/1/rate` — 2026-10-27 현재 SDR 10 Gb/s).
+  push 의 데이터는 리더→스토리지로 패브릭을 타고, destination 의 복사는 스토리지 로컬이라 링크 속도가
+  두 모드에 다르게 걸린다
+- 매 모드 새 링 디렉터리 + sweep 워밍업(`WARMUP=1`, 기본값) — 링이 ZERO_RANGE 폴백이면 첫 바퀴의
+  `LPersist` 가 부푼다(§7-1, U11)
+
+**실행**
+
+```bash
+# 1) -mode destination 으로 띄운다 (-push-devices 없이)
+ADDRS=10.0.0.4:6001,10.0.0.5:6001,10.0.0.6:6001 SIZES="1024 4096 16384" REPS=3 \
+  ./scripts/apply_latency_sweep.sh csv/lat_dest_$(date +%m%d)
+
+# 2) 세 노드를 내리고 -mode push -push-devices ... 로 다시 띄운다 (새 링 디렉터리)
+ADDRS=10.0.0.4:6001,10.0.0.5:6001,10.0.0.6:6001 SIZES="1024 4096 16384" REPS=3 \
+  ./scripts/apply_latency_sweep.sh csv/lat_push_$(date +%m%d)
+
+# 3) 비교 (첫 번째가 기준. -v 면 mean/p99 열도)
+./scripts/compare_latency.sh csv/lat_dest_<날짜> csv/lat_push_<날짜>
+```
+
+16 KiB 를 넘는 크기는 16 MiB 링에서 백프레셔가 섞이기 쉽다(sweep 머리 주석 (3)). 넣으려면 링을 키우고
+`RING_BYTES` 를 맞춘다. compare 는 `busy_retries` 가 0 이 아닌 크기에 경고를 찍는다.
+
+(선택) 동기 push(8 단계 1 부 이전, `b39e678`)를 별도 worktree 에서 빌드해 같은 절차로 `lat_pushsync_*`
+를 만들어 세 번째 인자로 주면, 비동기화의 효과(LPersist = 자기+push 합 → 자기 쓰기만)를 따로 볼 수 있다.
+
+**항을 읽는 법** (DECISIONS.md D20 "계측", §6-4 (4))
+
+| 항 | destination (pull) | push (비동기) |
+|---|---|---|
+| `LPersist` | 리더 자기 링 쓰기 (패브릭) | 리더 자기 링 쓰기만 |
+| `ReplNet` | 팔로워 → 스토리지 blockcopy RPC | 0 |
+| `StorageIO` | 스토리지 노드 로컬 PCIe 복사 | push 대기 = 그 팔로워 push 끝 − Lock A 끝 (≥ 0) |
+| `FHandler` | pull 을 포함한 팔로워 처리 | 메타데이터 처리만 — A안이 포기하는 몫 |
+| `QuorumWait` | replicate − AE_RT | replicate − push 대기 − AE_RT |
+
+중심으로 볼 것은 둘이다.
+- **`Total` p50/p99** — 결론
+- **`ReplNet+StorageIO(mean)`** — compare 가 덧붙이는 합성 행. 팔로워 데이터 경로 전체 비용이다.
+  destination 은 (RPC + 스토리지 복사), push 는 push 대기다. 이 차이가 "팔로워의 복사를 리더가 대신
+  했을 때" 얻은 몫이다. push 대기가 0 에 가까우면 push 가 자기 쓰기 뒤에 숨은 것이다.
+
+compare 의 `d_*` 는 기준 대비 p50 차이이고, REPS>1 이면 반복 행을 평균한 값이다(latency.csv 에 rep 열이
+없다). Apply 당 샘플이 1 건이므로(§7-5) REPS 는 3 이상으로 한다.
 
 ---
 

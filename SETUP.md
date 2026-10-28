@@ -130,3 +130,98 @@ sudo ./build/raft_node -id 6 -cluster "$CLUSTER" -metadata-dir /mnt/raftvol/jong
 ```
 
 기동 배너의 `push device : 5 -> ... (wwid W)` 가 eternity5 배너의 `own volume : ... (wwid W)` 와 같아야 한다. 다르면 엉뚱한 볼륨을 매핑한 것이니 그대로 돌리지 말 것.
+
+지연 측정은 `-loop-sleep-us 20` 을 더한다 (E2E_EXPERIMENT.md §7-6 -- 기본 200 은 커밋 폴링 지연이 QuorumWait 에 섞인다).
+
+**스토리지 노드(eternitystorage) 재부팅 시 복구**
+
+2026-10-28 에 실제로 겪었다. 재부팅하면 세 가지가 한꺼번에 깨진다.
+- **nvmet 설정이 통째로 사라진다.** configfs 는 휘발성이고 저장해 둔 설정(`/etc/nvmet`)이 없다.
+- **스토리지 로컬 NVMe 번호가 다시 매겨진다.** 재부팅 전 node4/5/6 = nvme1n1/nvme3n1/nvme5n1 이었던 번호가
+  파일시스템 없는 다른 디스크가 됐다. **예전 번호로 export 하면 남의 디스크를 내보낸다.**
+- **컴퓨트 노드는 연결을 잃는다.** `ctrl_loss_tmo`(600 초) 뒤 컨트롤러가 삭제되고 다시 생기지 않는다.
+  `/mnt/raftvol` 은 마운트된 채 `Input/output error`. 자동 재연결(autoconnect, fstab)이 없다.
+
+증상 확인 (아무 호스트, root 불필요):
+```bash
+ssh eternitystorage uptime -s; ssh eternitystorage ls /sys/kernel/config/nvmet/subsystems
+for h in eternity4 eternity5 eternity6; do echo "== $h $(ssh $h 'ls /sys/class/nvme | tr "\n" " "; ls /mnt/raftvol 2>&1 | head -1')"; done
+```
+
+**1) 스토리지 (root): 디스크를 내용으로 식별한다.** 번호를 믿지 말 것. ext4 가 있는 디스크에서 `/jongc-push`
+아래의 `nodeN` 으로 가린다(그 디렉터리는 각 볼륨에 하나씩 만들었다). `debugfs` 는 기본이 읽기 전용이다.
+```bash
+for d in /dev/nvme*n1; do f=$(blkid -o value -s TYPE $d); [ "$f" = ext4 ] || continue; echo "$d $(debugfs -R 'ls /jongc-push' $d 2>/dev/null | grep -oE 'node[0-9]+' | sort -u | tr '\n' ' ') $(ls -l /dev/disk/by-id/ | grep -E "nvme-SAMSUNG.*_[A-Z0-9]+ -> ../../$(basename $d)\$" | awk '{print $9}')"; done
+```
+2026-10-28 식별 결과 (by-id 는 SSD 시리얼이라 재부팅해도 같다):
+
+| 멤버 | by-id | 그때 번호 |
+|---|---|---|
+| node4 | `/dev/disk/by-id/nvme-SAMSUNG_MZQLB960HAJR-00007_S437NA0N509494` | nvme12n1 |
+| node5 | `/dev/disk/by-id/nvme-SAMSUNG_MZQLB960HAJR-00007_S437NA0N509496` | nvme10n1 |
+| node6 | `/dev/disk/by-id/nvme-SAMSUNG_MZQLB960HAJR-00007_S437NA0N509484` | nvme13n1 |
+
+node1(nvme16n1)·node2(nvme17n1) 등 나머지는 다른 사용자 것이다 -- 건드리지 않는다.
+
+**2) 스토리지 (root): nvmet 재생성 + blockcopy 서버.** device_path 와 `-devices` 모두 by-id 로 준다.
+```bash
+sudo modprobe nvmet nvmet-rdma
+cd /sys/kernel/config/nvmet
+ID=/dev/disk/by-id/nvme-SAMSUNG_MZQLB960HAJR-00007
+for x in node4:S437NA0N509494 node5:S437NA0N509496 node6:S437NA0N509484; do n=${x%%:*}; sudo mkdir -p subsystems/$n/namespaces/10; echo 1 | sudo tee subsystems/$n/attr_allow_any_host; echo ${ID}_${x#*:} | sudo tee subsystems/$n/namespaces/10/device_path; echo 1 | sudo tee subsystems/$n/namespaces/10/enable; done
+sudo mkdir -p ports/10; echo rdma | sudo tee ports/10/addr_trtype; echo ipv4 | sudo tee ports/10/addr_adrfam; echo 10.0.0.91 | sudo tee ports/10/addr_traddr; echo 4420 | sudo tee ports/10/addr_trsvcid
+for n in node4 node5 node6; do sudo ln -s /sys/kernel/config/nvmet/subsystems/$n ports/10/subsystems/$n; done
+cd ~/raftof_clean
+sudo ./build/raft_blockcopy_server -addr 0.0.0.0:5050 -copy-workers 8 -devices ${ID}_S437NA0N509494,${ID}_S437NA0N509496,${ID}_S437NA0N509484
+```
+- 네임스페이스를 새로 만들므로 **wwid 가 바뀐다**(2026-10-28 이후 node4=`uuid.26bc4957…` node5=`uuid.5ab9ffcd…`
+  node6=`uuid.1e2dd756…`). 배너는 "연결 확인" 의 새 값과 대조한다
+- 원래 있던 TCP 포트(port 1, 115.145.173.243:4420)와 node1~3 은 주인이 복구한다
+- 같은 IPoIB lladdr 이면 컴퓨트 노드의 ARP 고정값은 그대로 유효하다. 바뀌었으면 위 "ARP" 절
+
+**3) 컴퓨트 노드: 자기 볼륨을 먼저 연결해야 `nvme1n1` 이 된다** (CLUSTER 가 그것을 가정한다).
+첫 connect 뒤 `subsysnqn` 이 자기 노드가 아니면 e2fsck/mount 로 넘어가지 말 것.
+`e2fsck -p` 가 "UNEXPECTED INCONSISTENCY" 로 멈추면 `-y` 를 주지 말고 멈춘다(etcd 등 남의 파일도 있다).
+
+eternity4
+```bash
+sudo umount -l /mnt/raftvol
+sudo nvme connect -t rdma -a 10.0.0.91 -s 4420 -n node4
+cat /sys/class/nvme/nvme1/subsysnqn
+sudo e2fsck -p /dev/nvme1n1
+sudo mount /dev/nvme1n1 /mnt/raftvol
+ls /mnt/raftvol
+sudo nvme connect -t rdma -a 10.0.0.91 -s 4420 -n node5
+sudo nvme connect -t rdma -a 10.0.0.91 -s 4420 -n node6
+```
+
+eternity5
+```bash
+ip neigh show 10.0.0.91
+sudo umount -l /mnt/raftvol
+sudo nvme connect -t rdma -a 10.0.0.91 -s 4420 -n node5
+cat /sys/class/nvme/nvme1/subsysnqn
+sudo e2fsck -p /dev/nvme1n1
+sudo mount /dev/nvme1n1 /mnt/raftvol
+ls /mnt/raftvol
+sudo nvme connect -t rdma -a 10.0.0.91 -s 4420 -n node4
+sudo nvme connect -t rdma -a 10.0.0.91 -s 4420 -n node6
+```
+
+eternity6
+```bash
+ip neigh show 10.0.0.91
+sudo umount -l /mnt/raftvol
+sudo nvme connect -t rdma -a 10.0.0.91 -s 4420 -n node6
+cat /sys/class/nvme/nvme1/subsysnqn
+sudo e2fsck -p /dev/nvme1n1
+sudo mount /dev/nvme1n1 /mnt/raftvol
+ls /mnt/raftvol
+sudo nvme connect -t rdma -a 10.0.0.91 -s 4420 -n node4
+sudo nvme connect -t rdma -a 10.0.0.91 -s 4420 -n node5
+```
+
+필요하면 각 호스트에서 `echo 1 | sudo tee /sys/class/nvme/nvme2/fast_io_fail_tmo /sys/class/nvme/nvme3/fast_io_fail_tmo` (위 2-1).
+
+**4) 확인.** 위 "연결 확인" 루프. 호스트마다 node4/5/6 이 `live`, 자기 볼륨만 마운트, 같은 node 의 wwid 가 세
+호스트에서 같아야 한다. 그다음 `-push-devices` 를 그 출력에서 다시 읽는다.
