@@ -130,7 +130,8 @@ void Server::append_entries_worker(int fi, ReplSink *sink) {
 
         /* ---- 4-2. logValid ---- */
         uint64_t next = raft.cluster[static_cast<size_t>(fi)].next_index;
-        uint64_t last = ring.tail_log_index - 1;
+        uint64_t last = std::min(ring.tail_log_index - 1, durable_last_index_locked());
+        // uint64_t last = ring.tail_log_index - 1;
         uint64_t oldest = oldest_log_index();
 
         /* "follower가 leader보다 앞서있을 때 -> last+1로 변경 (예외처리)" */

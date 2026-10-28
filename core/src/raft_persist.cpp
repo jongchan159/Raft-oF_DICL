@@ -208,4 +208,142 @@ int64_t Server::persist_circular(bool write_log, int n_new_entries) {
     return nvme_ns;
 }
 
+/* persist_circular의 "로그 쓰기" 부분과 인코딩/슬롯 로직은 그대로 두고, 디스크 I/O만 뒤로 미룬다.
+ * flush_run이 하던 일(pwrite 한 번)은 쓸 목록(PersistWrite)에 기록만 하고, 실제 pwrite와 fdatasync는
+ * persist_io가 한다. run_buf는 구간마다 비우지 않고 배치 전체를 이어 붙인다.
+ * ============================================================ */
+void Server::wait_persist_idle_locked() {
+    if (!persist_inflight) {
+        return;
+    }
+    /* 호출자가 어떤 방식(raw lock, lock_guard, unique_lock)으로 mu를 쥐었든 소유권은 그대로 두고
+     * 이 함수 안에서만 조건변수 대기에 쓴다 (adopt_lock으로 감싸고 release로 풀어 준다). */
+    std::unique_lock<std::mutex> ul(mu, std::adopt_lock);
+    persist_cv.wait(ul, [&] { return !persist_inflight; });
+    ul.release();
+}
+
+bool Server::persist_needs_header() {
+    return !ring.persisted_init ||
+           raft.current_term != ring.persisted_term ||
+           get_voted_for() != ring.persisted_voted_for;
+}
+
+Server::PersistPlan Server::persist_prepare_locked(int n_new_entries) {
+    PersistPlan plan;
+    if (n_new_entries <= 0) {
+        return plan;
+    }
+
+    int start = static_cast<int>(raft.log.size()) - n_new_entries;
+    if (start < 1) {
+        start = 1;
+    }
+
+    size_t est_size = 0;
+    for (int k = start; k < static_cast<int>(raft.log.size()); k++) {
+        est_size += static_cast<size_t>(
+            slots_for_entry(raft.log[static_cast<size_t>(k)].command.size())) * SECTOR_SIZE;
+    }
+    if (ring.run_buf.capacity() < est_size) {
+        ring.run_buf.resize(est_size, SECTOR_SIZE);
+        ring.run_buf.clear();
+    }
+
+    AlignedBuffer &run_buffer = ring.run_buf;
+    run_buffer.clear();
+    int64_t write_dev_off = 0;
+    size_t write_buf_start = 0;
+
+    /* 지금까지 쌓인 구간을 목록에 확정한다 (원래 flush_run의 pwrite 자리) */
+    auto end_write = [&]() {
+        const size_t len = run_buffer.size() - write_buf_start;
+        if (len == 0) {
+            return;
+        }
+        plan.writes.push_back(PersistWrite{write_dev_off, write_buf_start, len});
+        write_buf_start = run_buffer.size();
+    };
+
+    bool contiguous = io.cached_fd->is_contiguous();
+    int ext_hint = 0;
+
+    for (int i = start; i < static_cast<int>(raft.log.size()); i++) {
+        uint64_t log_idx = ring.tail_log_index - static_cast<uint64_t>(raft.log.size() - static_cast<size_t>(i));
+        const Entry &e = raft.log[static_cast<size_t>(i)];
+        uint64_t needed = slots_for_entry(e.command.size());
+
+        if (ring.tail_slot + needed > ring.ring_slots) {
+            end_write();
+            ring.tail_slot = 0;
+        }
+
+        if (!contiguous) {
+            int64_t entry_off = slot_offset(ring.tail_slot);
+            uint64_t entry_bytes = needed * SECTOR_SIZE;
+            auto [rem, new_hint] = io.cached_fd->remaining_at(entry_off, ext_hint);
+            ext_hint = new_hint;
+            if (rem < entry_bytes) {
+                end_write();
+                uint64_t skip_slots = rem / SECTOR_SIZE;
+                ring.tail_slot += skip_slots;
+                if (ring.tail_slot + needed > ring.ring_slots) {
+                    ring.tail_slot = 0;
+                }
+                auto [rem2, hint2] = io.cached_fd->remaining_at(slot_offset(ring.tail_slot), ext_hint);
+                (void)rem2;
+                ext_hint = hint2;
+            }
+        }
+
+        if (run_buffer.size() == write_buf_start) {
+            write_dev_off = slot_offset(ring.tail_slot);
+        }
+
+        size_t entry_bytes = static_cast<size_t>(needed) * SECTOR_SIZE;
+        size_t off = run_buffer.size();
+        run_buffer.grow_uninit(off + entry_bytes);
+        uint8_t *region = run_buffer.data() + off;
+
+        put_u64_le(region + entry_hdr::kOffTerm, e.term);
+        put_u64_le(region + entry_hdr::kOffCmdLen, e.command.size());
+        put_u64_le(region + entry_hdr::kOffNumSlots, needed);
+        put_u64_le(region + entry_hdr::kOffLogIndex, log_idx);
+        if (!e.command.empty()) {
+            std::memcpy(region + ENTRY_META_SIZE, e.command.data(), e.command.size());
+        }
+
+        size_t pad_start = ENTRY_META_SIZE + e.command.size();
+        if (entry_bytes > pad_start) {
+            std::memset(region + pad_start, 0, entry_bytes - pad_start);
+        }
+
+        uint64_t start_slot = ring.tail_slot;
+        ring.tail_slot += needed;
+
+        if (raft.state == ServerState::Leader) {
+            ring.log_slot_map[log_idx] = SlotRecord{start_slot, needed, LogEntryState::Using};
+            trace_slot_map('I', log_idx);
+        }
+    }
+
+    end_write();
+    return plan;
+}
+
+int64_t Server::persist_io(const PersistPlan &plan) {
+    int64_t nvme_ns = 0;
+    for (const PersistWrite &w : plan.writes) {
+        auto t_io = clock_type::now();
+        io.cached_fd->write_at_file(ring.run_buf.data() + w.buf_off, w.len, w.dev_off);
+        nvme_ns += elapsed_ns(t_io);
+    }
+    if (!plan.writes.empty()) {
+        auto t_sync = clock_type::now();
+        io.cached_fd->fdatasync();
+        nvme_ns += elapsed_ns(t_sync);
+    }
+    return nvme_ns;
+}
+
 } /* namespace nvmeof_raft */

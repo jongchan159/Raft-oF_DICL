@@ -125,6 +125,9 @@ void Server::handle_append_entries_request(const AppendEntriesRequest &req,
     mu.lock();
     auto t_after_lock = clock_type::now();
     int64_t handle_ae_lock_wait = elapsed_ns(t0);
+
+    wait_persist_idle_locked();
+
     int64_t handle_ae_pre = 0, handle_ae_lock_wait2 = 0, handle_ae_persist = 0, handle_ae_post = 0;
     clock_type::time_point t_post{};
     bool t_post_set = false;

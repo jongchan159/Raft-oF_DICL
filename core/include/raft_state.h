@@ -235,6 +235,9 @@ struct RingLog {
     uint64_t tail_log_index = 0;   /* 다음에 쓸 엔트리의 절대 논리 인덱스 */
     uint64_t tail_slot = 0;        /* 다음에 쓸 링 슬롯 */
 
+    /* [B'] Server::persist_inflight인 동안만 의미가 있다: 진행 중인 묶음 직전까지 디스크에 안전한 마지막 인덱스. */
+    uint64_t durable_floor = 0;
+
     /* head_slot: 살아 있는 log_slot_map 엔트리 중 가장 오래된 것의 시작 슬롯.
      * recompute_head_slot()이 유지한다. **리더 전용** -- 팔로워는 무시한다. */
     uint64_t head_slot = 0;

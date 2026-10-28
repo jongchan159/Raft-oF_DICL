@@ -105,7 +105,8 @@ void Server:: advance_commit_index_locked(
 
     /* (1) Leader: quorum 기반 commitIndex 전진 */
     if (raft.state == ServerState::Leader) {
-        uint64_t last_log_index = ring.tail_log_index - 1;
+        // uint64_t last_log_index = ring.tail_log_index - 1;
+        uint64_t last_log_index = durable_last_index_locked();
         auto t_sort = clock_type::now();
 
         std::vector<uint64_t> matches(raft.cluster.size());

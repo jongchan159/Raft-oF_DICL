@@ -69,8 +69,15 @@ struct GcReq {
     std::shared_ptr<ApplyCollector> collector;
     std::shared_ptr<EntryCommitSignal> last_signal;
 
-    bool done = false;
+    /* 비대표는 mu 대신 자기 m/cv에서 기다린다. done/become_rep은 m으로 보호한다.
+     * done은 gc_publish(mu 밖)에서만 true가 된다. */
+    std::mutex m;
+    std::condition_variable cv;
+
+    bool done = false; // mu 밖에서 true로 바뀜.
     bool busy = false;
+    bool become_rep = false;  // "다음 대표는 너다" (이전 대표가 지명)
+
     std::string error;
     
     int64_t nvme_ns = 0;      // 대표가 채움 (묶음 전체의 persist 시간)
@@ -83,7 +90,7 @@ static void commit_batch_locked(Server *s, std::unique_lock<std::mutex> &lk,
         for (GcReq *r : batch) { 
             r->error = err;
             r->busy = busy;
-            r->done = true;
+            // r->done = true;
         }
     };
 
@@ -163,10 +170,25 @@ static void commit_batch_locked(Server *s, std::unique_lock<std::mutex> &lk,
         total_n += n;
     }
 
-    int64_t nvme_ns = 0;
-    try {
-        nvme_ns = s->persist_circular(true, static_cast<int>(total_n));
-    } catch (const std::exception &e) {
+    // int64_t nvme_ns = 0;
+    // try {
+    //     nvme_ns = s->persist_circular(true, static_cast<int>(total_n));
+    // } catch (const std::exception &e) {
+    //     for (size_t i = 0; i < total_n && s->raft.log.size() > 1; i++) {
+    //         s->raft.log.pop_back();
+    //         s->ring.tail_log_index--;
+    //     }
+    //     s->ring.tail_slot = saved_tail_slot;                        // 보강: 복원
+    //     for (uint64_t idx = saved_tail_log_index;
+    //         idx < saved_tail_log_index + total_n; idx++) {
+    //         s->ring.log_slot_map.erase(idx);                         // 보강: 낡은 기록 삭제
+    //     }
+    //     fail(std::string("persist failed: ") + e.what(), false);
+    //     return;
+    // }
+    /* persist 실패 시 이번 묶음의 엔트리를 로그/링에서 되돌린다 (persist가 mu 안이든 밖이든 같다.
+     * I/O 중에는 persist_inflight 덕에 다른 경로가 로그 끝을 바꾸지 못하므로 맨 끝 total_n개가 이번 묶음이다) */
+    auto rollback = [&]() {
         for (size_t i = 0; i < total_n && s->raft.log.size() > 1; i++) {
             s->raft.log.pop_back();
             s->ring.tail_log_index--;
@@ -176,34 +198,107 @@ static void commit_batch_locked(Server *s, std::unique_lock<std::mutex> &lk,
             idx < saved_tail_log_index + total_n; idx++) {
             s->ring.log_slot_map.erase(idx);                         // 보강: 낡은 기록 삭제
         }
-        fail(std::string("persist failed: ") + e.what(), false);
-        return;
+    };
+
+    int64_t nvme_ns = 0;
+    int64_t unlocked_ns = 0;      /* mu를 놓고 있던 시간 ([LOCKA]의 mu util 계산용) */
+    if (!s->persist_needs_header()) {
+        /* [B'] 빠른 경로: 슬롯 할당과 인코딩은 mu 안, 디스크 I/O(pwrite + fdatasync)는 mu 밖.
+         * persist_inflight가 true인 동안 AE 빌더와 리더 자신의 match는 durable_floor까지만 본다. */
+        std::string io_err;
+        Server::PersistPlan plan;
+        s->persist_inflight = true;
+        s->ring.durable_floor = saved_tail_log_index - 1;
+        try {
+            plan = s->persist_prepare_locked(static_cast<int>(total_n));
+        } catch (const std::exception &e) {
+            io_err = e.what();
+        }
+        if (io_err.empty()) {
+            auto t_unlock = clock_type::now();
+            lk.unlock();
+            try {
+                nvme_ns = s->persist_io(plan);
+            } catch (const std::exception &e) {
+                io_err = e.what();
+            }
+            lk.lock();
+            unlocked_ns = elapsed_ns(t_unlock);
+        }
+        s->persist_inflight = false;
+        s->persist_cv.notify_all();
+        if (!io_err.empty()) {
+            rollback();
+            fail(std::string("persist failed: ") + io_err, false);
+            return;
+        }
+    } else {
+        /* 헤더 쓰기가 필요한 호출(term/vote 변경 후 첫 묶음 등)은 기존처럼 mu 안에서 동기 처리한다 */
+        try {
+            nvme_ns = s->persist_circular(true, static_cast<int>(total_n));
+        } catch (const std::exception &e) {
+            rollback();
+            fail(std::string("persist failed: ") + e.what(), false);
+            return;
+        }
     }
 
     const int64_t a_held_ns = elapsed_ns(t_a_held);
     for (GcReq *r : batch) { 
         r->nvme_ns = nvme_ns;
         r->a_held_ns = a_held_ns;
-        r->done = true;
+        // r->done = true;
     }
 
     static uint64_t g_batches = 0, g_reqs = 0, g_entries = 0;
-    static int64_t  g_held_ns = 0, g_persist_ns = 0;
+    static int64_t  g_held_ns = 0, g_persist_ns = 0, g_unlocked_ns = 0;
     static auto     g_t0 = clock_type::now();
     g_batches++; g_reqs += batch.size(); g_entries += total_n;
-    g_held_ns += a_held_ns; g_persist_ns += nvme_ns;
+    g_held_ns += a_held_ns; g_persist_ns += nvme_ns; g_unlocked_ns += unlocked_ns;
     {
         auto now = clock_type::now();
         int64_t el = std::chrono::duration_cast<std::chrono::nanoseconds>(now - g_t0).count();
         if (el >= 5'000'000'000LL) {
             std::fprintf(stderr,
                 "[LOCKA] batches/s=%.0f entries/batch=%.1f reqs/batch=%.1f "
-                "held/batch=%.0fus persist/batch=%.0fus held/entry=%.1fus util=%.0f%%\n",
+                "held/batch=%.0fus persist/batch=%.0fus mu/batch=%.0fus mu/entry=%.1fus util=%.0f%%\n",
                 g_batches * 1e9 / el, (double)g_entries / g_batches, (double)g_reqs / g_batches,
                 g_held_ns / 1e3 / g_batches, g_persist_ns / 1e3 / g_batches,
-                g_held_ns / 1e3 / g_entries, 100.0 * g_held_ns / el);
-            g_batches = g_reqs = g_entries = 0; g_held_ns = g_persist_ns = 0; g_t0 = now;
+                (g_held_ns - g_unlocked_ns) / 1e3 / g_batches,
+                (g_held_ns - g_unlocked_ns) / 1e3 / g_entries,
+                100.0 * (g_held_ns - g_unlocked_ns) / el);
+            g_batches = g_reqs = g_entries = 0; g_held_ns = g_persist_ns = g_unlocked_ns = 0; g_t0 = now;
         }
+    }
+}
+
+/* 묶음 완료 알림 + 다음 대표 지명. 반드시 mu를 놓은 뒤에 호출한다.
+ * 다음 대표를 먼저 깨운다: 그 스레드의 깨어남 지연(~10us)을 나머지 알림과 겹치기 위해.
+ * 대표 권한(gc_has_rep)은 큐가 비어 있지 않으면 true로 유지한 채 큐 맨 앞 요청에게 넘기고,
+ * 비어 있으면 false로 푼다. 두 판단은 gc_mu 안에서 이뤄져 새 요청의 선출과 틈이 생기지 않는다. */
+static void gc_publish(Server *s, std::vector<GcReq *> &batch, GcReq *self) {
+    GcReq *next = nullptr;
+    {
+        std::lock_guard<std::mutex> gcl(s->gc_mu);
+        if (!s->gc_queue.empty()) {
+            next = s->gc_queue.front();
+        } else {
+            s->gc_has_rep = false;
+        }
+    }
+    if (next != nullptr) {
+        std::lock_guard<std::mutex> g(next->m);
+        next->become_rep = true;
+        next->cv.notify_one();
+    }
+    for (GcReq *r : batch) {
+        if (r == self) {
+            continue;   /* 대표 자신은 기다리지 않는다 */
+        }
+        /* notify는 r->m을 쥔 채로 한다: r의 스레드가 먼저 반환해 req(cv 포함)를 파괴하지 못하게 */
+        std::lock_guard<std::mutex> g(r->m);
+        r->done = true;
+        r->cv.notify_one();
     }
 }
 
@@ -239,25 +334,35 @@ static ApplyResult apply_internal(Server *s,
     GcReq req;
     req.commands = &commands;
     req.collector = collector;
+
+    auto t_lock_a = clock_type::now();
+    bool is_rep = false;
     {
         std::lock_guard<std::mutex> gcl(s->gc_mu);
         s->gc_queue.push_back(&req);
+        if(!s->gc_has_rep) {
+            s->gc_has_rep = true;
+            is_rep = true;
+        }
+    }
+
+    if(!is_rep) {
+        std::unique_lock<std::mutex> w(req.m);
+        req.cv.wait(w, [&] { return req.done || req.become_rep; } );
+        is_rep = !req.done;
     }
     // [Group Commit]
 
 
     /* ---- Lock A ---- */
-    auto t_lock_a = clock_type::now();
-    std::unique_lock<std::mutex> lk(s->mu);
-    int64_t mutex_a = elapsed_ns(t_lock_a);
-    if (sink != nullptr) {
-        sink->set_mutex_a(mutex_a);
-    }
-    auto t_a_held = clock_type::now();
-
     // [Group Commit]
-    std::vector<GcReq *> batch;
-    if (!req.done) {
+    int64_t mutex_a = 0;
+    if (is_rep) {
+        std::unique_lock<std::mutex> lk(s->mu);
+        mutex_a = elapsed_ns(t_lock_a);
+        auto t_a_held = clock_type::now();
+
+        std::vector<GcReq *> batch;
         batch.push_back(&req);
         {
             std::lock_guard<std::mutex> gcl(s->gc_mu);
@@ -286,9 +391,24 @@ static ApplyResult apply_internal(Server *s,
                 s->gc_queue.pop_front();
             }
         }
-        commit_batch_locked(s, lk, batch, t_a_held);
+        try {
+            commit_batch_locked(s, lk, batch, t_a_held);
+        } catch (const std::exception &e) {
+            for (GcReq *r : batch) {
+                if (r->error.empty()) {
+                    r->error = std::string("internal error: ") + e.what();
+                }
+            }
+        }
+        lk.unlock();
+        gc_publish(s, batch, &req);
+    } else {
+        mutex_a = elapsed_ns(t_lock_a);
     }
-    
+
+    if (sink != nullptr) {
+        sink->set_mutex_a(mutex_a);
+    }
 
     if (!req.error.empty()) {
         if (req.busy && out_busy != nullptr) {
@@ -300,8 +420,6 @@ static ApplyResult apply_internal(Server *s,
     last_signal = req.last_signal;
     const int64_t nvme_ns = req.nvme_ns;
     const int64_t a_held_ns = req.a_held_ns;
-
-    lk.unlock();
     // [Group Commit]
 
     /* ---- 복제 ---- */

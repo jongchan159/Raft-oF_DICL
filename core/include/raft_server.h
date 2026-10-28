@@ -121,6 +121,7 @@ public:
 
     std::mutex gc_mu; // 그룹 커밋 상태 관리에 쓰이는 락
     std::deque<GcReq *> gc_queue;
+    bool gc_has_rep = false; // gc_mu로 보호. true면 "지금 그룹 커밋 대표가 있다"는 의미 (대표 권한은 다음 요청에게 직접 넘긴다)
 
     size_t gc_max_reqs  = 32;           // 그룹 커밋 한 묶음의 최대 요청 수 (-gc-max-reqs)
     size_t gc_max_bytes = 256 * 1024;   // 한 묶음의 최대 payload 합 (-gc-max-bytes)
@@ -169,6 +170,23 @@ public:
      * s.mu를 그대로 재사용 (std::condition_variable은 unique_lock과 씀) */
     std::condition_variable ring_not_full;
 
+    
+    /* [B'] 그룹 커밋의 persist I/O가 mu 밖에서 진행 중인가 (mu로 보호).
+     * true인 동안:
+     *  - 리더 자신의 match와 AE로 복제할 수 있는 마지막 인덱스는 ring.durable_floor까지다
+     *    (durable_last_index_locked). 복제는 리더 볼륨의 물리 블록을 복사하므로 아직 안 쓴 엔트리를 보내면 안 된다.
+     *  - 로그/링을 바꾸는 다른 경로(팔로워 AE 처리, become_leader)는 wait_persist_idle_locked()로 기다린다. */
+    bool persist_inflight = false;
+    std::condition_variable persist_cv;
+
+    /* 디스크에 안전하게 쓴 마지막 로그 인덱스. persist가 진행 중이면 그 묶음 직전까지, 아니면 tail_log_index - 1
+     * (끝에 붙은 것은 전부 persist를 마친 상태). mu 보유 중에 호출한다. */
+    uint64_t durable_last_index_locked() const {
+        return persist_inflight ? ring.durable_floor : ring.tail_log_index - 1;
+    }
+    /* mu 보유 중에 호출한다. persist_inflight가 끝날 때까지 mu를 놓고 기다린 뒤 mu를 쥔 채 돌아온다. */
+    void wait_persist_idle_locked();
+
     /* apply 워커와 slot GC 워커의 깨우기 신호는 workers(WorkerPool)에 있다.
      * advance_commit_index가 commit_index를 전진시킨 뒤 non-blocking으로
      * 신호하고, 각 워커가 별도 스레드에서 pending을 drain한다. */
@@ -207,6 +225,18 @@ public:
      * wall time (실제 NVMe-oF 트래픽). 호출자는 이걸로 in-memory
      * bookkeeping(LeaderMem)과 write+sync(LeaderPersist)를 분리 가능 */
     int64_t persist_circular(bool write_log, int n_new_entries);
+
+    /* 디스크 I/O를 mu 밖에서 할 수 있다.
+     *  - persist_prepare_locked: mu 보유 중에 호출. 슬롯 할당 + ring.run_buf 인코딩만 하고 I/O는 없다.
+     *  - persist_io: mu 없이 호출 가능. ring.run_buf만 읽고 raft.log는 보지 않는다.
+     * 헤더 쓰기가 필요한 호출(term/vote 변경, 초기화)은 이 경로를 쓰지 말고 persist_circular를 쓴다
+     * (persist_needs_header()로 판정). */
+    /* 디스크에 쓸 한 덩어리: ring.run_buf의 [buf_off, buf_off + len)를 디스크 위치 dev_off에 쓴다 */
+    struct PersistWrite { int64_t dev_off; size_t buf_off; size_t len; };
+    struct PersistPlan { std::vector<PersistWrite> writes; };
+    bool persist_needs_header();
+    PersistPlan persist_prepare_locked(int n_new_entries);
+    int64_t persist_io(const PersistPlan &plan);
 
     /* advanceCommitIndex, applyPending, doSlotGC (raft_commit.cpp에서 정의) */
     void advance_commit_index();

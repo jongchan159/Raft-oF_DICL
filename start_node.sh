@@ -120,7 +120,7 @@ sudo stdbuf -oL -eL ./build/raft_node \
     -heartbeat-ms "$HEARTBEAT_MS" \
     -loop-sleep-us 200 \
     -ae-batch 256 \
-    -gc-max-reqs 32 \
+    -gc-max-reqs 64 \
     -gc-max-bytes "$MAX_GC_BYTES" \
     -profile \
     -sm noop \

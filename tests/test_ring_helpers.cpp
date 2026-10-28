@@ -292,3 +292,260 @@ TEST_CASE("AlignedBuffer::resize: 늘어난 구간은 0으로 채우고 grow_uni
     CHECK(tail_zero);
     CHECK(b.data()[0] == 0xCD);      // 앞부분은 보존
 }
+
+/* ============================================================
+ * [B'] persist_prepare_locked + persist_io 가 persist_circular와 같은 결과를 내는가
+ *   - 같은 입력 -> 링 파일 전체 바이트, ring.tail_slot, log_slot_map 이 동일
+ *   - 링 끝을 넘어가는 배치(구간이 둘로 갈림)도 동일
+ * 실제 링 파일(O_DIRECT)이 필요해서 임시 디렉터리에 만든다.
+ * ============================================================ */
+#include "cached_fd.h"
+#include <unistd.h>
+#include <cstdlib>
+#include <cstdio>
+
+namespace {
+struct PersistFixture {
+    std::string dir, meta, dev;
+    std::unique_ptr<Server> s;
+
+    explicit PersistFixture(const char *tag) {
+        char tmpl[] = "/tmp/persist_split_XXXXXX";
+        REQUIRE(::mkdtemp(tmpl) != nullptr);
+        dir = tmpl;
+        meta = dir + "/" + tag + ".ring";
+        dev = dir + "/" + tag + ".dev";
+
+        s = std::make_unique<Server>();
+        s->ring.configure(64);                       /* 64 페이지: 작게 해서 감김을 쉽게 만든다 */
+        uint64_t want = s->ring.file_size_bytes();
+        create_ring_file(meta, want);
+        {
+            FILE *f = std::fopen(dev.c_str(), "wb");
+            REQUIRE(f != nullptr);
+            std::fclose(f);
+            REQUIRE(::truncate(dev.c_str(), static_cast<off_t>(want)) == 0);
+        }
+        auto cfd = std::make_shared<CachedFD>(CachedFD::open(meta, dev));
+        cfd->cache_extents(static_cast<int64_t>(want));
+        s->io.cached_fd = cfd;
+
+        s->raft.id = 1;
+        s->raft.cluster.resize(3);                   /* get_voted_for()가 cluster[cluster_index]를 읽는다 */
+        for (size_t i = 0; i < 3; i++) s->raft.cluster[i].id = static_cast<uint64_t>(i + 1);
+        s->raft.cluster_index = 0;
+        s->raft.state = ServerState::Leader;
+        s->raft.current_term = 3;
+        s->ring.persisted_init = true;               /* 헤더 쓰기가 필요 없는 상태 */
+        s->ring.persisted_term = 3;
+        s->ring.persisted_voted_for = s->get_voted_for();
+        s->raft.log.clear();
+        s->raft.log.push_back(Entry{});              /* sentinel */
+        s->ring.tail_log_index = 1;
+    }
+    ~PersistFixture() {
+        s.reset();
+        std::remove(meta.c_str());
+        std::remove(dev.c_str());
+        ::rmdir(dir.c_str());
+    }
+    /* run_buf를 0xAB로 채워 둔다. 실제 서버에서는 run_buf가 배치마다 재사용되어 이전 바이트가 남아 있다.
+     * 패딩을 0으로 지우는 코드가 빠지면 이 0xAB가 디스크로 새어 나가므로 회귀를 잡는다. */
+    void dirty_run_buf() {
+        const size_t bytes = 1 << 20;
+        s->ring.run_buf.resize(bytes, SECTOR_SIZE);
+        std::memset(s->ring.run_buf.data(), 0xAB, bytes);
+        s->ring.run_buf.clear();
+    }
+    /* 크기가 제각각인 엔트리 n개를 로그에 추가 (tail_log_index도 같이 전진) */
+    void append_entries(size_t n, size_t seed) {
+        for (size_t i = 0; i < n; i++) {
+            Entry e;
+            e.term = 3;
+            size_t sz = (i % 7 == 0) ? 0 : (100 + (i * 977 + seed) % 6000);   /* 0은 no-op 엔트리 */
+            e.command.resize(sz);
+            for (size_t k = 0; k < sz; k++) e.command[k] = static_cast<uint8_t>(k * 31 + i + seed);
+            s->raft.log.push_back(std::move(e));
+            s->ring.tail_log_index++;
+        }
+    }
+};
+
+void check_same(PersistFixture &a, PersistFixture &b) {
+    CHECK(a.s->ring.tail_slot == b.s->ring.tail_slot);
+    REQUIRE(a.s->ring.log_slot_map.size() == b.s->ring.log_slot_map.size());
+    bool slots_same = true;
+    for (const auto &kv : a.s->ring.log_slot_map) {
+        auto it = b.s->ring.log_slot_map.find(kv.first);
+        if (it == b.s->ring.log_slot_map.end() || it->second.start != kv.second.start ||
+            it->second.num_slots != kv.second.num_slots) {
+            slots_same = false;
+        }
+    }
+    CHECK(slots_same);
+    const size_t sz = static_cast<size_t>(a.s->ring.file_size_bytes());
+    auto ba = a.s->io.cached_fd->read_at_file(sz, 0);
+    auto bb = b.s->io.cached_fd->read_at_file(sz, 0);
+    CHECK(ba == bb);                                  /* 링 파일 전체가 바이트 단위로 같다 */
+}
+}  /* namespace */
+
+TEST_CASE("persist_prepare_locked + persist_io: persist_circular와 같은 바이트/슬롯 상태를 만든다") {
+    PersistFixture old_path("old"), new_path("new");
+    old_path.dirty_run_buf(); new_path.dirty_run_buf();
+    old_path.append_entries(40, 1);
+    new_path.append_entries(40, 1);
+
+    CHECK_FALSE(new_path.s->persist_needs_header());
+    old_path.s->persist_circular(true, 40);
+    auto plan = new_path.s->persist_prepare_locked(40);
+    /* 구간 개수는 링 파일의 extent 배치에 따라 달라진다(extent 경계에서 끊김). 개수 대신 성질을 본다:
+     * 모든 구간이 O_DIRECT 정렬을 지키고, 구간 길이의 합이 인코딩된 전체 바이트와 같다. */
+    CHECK_FALSE(plan.writes.empty());
+    size_t bytes_sum = 0;
+    bool aligned = true;
+    for (const auto &g : plan.writes) {
+        bytes_sum += g.len;
+        aligned = aligned && g.dev_off % SECTOR_SIZE == 0 && g.buf_off % SECTOR_SIZE == 0 &&
+                  g.len % SECTOR_SIZE == 0;
+    }
+    CHECK(aligned);
+    CHECK(bytes_sum == new_path.s->ring.run_buf.size());
+    CHECK(new_path.s->persist_io(plan) > 0);
+
+    check_same(old_path, new_path);
+}
+
+TEST_CASE("persist_prepare_locked: 링 끝을 넘어가는 배치도 같고 구간이 둘로 갈린다") {
+    PersistFixture old_path("old2"), new_path("new2");
+    old_path.dirty_run_buf(); new_path.dirty_run_buf();
+    const uint64_t near_end = old_path.s->ring.ring_slots - 20;   /* 20슬롯 남기고 시작 -> 중간에 감김 */
+    old_path.s->ring.tail_slot = near_end;
+    new_path.s->ring.tail_slot = near_end;
+    old_path.append_entries(30, 5);
+    new_path.append_entries(30, 5);
+
+    old_path.s->persist_circular(true, 30);
+    auto plan = new_path.s->persist_prepare_locked(30);
+    CHECK(plan.writes.size() >= 2);
+    new_path.s->persist_io(plan);
+
+    check_same(old_path, new_path);
+}
+
+TEST_CASE("persist_prepare_locked: 여러 배치를 연달아 해도 매번 같다") {
+    PersistFixture old_path("old3"), new_path("new3");
+    old_path.dirty_run_buf(); new_path.dirty_run_buf();
+    for (size_t round = 0; round < 6; round++) {
+        old_path.append_entries(25, round);
+        new_path.append_entries(25, round);
+        old_path.s->persist_circular(true, 25);
+        new_path.s->persist_io(new_path.s->persist_prepare_locked(25));
+    }
+    check_same(old_path, new_path);
+}
+
+TEST_CASE("persist_needs_header: term이 바뀌면 true") {
+    PersistFixture f("hdr");
+    CHECK_FALSE(f.s->persist_needs_header());
+    f.s->raft.current_term = 4;
+    CHECK(f.s->persist_needs_header());
+}
+
+
+/* ============================================================
+ * [B'] persist I/O가 mu 밖에서 진행되는 동안의 규칙
+ *   1) durable_last_index_locked: 진행 중이면 durable_floor, 아니면 tail_log_index - 1
+ *   2) 리더 자신의 표는 durable 인덱스까지만 센다 (advance_commit_index_locked)
+ *   3) wait_persist_idle_locked: 진행 중이면 기다리고, 끝나 notify되면 mu를 쥔 채 돌아온다
+ * ============================================================ */
+#include <atomic>
+#include <chrono>
+#include <thread>
+
+namespace {
+/* 리더, 3노드, 현재 term 엔트리 10개 (인덱스 1..10), tail_log_index = 11 */
+std::unique_ptr<Server> make_leader_with_log() {
+    auto s = std::make_unique<Server>();
+    s->ring.configure(64);
+    s->raft.id = 1;
+    s->raft.cluster.resize(3);
+    for (size_t i = 0; i < 3; i++) s->raft.cluster[i].id = static_cast<uint64_t>(i + 1);
+    s->raft.cluster_index = 0;
+    s->raft.state = ServerState::Leader;
+    s->raft.current_term = 3;
+    s->raft.log.clear();
+    s->raft.log.push_back(Entry{});
+    for (size_t i = 0; i < 10; i++) {
+        Entry e;
+        e.term = 3;
+        e.command.assign(8, 0x11);
+        s->raft.log.push_back(std::move(e));
+    }
+    s->ring.tail_log_index = 11;
+    s->raft.commit_index = 0;
+    return s;
+}
+}  // namespace
+
+TEST_CASE("durable_last_index_locked: 진행 중이면 floor, 아니면 tail - 1") {
+    auto s = make_leader_with_log();
+    CHECK(s->durable_last_index_locked() == 10);
+    s->persist_inflight = true;
+    s->ring.durable_floor = 5;
+    CHECK(s->durable_last_index_locked() == 5);
+    s->persist_inflight = false;
+    CHECK(s->durable_last_index_locked() == 10);
+}
+
+TEST_CASE("advance_commit_index_locked: persist 진행 중이면 리더 자신의 표는 durable까지만") {
+    {   /* 진행 중이 아님: 리더 10, 팔로워 8 -> 과반 8 */
+        auto s = make_leader_with_log();
+        s->raft.cluster[1].match_index = 8;
+        std::vector<std::shared_ptr<EntryCommitSignal>> sig;
+        s->advance_commit_index_locked(&sig);
+        CHECK(s->raft.commit_index == 8);
+    }
+    {   /* 진행 중: 리더는 floor 5까지만 -> 과반 5. 아직 안 쓴 6..10을 리더 표로 세면 8이 되어 틀린다 */
+        auto s = make_leader_with_log();
+        s->raft.cluster[1].match_index = 8;
+        s->persist_inflight = true;
+        s->ring.durable_floor = 5;
+        std::vector<std::shared_ptr<EntryCommitSignal>> sig;
+        s->advance_commit_index_locked(&sig);
+        CHECK(s->raft.commit_index == 5);
+    }
+}
+
+TEST_CASE("wait_persist_idle_locked: 진행 중이면 기다리고 notify 후 mu를 쥔 채 돌아온다") {
+    auto s = std::make_unique<Server>();
+    s->persist_inflight = true;
+    std::atomic<bool> done{false};
+    std::thread waiter([&] {
+        s->mu.lock();
+        s->wait_persist_idle_locked();      /* 기다린다 */
+        done = true;
+        s->mu.unlock();
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(80));
+    CHECK_FALSE(done.load());               /* 아직 진행 중이라 기다리는 중 */
+
+    {
+        std::lock_guard<std::mutex> lk(s->mu);     /* 기다리는 동안 mu는 비어 있어야 한다(락을 쥔 채 기다리면 여기서 막힘) */
+        s->persist_inflight = false;
+    }
+    s->persist_cv.notify_all();
+    waiter.join();
+    CHECK(done.load());
+}
+
+TEST_CASE("wait_persist_idle_locked: 진행 중이 아니면 즉시 돌아온다") {
+    auto s = std::make_unique<Server>();
+    s->mu.lock();
+    s->wait_persist_idle_locked();
+    bool other_got_lock = true;
+    std::thread t([&] { other_got_lock = s->mu.try_lock(); if (other_got_lock) s->mu.unlock(); });
+    t.join();
+    CHECK_FALSE(other_got_lock);            /* 돌아온 뒤에도 mu는 이 스레드가 쥐고 있다 */
+    s->mu.unlock();
+}

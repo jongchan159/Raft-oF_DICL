@@ -215,6 +215,8 @@ void Server::become_leader() {
             raft.last_applied++;
         }
 
+        wait_persist_idle_locked();
+
         /* "No-op entry (Raft paper Section 8)" */
         Entry noop;
         noop.term = raft.current_term;
