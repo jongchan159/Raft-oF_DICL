@@ -243,7 +243,7 @@ deferred 엔트리를 로드할 때 이 경로를 쓰므로 **승격 시 로그�
 | `class AlignedBuffer` | `core/include/raft_server.h` | `std::vector`는 생성자에서 데이터를 복사할 때 `std::allocator`(malloc)로 새로 할당하므로 `posix_memalign` 정렬을 못 지킨다 → O_DIRECT `pwrite`가 EINVAL. 이 타입은 정렬된 메모리를 복사 없이 소유한다 |
 | `done`을 `std::atomic<bool>`로 | `core/include/raft_server.h` | 원본은 plain bool. 메인 루프 / apply 워커 / slot GC 워커가 `s.mu` 밖에서 읽는다 (값 의미는 동일) |
 | `log_trim_threshold` (기본 8192) | `core/include/raft_server.h` | `Server::log`는 `push_back`만 하고 축소되지 않아 링이 순환하는 동안 in-memory 벡터가 무한히 자란다. `do_slot_gc`와 같은 기준(min matchIndex, last_applied)으로 앞쪽을 잘라낸다. **`0`이면 원본 동작** |
-| `loop_sleep_us` (기본 200) | `core/include/raft_server.h` | 원본은 sleep 없이 스핀하는데, 그러면 `advance_commit_index`가 매 바퀴 `s.mu`를 잡아 AE 스레드를 굶는다. **`0`이면 원본과 동일한 스핀** — 레이턴시 측정 시 이 값의 영향을 반드시 확인할 것 |
+| `loop_sleep_us` (기본 200) | `core/include/raft_server.h` | 원본은 sleep 없이 스핀하는데, 그러면 `advance_commit_index`가 매 바퀴 `s.mu`를 잡아 AE 스레드를 굶는다. **`0`이면 원본과 동일한 스핀**. D21 이후 커밋은 AE 응답 경로에서도 판정하므로 이 값은 커밋 지연에 들어가지 않는다 |
 | `gc_has_run` | `core/include/raft_server.h` | `gc_up_to = 0`이 "GC 미실행"과 "index 0까지 GC 완료"를 구분 못 하므로, `gcUpTo` fast-path를 최초 1회 전까지 스킵하는 가드 |
 | `skip_pba_last_next` / `skip_pba_last_log` 스로틀 | `core/include/raft_cluster.h` | 원본 `logSkipPBADiag`는 매 하트비트마다 무조건 찍어 팔로워당 초당 10줄이 나온다. 같은 `(follower, next)`는 1초에 한 번만 |
 | `NUM_PAGES` / `MaxAppendEntriesBatch(Bytes)`를 런타임 변수로 | `core/raft_constants.{h,cpp}` | 원본은 package-level var 또는 constexpr. 벤치마크/테스트가 재컴파일 없이 override해야 한다. **기본값을 건드리지 않으면 동작은 원본과 동일** |
@@ -656,6 +656,47 @@ SETUP.md 의 `--fast_io_fail_tmo` 로 지연 창을 줄이는 것이 완화책�
   (2) 그냥 Preempt 가 아니라 Preempt and Abort 여야 한다 — 선점 시점에 처리 중이던 옛 쓰기가 새 쓰기
   뒤에 끝나지 않게. (3) nvmet 이 이것을 강제해야 한다(클러스터 커널에서 미확인). **펜싱을 구현하기
   전까지는 이 창이 열려 있다.**
+
+## D21. 커밋 판정을 AE 응답 경로에서도 한다 (2026-10-28)
+
+`Server::advance_commit_locked` · `wake_apply_worker` (`core/src/raft_commit.cpp`) ·
+`append_entries_worker` Lock C (`core/src/raft_append_entries.cpp`)
+
+원본은 커밋을 `main_loop` 폴링(`advanceCommitIndex`)에서만 판정한다. 원본은 루프가 스핀하므로 문제가
+없지만, 이 포팅은 `mu` 굶김을 피하려고 바퀴마다 `loop_sleep_us`(기본 200µs, timer slack 포함 실제
+~250µs)를 쉰다. 그래서 과반 응답이 도착한 뒤에도 커밋이 다음 바퀴까지 늦었다. 클라이언트가 한 번에
+하나씩 보내면 응답 시각이 루프 주기와 맞물려 지연이 무작위로 퍼지지 않고 몰린다 — 2026-10-28 실측에서
+push 16K 샘플의 82% 가 QuorumWait ≈253µs 였다(E2E_EXPERIMENT.md §7-6). `-loop-sleep-us 20` 으로 줄이면
+사라졌으므로 원인은 폴링이다.
+
+- 커밋 판정(원본 `advanceCommitIndex` 의 (1) 단계)을 `advance_commit_locked` 로 떼어 냈다. 호출자가
+  `mu` 를 보유하고, 전진했으면 true 를 돌려준다.
+- `append_entries_worker` 의 Lock C 가 `apply_ae_success` 로 match_index 를 올렸으면 바로
+  `advance_commit_locked` 를 부르고, 전진했으면 apply 워커를 깨운다. Lock C 는 이미 `mu` 를 쥐고
+  있으므로 락을 더 잡지 않는다. 추가 비용은 멤버 수만큼의 정렬(3개) 한 번이다.
+- `main_loop` 의 `advance_commit_index` 는 그대로 둔다. 응답이 없는 동안의 안전망이고, slot GC 를
+  깨우는 일(`slot_gc_tick` 은 바퀴 수로 센다)도 여기서만 한다. 응답 경로는 GC 를 깨우지 않는다.
+- 판정 로직(정렬, §5.4.2 current-term 검사, 커밋 신호)은 한 줄도 바꾸지 않았다. 판정하는 **시점**만
+  늘었다. 판정은 `mu` 아래에서만 하므로 두 경로가 겹쳐도 commit_index 는 단조 증가한다.
+- 결과: `loop_sleep_us` 는 하트비트·선거 타이머의 정밀도만 정하고 커밋 지연에는 들어가지 않는다.
+  기본값 200 으로도 지연 측정이 왜곡되지 않는다.
+- 실측(2026-10-28, push, 리더 eternity4, `-loop-sleep-us` 기본 200, REPS=3, `csv/lat_push_d21_1028`).
+  QuorumWait ≥150µs 샘플은 세 크기 모두 0.01%다(수정 전 16K 는 82%).
+
+  | p50 (µs) | 수정 전, sleep 200 | 수정 전, sleep 20 | **수정 후, sleep 200** |
+  |---|---|---|---|
+  | Total 1K / 4K / 16K | 233 / 226 / 465 | 175 / 200 / 258 | **140 / 159 / 220** |
+  | QuorumWait 1K / 4K / 16K | 114 / 83 / 251 | 71 / 72 / 71 | **27 / 23 / 21** |
+  | CommitWait 1K / 4K / 16K | 142 / 112 / 286 | 87 / 87 / 87 | **49 / 47 / 48** |
+
+  sleep 20 보다도 ~40µs 빠르다 — 20µs 폴링도 timer slack 을 합치면 평균 수십 µs 를 더하고 있었다.
+  남은 CommitWait − QuorumWait(~25µs)는 커밋 신호 → Apply 스레드 → apply 워커로 가는 조건변수 깨우기다.
+- destination 도 같다(`csv/lat_dest_d21_1028`): QuorumWait p50 1K/4K/16K = 19/19/21µs (수정 전 sleep 200:
+  178/156/107, sleep 20: 52/52/47). 다만 같은 실행에서 `StorageIO`(스토리지 노드의 pread+pwrite, D21 이
+  건드리지 않는 항)가 4K/16K 는 ~170 → 81/91µs 로 줄고 1K 는 166 → 213µs 로 늘어 Total 이 그 영향을
+  크게 받았다. 크기 순서를 뒤집어 다시 돌려도(`csv/lat_dest_d21b_1028`) ±3µs 안으로 같아 크기에 따른 효과다.
+  원인은 미확인이다(스토리지 C6 는 이미 꺼져 있다). 후보: 1K 엔트리는 1536B(3 슬롯) 쓰기라 연속 pull 이 같은
+  4K 페이지를 반복해 부분적으로 덮는다.
 
 ## U. 미해결 — 리팩토링 중 마주치면 여기를 볼 것
 

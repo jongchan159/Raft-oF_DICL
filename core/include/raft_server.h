@@ -105,7 +105,9 @@ public:
 
     /* main_loop 한 바퀴마다 쉬는 시간. 원본(goraft ulti loop)은 sleep 없이
      * 스핀하는데, 그러면 advance_commit_index가 매 바퀴 s.mu를 잡아
-     * AE 스레드를 굶긴다. 0으로 두면 원본과 동일한 스핀 동작. */
+     * AE 스레드를 굶긴다. 0으로 두면 원본과 동일한 스핀 동작.
+     * 커밋 판정은 AE 응답 경로에서도 하므로 이 값은 커밋 지연에 들어가지
+     * 않는다 (DECISIONS.md D21). 하트비트·선거 타이머의 정밀도만 정한다. */
     int loop_sleep_us = 200;
 
     /* appendEntries 한 라운드의 상한. 원본 raft.go의 package-level var
@@ -234,6 +236,12 @@ public:
 
     /* advanceCommitIndex, applyPending, doSlotGC (raft_commit.cpp에서 정의) */
     void advance_commit_index();
+    /* advance_commit_locked: 리더면 과반 match_index로 commit_index를 올리고
+     * 새로 커밋된 엔트리에 신호한다. 전진했으면 true. main_loop 폴링과
+     * AE 응답 경로(Lock C) 둘 다 부른다 -- DECISIONS.md D21.
+     * wake_apply_worker: apply 워커를 깨운다. 둘 다 호출자가 mu를 보유한다. */
+    bool advance_commit_locked(int64_t *sort_ns = nullptr, int64_t *signal_ns = nullptr);
+    void wake_apply_worker();
     void apply_pending();
     void do_slot_gc();
 

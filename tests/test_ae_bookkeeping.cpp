@@ -203,3 +203,57 @@ TEST_CASE("apply_ae_failure_backoff: conflict_term이 리더 로그에 없으면
     CHECK(applied == true);
     CHECK(s->raft.cluster[1].next_index == 2);
 }
+
+/* ============================================================
+ * advance_commit_locked -- AE 응답 경로의 커밋 판정 (DECISIONS.md D21)
+ * ============================================================ */
+
+TEST_CASE("advance_commit_locked: 팔로워 하나만 받아도 과반이면 커밋한다") {
+    auto s = make_leader_with_log({1, 1, 1});   /* 리더 자신은 3까지 */
+    s->raft.cluster[1].match_index = 2;
+    s->raft.cluster[2].match_index = 0;
+
+    CHECK(s->advance_commit_locked() == true);
+    CHECK(s->raft.commit_index == 2);
+    CHECK(s->raft.log[1].committed->signaled == true);
+    CHECK(s->raft.log[2].committed->signaled == true);
+    CHECK(s->raft.log[3].committed->signaled == false);
+}
+
+TEST_CASE("advance_commit_locked: 과반이 아니면 그대로 두고 false") {
+    auto s = make_leader_with_log({1, 1, 1});
+    s->raft.commit_index = 2;
+    s->raft.cluster[1].match_index = 2;   /* 이미 커밋된 지점 */
+
+    CHECK(s->advance_commit_locked() == false);
+    CHECK(s->raft.commit_index == 2);
+}
+
+TEST_CASE("advance_commit_locked: 이전 term 엔트리는 과반이어도 커밋하지 않는다 (§5.4.2)") {
+    auto s = make_leader_with_log({1, 1, 2});   /* current_term = 2 */
+    s->raft.cluster[1].match_index = 2;         /* 과반 지점의 term은 1 */
+
+    CHECK(s->advance_commit_locked() == false);
+    CHECK(s->raft.commit_index == 0);
+}
+
+TEST_CASE("advance_commit_locked: 리더가 아니면 아무것도 하지 않는다") {
+    auto s = make_leader_with_log({1, 1, 1});
+    s->raft.state = ServerState::Follower;
+    s->raft.cluster[1].match_index = 3;
+    s->raft.cluster[2].match_index = 3;
+
+    CHECK(s->advance_commit_locked() == false);
+    CHECK(s->raft.commit_index == 0);
+}
+
+TEST_CASE("apply_ae_success 직후 판정하면 main_loop 없이 커밋이 오른다") {
+    auto s = make_leader_with_log({1, 1, 1});
+    s->raft.cluster[1].next_index = 1;
+
+    /* Lock C가 하는 순서 그대로: match_index 전진 -> 판정 */
+    s->apply_ae_success(1, /*next=*/1, /*len_entries=*/3, /*has_entries=*/true);
+    CHECK(s->raft.cluster[1].match_index == 3);
+    CHECK(s->advance_commit_locked() == true);
+    CHECK(s->raft.commit_index == 3);
+}

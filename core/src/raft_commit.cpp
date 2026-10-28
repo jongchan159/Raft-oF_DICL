@@ -23,13 +23,99 @@ constexpr int kApplyBatchLimit = 64;
 } /* anonymous namespace */
 
 /* ============================================================
- * advanceCommitIndex (raft.go 원본, 로직 그대로 포팅)
+ * advance_commit_locked (원본 advanceCommitIndex의 (1) 단계)
  *
  * "(1) Leader: raise commitIndex based on quorum. Use sorted matchIndex
  *  to find the median in O(n log n)... Per Raft §5.4.2: only commit
  *  entries from the current term to avoid the 'ghost commit' problem
  *  where a pre-election entry gets committed without a current-term
  *  entry confirming leadership."
+ *
+ * 호출자가 mu를 보유한다. 부르는 곳은 둘이다.
+ *   - advance_commit_index (main_loop가 매 바퀴)
+ *   - append_entries_worker의 Lock C (match_index가 오른 직후)
+ * 원본은 main_loop 폴링에서만 판정한다. 이 포팅은 main_loop가 바퀴마다
+ * loop_sleep_us를 쉬므로, 폴링만 두면 과반 응답이 도착한 뒤에도 커밋이
+ * 최대 한 바퀴(~250us) 늦는다 -- 그래서 응답 경로에서도 부른다
+ * (DECISIONS.md D21).
+ *
+ * sort_ns / signal_ns: nullptr이 아니면 정렬, 커밋 신호 시간을 적는다.
+ * 반환: commit_index가 전진했으면 true.
+ * ============================================================ */
+bool Server::advance_commit_locked(int64_t *sort_ns, int64_t *signal_ns) {
+    if (raft.state != ServerState::Leader) {
+        return false;
+    }
+
+    uint64_t last_log_index = ring.tail_log_index - 1;
+    auto t_sort = clock_type::now();
+
+    std::vector<uint64_t> matches(raft.cluster.size());
+    for (size_t j = 0; j < raft.cluster.size(); j++) {
+        if (static_cast<int>(j) == raft.cluster_index) {
+            matches[j] = last_log_index;
+        } else {
+            matches[j] = raft.cluster[j].match_index;
+        }
+    }
+    /* 원본: 내림차순 정렬 후 matches[len/2]가 과반수 도달 최소값.
+     * v4 문서 6장에서 검증한 min-of-majority와 동일한 계산 */
+    std::sort(matches.begin(), matches.end(), std::greater<uint64_t>());
+    uint64_t majority_idx = matches[matches.size() / 2];
+    if (sort_ns != nullptr) {
+        *sort_ns = elapsed_ns(t_sort);
+    }
+
+    if (majority_idx <= raft.commit_index) {
+        return false;
+    }
+    /* §5.4.2: majorityIdx의 엔트리가 current term일 때만 전진.
+     * "prevents committing entries from prior terms without a
+     *  current-term log entry to anchor them." */
+    if (majority_idx >= ring.tail_log_index) {
+        return false;
+    }
+    uint64_t entry_term = raft.log[log_slice(majority_idx)].term;
+    if (entry_term != raft.current_term) {
+        return false;
+    }
+
+    uint64_t prev_commit = raft.commit_index;
+    raft.commit_index = majority_idx;
+
+    /* "Signal committed for entries newly committed.
+     *  Non-blocking cap=1 sends; safe under s.mu." */
+    auto t_signal = clock_type::now();
+    uint64_t oldest_c = oldest_log_index();
+    for (uint64_t idx = prev_commit + 1; idx <= majority_idx; idx++) {
+        if (idx >= oldest_c && idx < ring.tail_log_index) {
+            Entry &e = raft.log[log_slice(idx)];
+            if (e.committed) {
+                /* Go의 non-blocking cap=1 send(select+default)를
+                 * bool 플래그 signal로 재현 -- 이미 signaled면
+                 * 그냥 넘어감(default 분기와 동일 의도) */
+                e.signal_committed();
+            }
+        }
+    }
+    if (signal_ns != nullptr) {
+        *signal_ns = elapsed_ns(t_signal);
+    }
+    return true;
+}
+
+/* Apply는 applyWorker가 비동기로 수행. 깨우기만 함.
+ * Non-blocking cap=1 채널 -> bool 플래그로 재현. 호출자가 mu를 보유한다. */
+void Server::wake_apply_worker() {
+    std::lock_guard<std::mutex> apply_lk(workers.apply_notify_mu);
+    workers.apply_notify_pending = true;
+    workers.apply_notify_cv.notify_one();
+}
+
+/* ============================================================
+ * advanceCommitIndex (raft.go 원본, main_loop가 매 바퀴 호출)
+ *
+ * 커밋 판정(advance_commit_locked) + slot GC 깨우기 + apply 워커 깨우기.
  *
  * 계측은 prof.enabled(=-profile 플래그)가 켜져 있을 때만 값을 기록한다.
  * 꺼져 있어도 clock_type::now() 호출 자체는 남아 있다 -- 원본과 같은
@@ -54,59 +140,13 @@ void Server::advance_commit_index() {
 
     /* (1) Leader: quorum 기반 commitIndex 전진 */
     if (raft.state == ServerState::Leader) {
-        uint64_t last_log_index = ring.tail_log_index - 1;
-        auto t_sort = clock_type::now();
-
-        std::vector<uint64_t> matches(raft.cluster.size());
-        for (size_t j = 0; j < raft.cluster.size(); j++) {
-            if (static_cast<int>(j) == raft.cluster_index) {
-                matches[j] = last_log_index;
-            } else {
-                matches[j] = raft.cluster[j].match_index;
-            }
-        }
-        /* 원본: 내림차순 정렬 후 matches[len/2]가 과반수 도달 최소값.
-         * v4 문서 6장에서 검증한 min-of-majority와 동일한 계산 */
-        std::sort(matches.begin(), matches.end(), std::greater<uint64_t>());
-        uint64_t majority_idx = matches[matches.size() / 2];
-        if (profiling) {
-            aci_sort_ns = elapsed_ns(t_sort);
-        }
-
-        if (majority_idx > raft.commit_index) {
-            /* §5.4.2: majorityIdx의 엔트리가 current term일 때만 전진.
-             * "prevents committing entries from prior terms without a
-             *  current-term log entry to anchor them." */
-            if (majority_idx < ring.tail_log_index) {
-                uint64_t entry_term = raft.log[log_slice(majority_idx)].term;
-                if (entry_term == raft.current_term) {
-                    uint64_t prev_commit = raft.commit_index;
-                    raft.commit_index = majority_idx;
-
-                    /* "Signal committed for entries newly committed.
-                     *  Non-blocking cap=1 sends; safe under s.mu." */
-                    auto t_signal = clock_type::now();
-                    uint64_t oldest_c = oldest_log_index();
-                    for (uint64_t idx = prev_commit + 1; idx <= majority_idx; idx++) {
-                        if (idx >= oldest_c && idx < ring.tail_log_index) {
-                            Entry &e = raft.log[log_slice(idx)];
-                            if (e.committed) {
-                                /* Go의 non-blocking cap=1 send(select+default)를
-                                 * bool 플래그 signal로 재현 -- 이미 signaled면
-                                 * 그냥 넘어감(default 분기와 동일 의도) */
-                                e.signal_committed();
-                            }
-                        }
-                    }
-                    if (profiling) {
-                        aci_signal_ns = elapsed_ns(t_signal);
-                    }
-                }
-            }
-        }
+        advance_commit_locked(profiling ? &aci_sort_ns : nullptr,
+                              profiling ? &aci_signal_ns : nullptr);
 
         /* Slot GC worker 깨우기: ring 사용률 70% 초과 또는 100회마다
-         * (floor). Non-blocking cap=1 채널 -> bool 플래그로 재현 */
+         * (floor). Non-blocking cap=1 채널 -> bool 플래그로 재현.
+         * slot_gc_tick은 main_loop 바퀴 수로 센다 -- 응답 경로의
+         * 커밋 판정은 GC를 깨우지 않는다. */
         workers.slot_gc_tick++;
         uint64_t used_slots = 0;
         if (!ring.log_slot_map.empty()) {
@@ -136,12 +176,8 @@ void Server::advance_commit_index() {
         /* prof.aci_slot_gc_ns, prof.aci_backpres_ns는 do_slot_gc()가 씀 */
     }
 
-    /* Apply는 applyWorker가 비동기로 수행. 깨우기만 함.
-     * Non-blocking cap=1 채널 -> bool 플래그로 재현 */
     if (raft.state == ServerState::Leader) {
-        std::lock_guard<std::mutex> apply_lk(workers.apply_notify_mu);
-        workers.apply_notify_pending = true;
-        workers.apply_notify_cv.notify_one();
+        wake_apply_worker();
     }
 
     mu.unlock();   /* Go의 defer 위치와 동일 (함수 끝에서 항상 unlock) */

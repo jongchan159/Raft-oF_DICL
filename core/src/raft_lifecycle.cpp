@@ -353,6 +353,9 @@ void Server::stop() {
  * 원본은 sleep 없이 스핀한다. 그대로 두면 advance_commit_index가 매
  * 바퀴 s.mu를 잡아 AE 스레드/Apply를 굶으므로 loop_sleep_us(기본
  * 200us)만큼 쉰다. 0으로 두면 원본과 동일한 스핀 동작.
+ * 커밋 판정은 AE 응답 경로(Lock C)에서도 하므로, 이 sleep은 커밋 지연에
+ * 들어가지 않는다 -- 여기서의 advance_commit_index는 응답이 없는 동안의
+ * 안전망과 slot GC 깨우기 몫이다 (DECISIONS.md D21).
  * ============================================================ */
 void Server::main_loop() {
     while (!done.load()) {

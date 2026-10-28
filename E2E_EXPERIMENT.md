@@ -602,6 +602,9 @@ HANDOFF §6.2 는 **다른 머신, 로컬 3노드, identity-pba, 링 16 MiB** �
   | push (비동기) | 175 | 200 | 258 |
 
   0(원본의 스핀)은 쓰지 않는다 — 루프가 바퀴마다 `mu` 를 잡아 AE 워커·Apply 를 굶긴다.
+  **위 설명과 표는 D21 이전 바이너리 기준이다.** D21(2026-10-28)부터 커밋은 AE 응답 경로에서도
+  판정하므로 이 값이 커밋 지연에 들어가지 않는다. D21 바이너리에서는 기본값(200)과 20 의 결과가
+  같아야 하고, 같으면 이 항목은 필요 없다(push 에서 확인: QuorumWait p50 21~27µs, 2026-10-28).
 - C-state(SETUP.md "c-state off")와 `kSpinServeUs` — AENet 스톨이 이것으로 크게 바뀐다
 - **리더.** 두 모드에서 같은 호스트가 리더여야 한다(sweep 로그의 `leader:` 줄로 확인). 다르면 다시 띄운다
 - 스토리지 IB 링크 속도(`cat /sys/class/infiniband/*/ports/1/rate` — 2026-10-27 현재 SDR 10 Gb/s).
@@ -649,6 +652,23 @@ ADDRS=10.0.0.4:6001,10.0.0.5:6001,10.0.0.6:6001 SIZES="1024 4096 16384" REPS=3 \
 
 compare 의 `d_*` 는 기준 대비 p50 차이이고, REPS>1 이면 반복 행을 평균한 값이다(latency.csv 에 rep 열이
 없다). Apply 당 샘플이 1 건이므로(§7-5) REPS 는 3 이상으로 한다.
+
+**다음에 점검할 것** (2026-10-28 D21 측정 뒤 남은 질문)
+- **destination 1K 의 `StorageIO`.** 1K 만 ~210µs 이고 4K/16K 는 80~90µs 다. 크기 순서를 바꿔도 재현된다.
+  후보는 1K 엔트리가 1536B(3 슬롯) 쓰기라 연속 pull 이 같은 4K 페이지를 반복해 부분적으로 덮는 것.
+  blockcopy 서버가 이미 재는 read/write 분리 값(`WritePBABatchRsp.read_nanos/write_nanos`)을 apply 로그까지
+  싣거나, 스크래치 네임스페이스에 O_DIRECT 1536B / 4608B 순차 쓰기를 직접 걸어 비교한다. D21 이전에는
+  세 크기 모두 ~170µs 로 같았던 이유도 함께 본다.
+- **스토리지 IB 링크 속도.** push 의 `LPersist` 증가(4K +7, 16K +33µs)가 자기 쓰기 + push 2 개를 SDR
+  링크로 보내는 계산(3 배 전송)과 맞는다. 케이블과 상대 포트가 더 높은 속도를 지원하는지
+  (`ibportstate ... LinkSpeedSupported/Active`, `ethtool -m`) 확인하고, 링크를 올릴 수 있으면 다시 잰다.
+- **손익분기 크기.** push 의 이득(ReplNet+StorageIO ~100~110µs)은 크기에 거의 무관하고 비용(LPersist)은
+  크기에 비례한다. SDR 에서는 수십 KB 에서 만날 것으로 추정된다(외삽). 링을 키워(`-ring-pages`,
+  `RING_BYTES`) 32K/64K 를 잰다.
+- **push 의 고정 비용 ~5~13µs.** QuorumWait(push 완료 → IoWorker → `mu` → AE 워커 hop), AENet +2~5µs
+  (IoWorker 완료 스핀과의 CPU 경쟁 의심, 미확인), LHandler +2~3µs(push job 제출).
+- **CommitWait − QuorumWait ~25µs.** 커밋 신호 → apply 워커 조건변수 깨우기 몫. 두 모드 공통이다.
+- **비동기 push 정합성(§6-4 (1-a)~(5))** 은 아직 실클러스터에서 돌리지 않았다.
 
 ---
 

@@ -13,7 +13,7 @@ DECISIONS.md §X "헤더에 구현을 남기는 유일한 이유들 (R0)" 에 �
 | `Server::start` → `main_loop` | 상시 스레드 3개(main / apply / slot GC)를 띄운다. **읽기는 여기서 시작하는 것이 빠르다** |
 | `Server::apply` / `apply_timed` | 리더가 클라이언트 명령을 받는 경로 |
 | `Server::handle_append_entries_request` | 팔로워가 복제를 받는 경로 |
-| `Server::advance_commit_index` | 커밋 판정 (리더의 `main_loop`가 매 바퀴 호출) |
+| `Server::advance_commit_locked` | 커밋 판정. AE 응답이 match_index를 올릴 때와 `main_loop`(`advance_commit_index`)가 매 바퀴 부른다 (DECISIONS.md D21) |
 | `Server::read` | 읽기 전용 명령을 **로그 없이** 처리 (ReadIndex, `raft_read.cpp`) |
 | `Server::handle_read_index_heartbeat` | 팔로워가 ReadIndex 리더십 확인 heartbeat 를 받는 경로 |
 

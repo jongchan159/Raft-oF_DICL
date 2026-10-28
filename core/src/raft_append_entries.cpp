@@ -479,7 +479,15 @@ void Server::append_entries_worker(int fi, ReplSink *sink, bool heartbeat_due) {
          * cluster[fi]와 log만 만지는 산술이라 단위 테스트가 붙는다
          * (tests/test_ae_bookkeeping.cpp). 호출 시 mu를 보유해야 한다. */
         if (rsp.success) {
+            uint64_t prev_match = raft.cluster[static_cast<size_t>(fi)].match_index;
             apply_ae_success(fi, next, len_entries, has_entries);
+            /* 커밋 판정을 main_loop 폴링에만 맡기면 loop_sleep_us만큼
+             * (0~250us) 늦는다. match_index가 오른 이 자리에서 바로 한다
+             * -- DECISIONS.md D21. */
+            if (raft.cluster[static_cast<size_t>(fi)].match_index > prev_match &&
+                advance_commit_locked()) {
+                wake_apply_worker();
+            }
         } else {
             if (!apply_ae_failure_backoff(fi, req.prev_log_index, rsp.conflict_term,
                                           rsp.conflict_index, sent_next)) {

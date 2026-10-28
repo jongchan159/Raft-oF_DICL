@@ -131,7 +131,7 @@ sudo ./build/raft_node -id 6 -cluster "$CLUSTER" -metadata-dir /mnt/raftvol/jong
 
 기동 배너의 `push device : 5 -> ... (wwid W)` 가 eternity5 배너의 `own volume : ... (wwid W)` 와 같아야 한다. 다르면 엉뚱한 볼륨을 매핑한 것이니 그대로 돌리지 말 것.
 
-지연 측정은 `-loop-sleep-us 20` 을 더한다 (E2E_EXPERIMENT.md §7-6 -- 기본 200 은 커밋 폴링 지연이 QuorumWait 에 섞인다).
+D21(커밋 판정을 AE 응답 경로에서도 함) 이전 바이너리로 지연을 잴 때는 `-loop-sleep-us 20` 을 더한다 (E2E_EXPERIMENT.md §7-6 -- 기본 200 은 커밋 폴링 지연이 QuorumWait 에 섞인다). D21 이후에는 필요 없다.
 
 **스토리지 노드(eternitystorage) 재부팅 시 복구**
 
