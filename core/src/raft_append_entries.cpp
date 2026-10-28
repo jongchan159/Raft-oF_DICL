@@ -438,6 +438,8 @@ void Server::append_entries_worker(int fi, ReplSink *sink, bool heartbeat_due) {
             if (replication_mode == ReplicationMode::LeaderSide) {
                 sample.write_pba_rt_ns = leader_side_copy.write_pba_rt_ns;
                 sample.storage_copy_ns = leader_side_copy.storage_copy_ns;
+                sample.storage_read_ns = leader_side_copy.storage_read_ns;
+                sample.storage_write_ns = leader_side_copy.storage_write_ns;
             } else if (sample.pushed) {
                 int64_t wait_ns = (sink != nullptr) ? sink->push_wait_ns(fi) : 0;
                 sample.write_pba_rt_ns = wait_ns;
@@ -445,6 +447,8 @@ void Server::append_entries_worker(int fi, ReplSink *sink, bool heartbeat_due) {
             } else {
                 sample.write_pba_rt_ns = rsp.write_pba_rt_ns;
                 sample.storage_copy_ns = rsp.storage_copy_ns;
+                sample.storage_read_ns = rsp.storage_read_ns;
+                sample.storage_write_ns = rsp.storage_write_ns;
             }
             /* sink가 없으면 Apply가 아니므로 Lock A 대기도 없다 */
             sample.mutex_ns = (sink != nullptr ? sink->mutex_a_ns() : 0) + mutex_b + mutex_c;
@@ -467,6 +471,8 @@ void Server::append_entries_worker(int fi, ReplSink *sink, bool heartbeat_due) {
             prof.sample_r2_ns.store(sample.r2_ns);
             prof.sample_write_pba_rt_ns.store(sample.write_pba_rt_ns);
             prof.sample_storage_copy_ns.store(sample.storage_copy_ns);
+            prof.sample_storage_read_ns.store(sample.storage_read_ns);
+            prof.sample_storage_write_ns.store(sample.storage_write_ns);
             prof.sample_mutex_ns.store(sample.mutex_ns);
             prof.sample_mutex_c_ns.store(sample.mutex_c_ns);
 

@@ -102,6 +102,8 @@ public:
                           const std::vector<uint64_t> &nbytes,
                           int src_dev, int dst_dev,
                           int64_t *out_copy_ns,
+                          int64_t *out_read_ns,
+                          int64_t *out_write_ns,
                           std::string *out_error) override {
         std::lock_guard<std::mutex> lk(mu);
         calls++;
@@ -115,6 +117,8 @@ public:
             return false;
         }
         *out_copy_ns = copy_ns;
+        *out_read_ns = 0;
+        *out_write_ns = 0;
         return true;
     }
 

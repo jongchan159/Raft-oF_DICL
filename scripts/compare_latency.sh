@@ -94,7 +94,7 @@ function avg(l, s, t, col,    k) {
 }
 BEGIN {
     nl = split(labels, lab, " ")
-    nterm = split("Total LHandler LPersist AENet FHandler ReplNet StorageIO QuorumWait Mutex CommitWait residual", terms, " ")
+    nterm = split("Total LHandler LPersist AENet FHandler ReplNet StorageIO QuorumWait Mutex CommitWait SRead SWrite residual", terms, " ")
     nsz = 0
     fi = 0
     if (csv_out != "") print "size_bytes,term,label,reps,mean_us,p50_us,p99_us" > csv_out

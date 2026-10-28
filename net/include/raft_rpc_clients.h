@@ -97,6 +97,8 @@ public:
                           const std::vector<uint64_t> &nbytes,
                           int src_dev, int dst_dev,
                           int64_t *out_copy_ns,
+                          int64_t *out_read_ns,
+                          int64_t *out_write_ns,
                           std::string *out_error) override;
 
 private:

@@ -111,6 +111,8 @@ bool dispatch_client_method(const std::string &method,
         rsp.post_rpc_ns = t.post_rpc_ns;
         rsp.commit_wait_ns = t.commit_wait_ns;
         rsp.wg_scheduling_ns = t.wg_scheduling_ns;
+        rsp.storage_read_ns = t.storage_read_ns;
+        rsp.storage_write_ns = t.storage_write_ns;
 
         rpcproto::ClientApplyTimedResponse proto_rsp;
         client_apply_timed_response_to_proto(rsp, &proto_rsp);

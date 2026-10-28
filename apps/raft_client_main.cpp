@@ -671,6 +671,9 @@ int main(int argc, char **argv) {
          * 마지막 residual 은 항등식 검산이다:
          *   Total ~= LHandler + LPersist + AENet + FHandler + ReplNet
          *            + StorageIO + QuorumWait        (core/include/raft_timings.h)
+         * Mutex / CommitWait / SRead / SWrite 는 진단용이라 합에 안 들어간다.
+         * SRead / SWrite 는 StorageIO 중 스토리지 서버의 pread / pwrite 합이다
+         * -- StorageIO 와의 차이가 서버가 디스크 밖에서 쓴 시간이다.
          * 항들이 전부 timings_clamp0 을 거치므로 0 이 아닐 수 있고, 음수도
          * 나올 수 있다 -- 그 부호 자체가 정보다.
          *
@@ -678,7 +681,8 @@ int main(int argc, char **argv) {
          * 즉 표본 수 = **성공한 RPC 수**이고 n/batch 와 다를 수 있다. */
         static const char *kTimedTerms[] = {
             "Total", "LHandler", "LPersist", "AENet", "FHandler",
-            "ReplNet", "StorageIO", "QuorumWait", "Mutex", "CommitWait", "residual",
+            "ReplNet", "StorageIO", "QuorumWait", "Mutex", "CommitWait",
+            "SRead", "SWrite", "residual",
         };
         constexpr size_t kNTimedTerms = sizeof(kTimedTerms) / sizeof(kTimedTerms[0]);
         std::vector<int64_t> timed[kNTimedTerms];
@@ -719,6 +723,7 @@ int main(int argc, char **argv) {
                     rsp.ae_net_nanos(),     rsp.f_handler_nanos(), rsp.repl_net_nanos(),
                     rsp.replication_nanos(), rsp.quorum_wait_nanos(),
                     rsp.mutex_nanos(),      rsp.commit_wait_nanos(),
+                    rsp.storage_read_nanos(), rsp.storage_write_nanos(),
                     rsp.total_nanos() - sum7,
                 };
                 for (size_t k = 0; k < kNTimedTerms; k++) {
@@ -727,7 +732,8 @@ int main(int argc, char **argv) {
 
                 std::printf("  batch=%d total=%.1fus LHandler=%.1f LPersist=%.1f "
                             "AENet=%.1f FHandler=%.1f ReplNet=%.1f StorageIO=%.1f "
-                            "QuorumWait=%.1f Mutex=%.1f CommitWait=%.1f\n",
+                            "QuorumWait=%.1f Mutex=%.1f CommitWait=%.1f "
+                            "SRead=%.1f SWrite=%.1f\n",
                             this_batch,
                             rsp.total_nanos() / 1000.0,
                             rsp.l_handler_nanos() / 1000.0,
@@ -738,7 +744,9 @@ int main(int argc, char **argv) {
                             rsp.replication_nanos() / 1000.0,
                             rsp.quorum_wait_nanos() / 1000.0,
                             rsp.mutex_nanos() / 1000.0,
-                            rsp.commit_wait_nanos() / 1000.0);
+                            rsp.commit_wait_nanos() / 1000.0,
+                            rsp.storage_read_nanos() / 1000.0,
+                            rsp.storage_write_nanos() / 1000.0);
             } else {
                 rpcproto::ClientApplyRequest req;
                 for (int k = 0; k < this_batch; k++) {

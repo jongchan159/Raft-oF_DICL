@@ -167,6 +167,10 @@ struct AppendEntriesResponse {
      * DoPBACopy를 역산 */
     int64_t write_pba_rt_ns = 0;
     int64_t storage_copy_ns = 0;
+    /* storage_copy_ns 중 pread / pwrite 만 더한 값 (스토리지 서버가 보고).
+     * storage_copy_ns 는 서버의 배치 wall 이라 그 차이가 서버 쪽 대기다. */
+    int64_t storage_read_ns = 0;
+    int64_t storage_write_ns = 0;
 
     /* HandleAppendEntriesRequest follower 서브스테이지 계측 */
     int64_t handle_ae_lock_wait_ns = 0;   /* entry -> mu.Lock() 획득 */
@@ -263,6 +267,8 @@ struct ClientApplyTimedResponse {
     int64_t post_rpc_ns = 0;
     int64_t commit_wait_ns = 0;
     int64_t wg_scheduling_ns = 0;
+    int64_t storage_read_ns = 0;    /* StorageIO 중 pread 합 */
+    int64_t storage_write_ns = 0;   /* StorageIO 중 pwrite 합 */
 };
 
 struct ClientReadRequest {

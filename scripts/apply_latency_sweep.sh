@@ -4,8 +4,9 @@
 #                           지연이 어떻게 변하는지 재고, 결과를 CSV 한 장으로 낸다
 #
 # 묻는 것: **엔트리 하나가 커질 때 지연의 어느 항이 늘어나는가.** ApplyTimings
-# 11항(Total/LHandler/LPersist/AENet/FHandler/ReplNet/StorageIO/QuorumWait/
-# Mutex/CommitWait/residual)을 크기별로 나란히 놓는다.
+# 13항(Total/LHandler/LPersist/AENet/FHandler/ReplNet/StorageIO/QuorumWait/
+# Mutex/CommitWait/SRead/SWrite/residual)을 크기별로 나란히 놓는다.
+# SRead/SWrite 는 StorageIO 중 스토리지 서버의 pread/pwrite 합이다(진단용).
 #
 # **서버는 이미 떠 있다고 가정한다.** 이 스크립트는 raft_node 도
 # raft_blockcopy_server 도 띄우지 않고 죽이지도 않으며, 링 파일을 지우지도

@@ -60,6 +60,8 @@ struct ProfilingSink {
     std::atomic<int64_t> sample_r2_ns{0};
     std::atomic<int64_t> sample_write_pba_rt_ns{0};
     std::atomic<int64_t> sample_storage_copy_ns{0};
+    std::atomic<int64_t> sample_storage_read_ns{0};
+    std::atomic<int64_t> sample_storage_write_ns{0};
     std::atomic<int64_t> sample_mutex_ns{0};
     std::atomic<int64_t> sample_mutex_c_ns{0};
 
@@ -110,6 +112,12 @@ struct ApplyTimings {
      *   rawft: storage-server pread + pwrite
      *   goraft: follower's s.persist NVMe write+fdatasync wall */
     int64_t storage_io_ns = 0;
+
+    /* StorageIO 를 스토리지 서버가 나눠 보고한 pread / pwrite 합. 진단용이라
+     * 항등식에 들어가지 않는다. StorageIO - (둘의 합) = 서버의 배치 처리 중
+     * 디스크 밖에서 쓴 시간 (워커가 하나일 때). push 된 배치는 0. */
+    int64_t storage_read_ns = 0;
+    int64_t storage_write_ns = 0;
 
     /* QuorumWait = replicate - AE_RT, clamp >= 0. Leader post-AE
      * bookkeeping + apply loop + wg.Wait + commit advance. Equals
@@ -171,6 +179,8 @@ struct ReplSample {
     int64_t r2_ns = 0;            /* follower handler wall (HandlerDuration) */
     int64_t write_pba_rt_ns = 0;  /* follower WritePBA wall (= R2 - FHandler) */
     int64_t storage_copy_ns = 0;  /* S internal pread+pwrite (Replication) */
+    int64_t storage_read_ns = 0;  /* storage_copy_ns 중 pread 합 (destination 만) */
+    int64_t storage_write_ns = 0; /* storage_copy_ns 중 pwrite 합 (destination 만) */
     int64_t mutex_ns = 0;         /* sum of A+B+C lock waits */
     int64_t mutex_c_ns = 0;       /* Lock C wait alone (AE goroutine post-rpcCall) */
     int64_t post_rpc_wall_ns = 0; /* AE goroutine: rpcCall return -> Lock C critical section end */

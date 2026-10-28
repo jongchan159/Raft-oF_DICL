@@ -88,6 +88,24 @@ TEST_CASE("각 구간이 공식대로 계산된다") {
     CHECK(t.pure_commit_wait_ns == w.commit_wait_ns);
 }
 
+TEST_CASE("StorageIO 의 pread / pwrite 분리값은 그대로 실리고 항등식에 안 들어간다") {
+    ApplyWalls w = ordered_walls();
+    ReplSample smp = ordered_sample();
+    smp.storage_read_ns  = 25'000;
+    smp.storage_write_ns = 17'000;   /* 합(42us) < storage_copy(186.6us): 서버 대기 */
+    ReplSink sink;
+    sink.push(smp);
+    ProfilingSink prof;
+    ApplyTimings t;
+
+    derive_apply_timings(w, &sink, prof, t);
+
+    CHECK(t.storage_read_ns == 25'000);
+    CHECK(t.storage_write_ns == 17'000);
+    CHECK(t.storage_io_ns == smp.storage_copy_ns);
+    CHECK(identity_rhs(t) == w.a_held_ns + w.replicate_ns);
+}
+
 TEST_CASE("보정값과 파생 서브스테이지") {
     ApplyWalls w = ordered_walls();
     ReplSample smp = ordered_sample();

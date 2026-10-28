@@ -92,7 +92,10 @@ public:
  * **클러스터 인덱스와 같은 순서**다.
  *
  * 반환 true: *out_copy_ns 에 스토리지 노드가 보고한 내부 pread+pwrite
- *            시간이 담긴다 (ApplyTimings의 StorageIO).
+ *            시간이 담긴다 (ApplyTimings의 StorageIO). 서버가 배치를 처리한
+ *            wall 이다. *out_read_ns / *out_write_ns 는 그중 pread / pwrite 만
+ *            더한 값이다 (워커 여럿이면 워커별 합). wall 과의 차이가 서버의
+ *            디스패치·대기 몫이다.
  * 반환 false: *out_error 에 사람이 읽을 이유가 담긴다. 커넥션 수준 오류와
  *            스토리지 노드의 애플리케이션 수준 실패를 구분하지 않는다 --
  *            호출부(do_pba_copy)가 어느 쪽이든 fail-soft로 이 배치를
@@ -110,6 +113,8 @@ public:
                                   const std::vector<uint64_t> &nbytes,
                                   int src_dev, int dst_dev,
                                   int64_t *out_copy_ns,
+                                  int64_t *out_read_ns,
+                                  int64_t *out_write_ns,
                                   std::string *out_error) = 0;
 };
 

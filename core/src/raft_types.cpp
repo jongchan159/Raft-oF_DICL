@@ -297,6 +297,10 @@ void derive_apply_timings(const ApplyWalls &w, ReplSink *sink,
             prof.sample_write_pba_rt_ns.load();
         sample.storage_copy_ns =
             prof.sample_storage_copy_ns.load();
+        sample.storage_read_ns =
+            prof.sample_storage_read_ns.load();
+        sample.storage_write_ns =
+            prof.sample_storage_write_ns.load();
         sample.mutex_ns = prof.sample_mutex_ns.load();
         sample.mutex_c_ns = prof.sample_mutex_c_ns.load();
 
@@ -330,6 +334,8 @@ void derive_apply_timings(const ApplyWalls &w, ReplSink *sink,
 
     t.storage_io_ns =
         sample.storage_copy_ns;
+    t.storage_read_ns = sample.storage_read_ns;
+    t.storage_write_ns = sample.storage_write_ns;
 
     /* push된 배치도 같은 모양이다: AE 전에 push 대기(write_pba_rt = storage_copy)가
      * 있고, 팔로워는 복사를 하지 않으므로 핸들러 전체가 FHandler다 (DECISIONS.md D20). */

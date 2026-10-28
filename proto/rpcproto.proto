@@ -93,6 +93,12 @@ message AppendEntriesResponse {
   // volume so the leader can check its -push-devices mapping.
   repeated RingExtent extent_map = 14;
   string volume_wwid = 15;
+  // storage_copy_nanos split as the storage server reported it: pread / pwrite
+  // sums (WritePBABatchResponse.read_nanos / write_nanos). storage_copy_nanos
+  // is the server's batch wall, so the gap is time spent off the disk.
+  // Additive; peers that predate them report 0.
+  int64 storage_read_nanos = 16;
+  int64 storage_write_nanos = 17;
 }
 
 // ---- Blockcopy RPCs (rpc_rdma.go WritePBABatchRequest/Response 대응) ----
@@ -172,6 +178,10 @@ message ClientApplyTimedResponse {
   int64 post_rpc_nanos = 13;
   int64 commit_wait_nanos = 14;
   int64 wg_scheduling_nanos = 15;
+  // replication_nanos (StorageIO) split into the storage server's pread /
+  // pwrite sums. Diagnostic only, not part of the identity. 0 for pushed batches.
+  int64 storage_read_nanos = 16;
+  int64 storage_write_nanos = 17;
 }
 
 // Read-only queries served by ReadIndex: never written to the log.
