@@ -4,8 +4,11 @@
  * 수행한다.
  *
  * Destination-Side(기본): follower의 server_random이 leader 볼륨을
- *   읽어 자기 볼륨에 씀 (-devices는 이 노드가 로컬로 갖는 디바이스만
- *   나열해도 됨, dst_dev는 항상 "나 자신").
+ *   읽어 자기 볼륨에 씀. src_dev는 leader의 cluster index, dst_dev는
+ *   "나 자신"이므로 -devices는 어느 모드든 클러스터 멤버 인덱스 순서로
+ *   전원을 나열해야 한다. 스토리지 노드가 여러 대면 이 노드가 export하지
+ *   않는 멤버 항목은 NVMe-oF로 attach한 경로이고 읽기에만 쓰인다
+ *   (NVMe-oF read + local pwrite, E2E_EXPERIMENT.md §1).
  * Leader-Side(Server::ReplicationMode::LeaderSide, hpdc15dare 3.1.2
  *   정책): leader의 server_random이 자기 로그를 읽어 *원격* follower
  *   볼륨에 직접 씀. 이 경우 -devices는 클러스터 멤버 인덱스 순서와
@@ -43,7 +46,8 @@ void usage(const char *prog) {
         "  -addr         listen address (default 0.0.0.0:5050)\n"
         "  -transport    rdma (default) | tcp\n"
         "  -devices      comma-separated NVMe device paths, one per cluster\n"
-        "                member index (default /dev/nvme0n1)\n"
+        "                member index (default /dev/nvme0n1). Members this\n"
+        "                host does not export: their NVMe-oF attached path\n"
         "  -copy-workers parallel workers per WritePBABatch (default: nproc,\n"
         "                capped at 16)\n",
         prog);

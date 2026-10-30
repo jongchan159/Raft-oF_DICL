@@ -18,6 +18,11 @@ handle_write_pba_batch
   → join → copy_nanos (= read_nanos + write_nanos) 를 응답에 담아 보고
 ```
 
+`src_dev` / `dst_dev` 는 `-devices` 인덱스(= cluster 인덱스)일 뿐이고 서버는 그 경로가 로컬
+PCIe 인지 NVMe-oF attach 인지 모른다. 스토리지 노드가 여러 대면 이 노드가 export 하지 않는 멤버
+항목에 attach 경로를 넣는다 — src(리더 볼륨)는 패브릭으로 읽고 dst(자기 볼륨)는 로컬에 쓴다.
+구성 규칙은 E2E_EXPERIMENT.md §1 "스토리지 노드가 여러 대일 때".
+
 그 `copy_nanos` 가 리더의 `ApplyTimings` 에서 `StorageIO` 항이 된다. 현재
 측정에서 Apply 지연의 대부분이 이 항이다 — DECISIONS.md §U7.
 

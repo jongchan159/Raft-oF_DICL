@@ -142,6 +142,10 @@ export PROTOBUF_SYSROOT=/tmp/pb-sysroot
   -devices /dev/nvme0n1,/dev/nvme1n1,/dev/nvme2n1 -copy-workers 8
 ```
 
+스토리지 노드가 여러 대면 각 서버의 `-devices` 에 자기가 export 하지 않는 멤버 볼륨을 NVMe-oF
+attach 경로로 넣는다 (NVMe-oF read + local pwrite). 규칙은 E2E_EXPERIMENT.md §1
+"스토리지 노드가 여러 대일 때", 절차는 SETUP.md "MULTI-STORAGE".
+
 `-cluster` 형식은 **`id@raft_addr@device_path@storage_host`** (쉼표 구분)이고,
 `device_path`는 그 멤버의 링 파일이 올라가 있는 볼륨이다 —— **비워 둘 수 없다.**
 

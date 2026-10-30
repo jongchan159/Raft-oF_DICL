@@ -72,6 +72,47 @@ nvmet port 10(rdma)은 node5/node6 만 export 하고, **eternity3 은 자기 볼
 → **어느 멤버가 리더였는지와 함께 수치를 기록한다.** 리더가 eternity3 이냐
 아니냐로 `LPersist` 가 달라진다.
 
+### 스토리지 노드가 여러 대일 때 — NVMe-oF read + local pwrite
+
+멤버 볼륨을 여러 스토리지 노드가 나눠 export 하면 (예정: eternitystorage + eternity1 에뮬레이션,
+배정 미정) 팔로워의 스토리지 노드에는 리더 볼륨이 로컬에 없다. 그 경우 blockcopy 는 리더 볼륨을
+**NVMe-oF attach 경로로 pread** 하고 **자기 로컬 볼륨에 pwrite** 한다. 절차는 SETUP.md
+"MULTI-STORAGE".
+
+**코드 변경 없이 성립한다.** 팔로워는 자기 `storage_host` 에만 WritePBABatch 를 보내고
+(`apps/raft_node_main.cpp` 의 `make_blockcopy_client`), src = 리더의 cluster index
+(`req.leader_dev_index`), dst = 자기 cluster index 다. 서버는 둘을 `-devices` 인덱스로만
+해석하고(`BlockCopyServer::get_fd`) 그 경로가 로컬 PCIe 인지 attach 인지 모른다.
+
+| 멤버 | export 하는 스토리지 | 그 스토리지의 `-devices` 항목 | 다른 스토리지의 `-devices` 항목 |
+|---|---|---|---|
+| id N | 볼륨이 꽂힌 호스트 | 로컬 by-id (nvmet `device_path` 와 같은 값) | 그 호스트의 nvmet 을 attach 한 `/dev/nvmeXnY` |
+
+불변식 (전부 **구성으로만** 지켜진다 — 서버는 검사하지 않는다):
+
+- **스토리지마다 `-devices` 는 cluster 인덱스 순서로 모든 멤버를 갖는다.** 자기가 export 하지
+  않는 멤버도 빠지면 안 된다 — 누가 리더가 될지 모르므로 어느 멤버든 src 가 될 수 있다
+- **멤버 i 의 `storage_host` 는 멤버 i 볼륨을 로컬로 갖는 스토리지다.** 그래야 dst(인덱스 i)가
+  로컬이다. 원격 장치도 서버가 `O_RDWR` 로 열지만 이 규칙을 지키면 dst 로 쓰이지 않는다.
+  `-mode leader` 는 쓰지 않는다(리더 스토리지가 원격 dst 에 쓰게 된다)
+- 인덱스가 어긋나면 단일 스토리지 때와 똑같이 **에러 없이 엉뚱한 볼륨을 덮어쓴다**
+- 붙인 볼륨은 마운트하지 않는다
+
+**왜 PBA 가 그대로 맞나.** 위 "PBA 주소공간 동일성" 과 같다 — nvmet 은 namespace 를 오프셋 없이
+export 하므로 스토리지 B 에서 attach 한 리더 볼륨의 LBA N 도 스토리지 A 로컬 LBA N 이다.
+**읽는 시점의 내용도 맞다**: 리더 컴퓨트는 nvmet A 를 거쳐 O_DIRECT 로 쓰고 fdatasync 한 뒤 AE 를
+보내고, 스토리지 B 는 같은 nvmet A 를 거쳐 O_DIRECT 로 읽는다.
+
+**식별 함정.** 같은 볼륨이라도 스토리지 로컬에서 본 wwid(SSD 의 eui/시리얼)와 nvmet export 를
+attach 해서 본 wwid(namespace uuid)는 **다르다.** `local` 항목은 by-id 시리얼로, `remote`
+항목은 컴퓨트 노드에서 본 같은 node 의 wwid 로 대조한다.
+
+**측정에 미치는 영향.** 이제 `StorageIO` 가 패브릭을 탄다. 단, 리더와 팔로워가 같은 스토리지에
+있으면 예전처럼 로컬 PCIe 다. 패브릭 비용은 **read 쪽에만** 붙는다 — 응답의 `read_nanos` /
+`write_nanos` 로 갈라 본다. 원격 read 의 대역 상한은 경로마다 다르다(eternitystorage IB 는 SDR
+~1.25 GB/s, eternity1 은 EDR). → **리더가 어느 스토리지에 있었는지, 팔로워별로 로컬/원격 복사였는지
+를 수치와 함께 기록한다.**
+
 ---
 
 ## 2. 선점검 (읽기 전용 — 매 실험 전에)

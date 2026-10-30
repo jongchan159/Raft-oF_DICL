@@ -133,6 +133,75 @@ sudo ./build/raft_node -id 6 -cluster "$CLUSTER" -metadata-dir /mnt/raftvol/jong
 
 D21(커밋 판정을 AE 응답 경로에서도 함) 이전 바이너리로 지연을 잴 때는 `-loop-sleep-us 20` 을 더한다 (E2E_EXPERIMENT.md §7-6 -- 기본 200 은 커밋 폴링 지연이 QuorumWait 에 섞인다). D21 이후에는 필요 없다.
 
+**MULTI-STORAGE (스토리지 노드 간 attach)**
+
+스토리지 노드가 여러 대면 팔로워의 스토리지 노드에 리더 볼륨이 로컬에 없다. 그래서 다른 스토리지 노드가
+export 하는 멤버 볼륨을 NVMe-oF 로 attach 해 두고, blockcopy 가 그걸 pread 해 자기 로컬 볼륨에 pwrite 한다.
+**코드는 바뀌지 않는다** -- 서버는 `-devices` 인덱스로만 장치를 고르고 로컬/원격을 구분하지 않는다. 구조와
+불변식은 E2E_EXPERIMENT.md §1 "스토리지 노드가 여러 대일 때".
+
+두 번째 스토리지는 eternity1(IPoIB 10.0.0.1, ibp59s0 4X EDR)로 에뮬레이션할 예정이다. 멤버 볼륨 배정은 아직
+정하지 않았으므로 아래 명령은 배정과 무관하게 썼다(상대가 export 하는 node4/5/6 만 골라 붙는다).
+2026-10-30 실측 eternity1: nvmet 미적재(configfs 에 subsystems 없음), 로컬 SSD 는 부트 디스크
+`nvme0n1`(970 EVO Plus 250GB) 하나, `nvme1n2`(NVMe-oF, `/mnt/raftvol` 마운트)가 이미 붙어 있다 --
+export 할 볼륨을 정하기 전에 그게 누구 것인지 확인할 것.
+
+```bash
+# 1) 각 스토리지 노드의 nvmet: 상대 스토리지 노드도 받는지 (위 PUSH MODE 1) 과 같은 확인)
+for s in /sys/kernel/config/nvmet/subsystems/node*; do
+  echo "$(basename $s) allow_any=$(cat $s/attr_allow_any_host) hosts=$(ls $s/allowed_hosts) ports=$(ls /sys/kernel/config/nvmet/ports/*/subsystems | grep -c $(basename $s))"
+done
+```
+
+eternitystorage -- eternity1 이 export 하는 node4/5/6 을 붙인다
+```bash
+sudo modprobe nvme-rdma
+for n in node4 node5 node6; do sudo nvme discover -t rdma -a 10.0.0.1 -s 4420 | grep -qE "subnqn: *$n *$" && sudo nvme connect -t rdma -a 10.0.0.1 -s 4420 -n $n; done
+for c in /sys/class/nvme/nvme*; do grep -q "traddr=10.0.0.1," $c/address 2>/dev/null && echo 1 | sudo tee $c/fast_io_fail_tmo; done
+```
+
+eternity1 -- eternitystorage 가 export 하는 node4/5/6 을 붙인다 (`invalid service ID` 면 위 "ARP" 의 고정을 eternity1 에서도 한다)
+```bash
+ip neigh show 10.0.0.91
+for n in node4 node5 node6; do sudo nvme discover -t rdma -a 10.0.0.91 -s 4420 | grep -qE "subnqn: *$n *$" && sudo nvme connect -t rdma -a 10.0.0.91 -s 4420 -n $n; done
+for c in /sys/class/nvme/nvme*; do grep -q "traddr=10.0.0.91," $c/address 2>/dev/null && echo 1 | sudo tee $c/fast_io_fail_tmo; done
+```
+
+- **붙인 장치는 절대 마운트하지 않는다.** blockcopy 는 그 장치를 읽기만 한다
+- `fast_io_fail_tmo=1` 은 새로 붙인 컨트롤러에만 준다. 상대 스토리지가 죽으면 pread 가 1 초 뒤 EIO 로 끝나고,
+  do_pba_copy 가 그 배치를 fail-soft 로 건너뛴다(다음 라운드에 다시 pull)
+- eternitystorage 는 IB 포트 두 개가 같은 /24 다. 거기서 나가는 connect 가 거절되면 ARP 를 먼저 의심한다
+
+**스토리지 노드 연결 확인 + `-devices` 만들기** -- 스토리지 호스트마다. 로컬 멤버는 nvmet `device_path`(by-id),
+원격 멤버는 attach 된 `/dev/nvmeXnY` 다. **루프의 node 순서는 `-cluster` 순서(지금 4,5,6)와 같아야 한다.**
+
+eternitystorage
+```bash
+for n in node4 node5 node6; do p=$(cat /sys/kernel/config/nvmet/subsystems/$n/namespaces/*/device_path 2>/dev/null); k=local; if [ -z "$p" ]; then k=remote; for s in /sys/class/nvme-subsystem/*; do [ "$(cat $s/subsysnqn)" = $n ] && p=/dev/$(basename $(ls -d $s/nvme*n* | head -1)); done; fi; echo "$n $k ${p:-MISSING} wwid=$(cat /sys/class/block/$(basename $(readlink -f ${p:-/x}))/wwid 2>/dev/null) mnt=[$(findmnt -no TARGET ${p:-/x} 2>/dev/null)]"; done
+```
+
+eternity1
+```bash
+for n in node4 node5 node6; do p=$(cat /sys/kernel/config/nvmet/subsystems/$n/namespaces/*/device_path 2>/dev/null); k=local; if [ -z "$p" ]; then k=remote; for s in /sys/class/nvme-subsystem/*; do [ "$(cat $s/subsysnqn)" = $n ] && p=/dev/$(basename $(ls -d $s/nvme*n* | head -1)); done; fi; echo "$n $k ${p:-MISSING} wwid=$(cat /sys/class/block/$(basename $(readlink -f ${p:-/x}))/wwid 2>/dev/null) mnt=[$(findmnt -no TARGET ${p:-/x} 2>/dev/null)]"; done
+```
+
+통과 조건:
+- 세 줄 전부 `MISSING` 이 아니고, 모든 줄이 `mnt=[]` 이다
+- 한 멤버는 정확히 한 스토리지에서만 `local` 이다
+- `remote` 줄의 wwid 는 컴퓨트 노드 "연결 확인" 의 같은 node wwid(nvmet uuid)와 같다. `local` 줄의 wwid 는
+  SSD 자체의 것이라 **다른 게 정상**이다 -- local 은 by-id 시리얼로 대조한다(아래 "재부팅 시 복구" 의 표)
+
+기동 -- 스토리지 호스트마다 위 출력의 세 번째 열을 그 순서대로 `-devices` 로 준다 (eternitystorage, eternity1 각각에서 같은 줄)
+```bash
+cd ~/raftof_clean
+sudo ./build/raft_blockcopy_server -addr 0.0.0.0:5050 -copy-workers 8 -devices $(for n in node4 node5 node6; do p=$(cat /sys/kernel/config/nvmet/subsystems/$n/namespaces/*/device_path 2>/dev/null); if [ -z "$p" ]; then for s in /sys/class/nvme-subsystem/*; do [ "$(cat $s/subsysnqn)" = $n ] && p=/dev/$(basename $(ls -d $s/nvme*n* | head -1)); done; fi; echo ${p:-MISSING}; done | paste -sd,)
+```
+배너의 `device[0..2]` 가 확인 루프의 세 번째 열과 같은 순서인지 본다. `MISSING` 이 있으면 open 실패로 멈춘다.
+
+`-cluster` 는 멤버마다 `storage_host` 를 **그 멤버 볼륨을 `local` 로 갖는 스토리지**의 IPoIB 로 준다
+(eternitystorage = `10.0.0.91:5050`, eternity1 = `10.0.0.1:5050`). 팔로워는 자기 `storage_host` 에만
+WritePBABatch 를 보내고, 그 서버가 dst(자기 볼륨)를 로컬로, src(리더 볼륨)를 로컬 또는 attach 로 연다.
+
 **스토리지 노드(eternitystorage) 재부팅 시 복구**
 
 2026-10-28 에 실제로 겪었다. 재부팅하면 세 가지가 한꺼번에 깨진다.
